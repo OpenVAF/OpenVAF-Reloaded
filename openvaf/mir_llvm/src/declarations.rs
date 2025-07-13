@@ -139,10 +139,11 @@ impl<'a, 'll> CodegenCx<'a, 'll> {
     pub fn get_declared_value(&self, name: &str) -> Option<&'ll Value> {
         let name = CString::new(name).unwrap();
         unsafe {
-            Some(&*llvm_sys::core::LLVMGetNamedGlobal(
+            let ptr = llvm_sys::core::LLVMGetNamedGlobal(
                 NonNull::from(self.llmod).as_ptr(),
                 name.as_ptr(),
-            ))
+            );
+            ptr.as_ref()
         }
     }
 
