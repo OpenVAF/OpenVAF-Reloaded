@@ -145,6 +145,8 @@ fn get_linker<'a>(
             let path = path.unwrap_or_else(|| {
                 if is_msys2_environment() {
                     "gcc".into()
+                } else if cfg!(target_os = "macos") {
+                    "clang".into()
                 } else {
                     "ld".into()
                 }
@@ -251,7 +253,8 @@ impl<'a> LdLinker<'a> {
     fn build_dylib(&mut self) {
         // On mac we need to tell the linker to let this library be rpathed
         if self.target.options.is_like_osx {
-            self.linker_arg("-dylib");
+            self.linker_arg("-dynamiclib");
+            // clang automatically handles -lSystem
         } else {
             self.linker_arg("-shared");
         }
