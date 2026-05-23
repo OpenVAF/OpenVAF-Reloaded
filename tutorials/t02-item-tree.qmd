@@ -1,0 +1,169 @@
+---
+title: "T2 — Inspect the Item Tree"
+---
+
+## Goal
+
+Write a small Rust test that calls `ItemTree::dump()` on the resistor model and
+read the output.  Identify the module declaration, port nodes, the named
+branch, and the `R`, `zeta`, `tnom` parameters in the flat item tree before
+any name resolution or body lowering has run.
+
+---
+
+## Prerequisites
+
+- [T1](t01-build-and-compile.qmd) completed: the repository builds and
+  `openvaf-r` compiles `resistor.va`.
+- Familiarity with `cargo test` and Rust's `#[test]` attribute.
+
+**Background reading:** [`hir_def` INTERNALS §3 — `ItemTree`](../docs/hir_def/INTERNALS.md)
+
+---
+
+## Setup
+
+No additional tools are needed.  The `hir` crate already depends on
+`hir_def`, so we can write a test that calls `db.item_tree(file_id)` and
+prints its dump.
+
+---
+
+## Walkthrough
+
+### What is the ItemTree?
+
+The `ItemTree` is the first compiler-internal representation built from the
+parsed concrete syntax tree.  It is intentionally stripped: expression bodies
+(the right-hand side of parameter defaults, variable initialisers, the
+`analog begin … end` block) are thrown away.  Only the structural
+*declarations* — module ports, parameters, variables, branches, functions —
+are kept.
+
+This stripping is the **incremental invalidation firewall**: if you change a
+formula inside the `analog` block, the `ItemTree` is unchanged, and no query
+that depends only on structure needs to re-run.
+
+### Writing the inspection test
+
+Create a new file `inspect/src/main.rs` alongside `Cargo.toml` inside the
+repository root, or simply write a standalone test.  The fastest approach is
+to add a `[[test]]` entry to a scratch crate.  Here is a self-contained
+Rust program you can place at `scratch/src/main.rs`:
+
+```rust
+use std::sync::Arc;
+use basedb::{AbsPathBuf, BaseDB};
+use hir::CompilationDB;
+
+fn main() {
+    let path = AbsPathBuf::assert(
+        std::path::PathBuf::from("integration_tests/RESISTOR/resistor.va")
+            .canonicalize()
+            .unwrap(),
+    );
+    let db = CompilationDB::new_fs(path, &[], &[], &[]).unwrap();
+    let root_file = db.compilation_unit().root_file();
+    let tree = db.item_tree(root_file);
+    println!("{}", tree.dump());
+}
+```
+
+To run this, add a `Cargo.toml` for the scratch crate:
+
+```toml
+[package]
+name = "scratch"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hir   = { path = "openvaf/hir" }
+basedb = { path = "openvaf/basedb" }
+```
+
+Then:
+
+```bash
+cargo run --manifest-path scratch/Cargo.toml
+```
+
+### Reading the output
+
+The `dump()` output is structured text.  For `resistor.va` it looks roughly like:
+
+```
+module resistor_va
+  ports: A, B
+  nodes:
+    node A  electrical
+    node B  electrical
+  branches:
+    branch br_a_b (A, B)
+  params:
+    param R: real  default=<expr>
+    param zeta: real  default=<expr>
+    param tnom: real  default=<expr>
+  vars:
+    var res: real
+    var vres: real
+  analog_block: <body-id>
+```
+
+The exact format is defined in `openvaf/hir_def/src/item_tree/pretty.rs`.
+
+Key observations:
+
+1. **No expressions.**  Parameter defaults show `<expr>` placeholders — the
+   actual `0.0`, `0.0`, and `300.0` literals are stored in a separate `Body`
+   arena and are not part of the `ItemTree`.
+
+2. **Flat structure.**  All declarations are at the same level inside the
+   module entry.  There is no scope nesting yet; that comes in the `DefMap`.
+
+3. **`ItemTreeId` indices.**  Each node in the dump corresponds to an
+   `ItemTreeId<T>` arena index.  These indices are stable as long as the
+   structural declarations do not change.
+
+### The invalidation experiment
+
+To see why stripping expression bodies matters:
+
+1. Change the default value of `R` in `resistor.va` from `0.0` to `1.0`.
+2. Run your dump again.  The `ItemTree` dump is identical except for the
+   `<expr>` placeholder — the structural item IDs have not changed.
+
+This means that any Salsa query depending only on the `ItemTree` (name
+resolution, the `DefMap`, all type-checking queries) would be a cache hit
+after your change.  Only the `body` query and its dependents need to re-run.
+
+---
+
+## Exercises
+
+1. **Add a port.**  Add a third port `G` to `resistor_va` (keep it
+   disconnected).  Confirm the `ItemTree` dump now lists three ports.
+
+2. **Add a `function`.**  Add a trivial Verilog-A `function real clamp; …
+   endfunction` before the `analog` block.  Find where the function appears
+   in the `ItemTree` dump.
+
+3. **Compare `blocks.va`.**  Run the same dump on
+   `openvaf/test_data/item_tree/blocks.va`.  Notice how named `begin … end`
+   blocks are represented.
+
+4. **Read `item_tree.rs`.**  Open
+   `openvaf/hir_def/src/item_tree.rs` and find the `Module` struct
+   (around line 150).  Match its fields against the dump output.
+
+5. **Trigger no-reparse.**  Add a comment to `resistor.va`.  Which Salsa
+   queries would be invalidated?  (Hint: comments are stripped by the lexer
+   before the CST is built, so the parse tree is identical.)
+
+---
+
+## What's next
+
+[T3 — Read the Name-Resolution Map](t03-name-resolution.qmd) shows the
+`DefMap` built from the `ItemTree`: the scope tree, the per-scope declaration
+maps, and how `V` resolves to a `NatureAccess` built-in.

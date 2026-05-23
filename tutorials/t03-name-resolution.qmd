@@ -1,0 +1,133 @@
+---
+title: "T3 — Read the Name-Resolution Map"
+---
+
+## Goal
+
+Print the `DefMap` for `resistor.va` and identify the root scope, the module
+child scope, and all declarations inside it.  Trace how `V` resolves to a
+`NatureAccess` built-in rather than a plain variable.
+
+---
+
+## Prerequisites
+
+- [T2](t02-item-tree.qmd) completed.
+- The scratch crate from T2 is available.
+
+**Background reading:** [`hir_def` INTERNALS §5 — `DefMap`](../docs/hir_def/INTERNALS.md)
+
+---
+
+## Setup
+
+The `DefMap` has a `dump()` method in `openvaf/hir_def/src/nameres/pretty.rs`.
+Call it from the same scratch crate used in T2.
+
+---
+
+## Walkthrough
+
+### What is the DefMap?
+
+After the `ItemTree` is built, the `DefCollector` walks it and constructs a
+`DefMap`: a tree of `Scope` nodes, one per lexical scope in the source.  Each
+`Scope` holds a map from `Name` → `ScopeDefItem`.
+
+`ScopeDefItem` is an enum covering everything that can be named:
+`ModuleId`, `NodeId`, `VarId`, `ParamId`, `BranchId`, `FunctionId`, and
+built-in categories including `BuiltIn`, `NatureAccess`, `DisciplineId`, and
+`ParamSysFun`.
+
+For `resistor.va` the scope tree has two levels:
+
+```
+root scope
+  └─ module scope (resistor_va)
+       A            → NodeId(0)
+       B            → NodeId(1)
+       br_a_b       → BranchId(0)
+       R            → ParamId(0)
+       zeta         → ParamId(1)
+       tnom         → ParamId(2)
+       res          → VarId(0)
+       vres         → VarId(1)
+       V            → NatureAccess(potential_id)
+       I            → NatureAccess(flow_id)
+       $temperature → ParamSysFun(Temperature)
+       … (all other built-ins from BUILTIN_SCOPE)
+```
+
+### Printing the DefMap
+
+Extend the scratch program:
+
+```rust
+use hir_def::db::HirDefDB;
+
+let def_map = db.def_map(root_file);
+println!("{}", def_map.dump(&db));
+```
+
+The `dump()` method is defined in `nameres/pretty.rs`.
+
+### Why does `V` resolve to `NatureAccess`?
+
+In the source `V(br_a_b)` looks like a function call on an identifier `V`.
+But `V` is not a user-defined function — it is the *access function* for the
+potential nature of the `electrical` discipline.
+
+The `DefMap` inserts `NatureAccess` entries for every discipline's access
+functions when it initialises the built-in scope (`BUILTIN_SCOPE` in
+`builtin.rs`).  The `electrical` discipline (from `disciplines.vams`) has:
+
+- Potential nature `Voltage` with access function `V`
+- Flow nature `Current` with access function `I`
+
+So in the module scope, `V` → `NatureAccess(potential_id)` and
+`I` → `NatureAccess(flow_id)`.  Name resolution stores this in
+`resolved_calls` — not in `expr_types` — which is why the type-inference
+stage still needs to do further work to determine whether a given access is
+potential or flow.  (That work happens in T6.)
+
+### The BUILTIN_SCOPE
+
+`BUILTIN_SCOPE` is a `Lazy<IndexMap<Name, ScopeDefItem>>` in
+`openvaf/hir_def/src/builtin.rs`.  It is built once and shared across all
+compilations.  It contains:
+
+- All `BuiltIn` variants (`$display`, `$finish`, `abs`, `min`, `max`, …)
+- All `ParamSysFun` variants (`$temperature`, `$vt`, `$abstime`, …)
+- `NatureAccess` for every nature defined in the standard library
+
+The module scope's lookup chain is: module declarations → parent scope
+(root/file) → `BUILTIN_SCOPE`.  If a name is not found in the module
+declarations, the search continues outward.
+
+---
+
+## Exercises
+
+1. **Find a built-in.**  Look up `abs` in the DefMap dump.  What `ScopeDefItem`
+   variant does it resolve to?
+
+2. **Add a local variable that shadows a built-in.**  Add `real V;` to the
+   resistor module.  Does `V` still resolve to `NatureAccess`?  What does the
+   compiler emit?
+
+3. **Trace a `$temperature` reference.**  In the dump, find
+   `$temperature`.  Which `ScopeDefItem` variant is it?  Read the
+   `ParamSysFun` enum in `hir_def/src/builtin.rs` to see all system
+   parameters.
+
+4. **Block scope.**  Wrap the `analog begin` body in a named block
+   (`begin : my_block … end`).  Run the DefMap dump again and find the
+   new child scope.
+
+---
+
+## What's next
+
+[T4 — Examine the Lowered Body](t04-lowered-body.qmd) descends into the
+expression arenas: the `Body` that stores every `Expr` and `Stmt` for the
+analog block, still with unresolved path strings, before type inference runs.

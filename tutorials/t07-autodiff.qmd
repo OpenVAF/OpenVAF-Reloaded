@@ -1,0 +1,107 @@
+---
+title: "T7 — Understand the Automatic Differentiation Pass"
+---
+
+## Goal
+
+Compare the MIR before and after `mir_autodiff` for the resistor evaluation
+kernel.  Identify the Jacobian seed (`∂V(A,B)/∂V(A,B) = 1`), the quotient-rule
+expansion of `vres/res`, and the four `MatrixEntry` values produced in the
+`DaeSystem`.
+
+---
+
+## Prerequisites
+
+- [T5](t05-mir-contribution.qmd) completed; you can read MIR text format.
+- [T6](t06-type-inference.qmd) recommended; understanding `resolved_calls`
+  helps interpret which values correspond to which unknowns.
+
+**Background reading:** [`mir_autodiff` INTERNALS](../docs/mir_autodiff/INTERNALS.md) |
+[`sim_back` INTERNALS §DAE system](../docs/sim_back/INTERNALS.md)
+
+---
+
+## Walkthrough
+
+### Why derivatives?
+
+Circuit simulators (ngspice, Spectre, Qucs-S) solve systems of nonlinear
+differential-algebraic equations (DAEs) using Newton–Raphson iteration.  Each
+Newton step requires the Jacobian: the matrix of partial derivatives of the
+residual currents with respect to the circuit node voltages.
+
+For the resistor the DAE residual at node `A` is `f(V_A, V_B) = (V_A−V_B)/R_t`.
+The Jacobian entries are:
+
+| Entry | Formula | Value |
+|---|---|---|
+| `∂f_A/∂V_A` | `+1/R_t` | resistive, positive |
+| `∂f_A/∂V_B` | `−1/R_t` | resistive, negative |
+| `∂f_B/∂V_A` | `−1/R_t` | (KCL symmetry) |
+| `∂f_B/∂V_B` | `+1/R_t` | resistive, positive |
+
+`mir_autodiff` computes these by source transformation on the MIR.
+
+### Using --dump-mir to see the AD output
+
+```bash
+./target/release/openvaf-r \
+    integration_tests/RESISTOR/resistor.va \
+    --dump-mir
+```
+
+With `--dump-mir` (without `--dry-run`) the MIR is printed after AD has run.
+You will see the evaluation kernel function followed by additional
+instructions added by AD.
+
+### Reading the derivative instructions
+
+The AD pass inserts instructions using the *reverse-mode accumulation* pattern.
+For `v9 = fdiv v0, v8`:
+
+- `∂(v9)/∂(v0) = 1/v8`   → `fdiv fconst(1.0), v8`
+- `∂(v9)/∂(v8) = −v0/v8²` → `fneg (fdiv v0 (fmul v8 v8))`
+
+These appear in the MIR as new `Value` definitions after the original
+`fdiv` instruction.
+
+### Reading the DaeSystem snapshot
+
+Compare your MIR output with the test snapshot:
+```
+openvaf/test_data/dae/resistor_va_system.snap
+```
+
+The snapshot records the four `MatrixEntry` values (`j0` through `j3`) with
+their `resist` MIR `Value` references.  Match each one to the derivative
+instruction you identified above.
+
+---
+
+## Exercises
+
+1. **Count derivative instructions.**  How many new instructions does AD add
+   for the resistor?  Compare before (`--dump-unopt-mir`) and after (`--dump-mir`).
+
+2. **Constant Jacobian.**  Because `R_t` does not depend on the circuit
+   voltages, the Jacobian entries are constants (once `R`, `zeta`, `tnom`,
+   and `$temperature` are known).  Does the OSDI descriptor flag these
+   entries as `JACOBIAN_ENTRY_REACT_CONST`?  Check `resistor.snap`.
+
+3. **Read `mir_autodiff` entry point.**  Open
+   `openvaf/mir_autodiff/src/lib.rs` and find the `auto_diff` function
+   signature.  What does the `derivatives` parameter tell AD about which
+   outputs to differentiate?
+
+4. **Verify the `KnownDerivatives`.**  Add a `println!("{:#?}", known_derivs)`
+   in your scratch crate (calling `HirInterner::unknowns(func, true)`) to
+   see which MIR `Value`s AD will treat as unknowns.
+
+---
+
+## What's next
+
+[T8 — Add a Simple Nonlinearity (Diode I–V)](t08-diode-nonlinearity.qmd)
+introduces a model with an exponential I–V curve, which produces a
+voltage-dependent Jacobian and lets you see how AD handles `exp`.
