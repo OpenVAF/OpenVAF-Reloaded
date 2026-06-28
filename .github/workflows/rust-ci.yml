@@ -281,7 +281,11 @@ jobs:
 
     - name: Run cargo
       shell: msys2 {0}
-      run: cargo build --release --features llvm21
+      run: |
+        cargo build --release --package openvaf-driver --features llvm21
+        cargo build --release --package openvaf --features llvm21
+        cargo build --release --package osdi --features llvm21
+        cargo build --release --package mir_llvm --features llvm21
     #- name: Show sccache stats
     #  if: github.event_name != 'release' && github.event_name != 'workflow_dispatch'
     #  shell: msys2 {0}
@@ -289,7 +293,11 @@ jobs:
 
     - name: Run tests
       shell: msys2 {0}
-      run: cargo test --release --features llvm21
+      run: |
+        cargo test --release --package openvaf-driver --features llvm21
+        cargo test --release --package openvaf --features llvm21
+        cargo test --release --package osdi --features llvm21
+        cargo test --release --package mir_llvm --features llvm21
 
   macos-build-test:
     strategy:

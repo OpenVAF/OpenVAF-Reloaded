@@ -220,6 +220,7 @@ pub struct OsdiInstanceData<'ll> {
     pub residual: TiVec<SimUnknown, Residual>,
     pub noise: Vec<NoiseSource>,
     pub opvars: IndexMap<Variable, EvalOutput, BuildHasherDefault<FxHasher>>,
+    pub delay_sources: Vec<EvalOutputSlot>,
     pub jacobian: TiVec<MatrixEntryId, MatrixEntry>,
     pub bound_step: Option<EvalOutputSlot>,
 }
@@ -281,6 +282,15 @@ impl<'ll> OsdiInstanceData<'ll> {
             let slot = eval_outputs.insert_full(val, ty_f64).0;
             Some(slot)
         });
+        let delay_sources = module
+            .intern
+            .absdelay
+            .iter()
+            .map(|&val| {
+                let val = strip_optbarrier(module.eval, val);
+                eval_outputs.insert_full(val, ty_f64).0
+            })
+            .collect();
 
         let param_given = bitfield::arr_ty(params.len() as u32, cx);
         let jacobian_ptr = cx.ty_array(cx.ty_ptr(), module.dae_system.jacobian.len() as u32);
@@ -330,6 +340,7 @@ impl<'ll> OsdiInstanceData<'ll> {
             residual,
             noise,
             opvars,
+            delay_sources,
             jacobian,
             bound_step,
         }
@@ -348,6 +359,19 @@ impl<'ll> OsdiInstanceData<'ll> {
     pub fn bound_step_elem(&self) -> Option<u32> {
         let elem = self.eval_output_slot_elem(self.bound_step?);
         Some(elem)
+    }
+
+    pub fn delay_source_offsets(&self, target_data: &LLVMTargetDataRef) -> Vec<u32> {
+        self.delay_sources
+            .iter()
+            .map(|&slot| unsafe {
+                LLVMOffsetOfElement(
+                    *target_data,
+                    NonNull::from(self.ty).as_ptr(),
+                    self.eval_output_slot_elem(slot),
+                ) as u32
+            })
+            .collect()
     }
 
     pub unsafe fn param_ptr(

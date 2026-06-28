@@ -174,9 +174,7 @@ impl Body {
                         Type::Integer => Literal::Int(0),
                         // Arrays have no scalar default (their elements are managed
                         // per-element during lowering); use 0.0 as a placeholder.
-                        Type::Real | Type::Array { .. } => {
-                            Literal::Float(Ieee64::with_float(0.0))
-                        }
+                        Type::Real | Type::Array { .. } => Literal::Float(Ieee64::with_float(0.0)),
                         _ => unreachable!("invalid var type"),
                     };
                     ctx.alloc_expr_desugared(Expr::Literal(default_val))

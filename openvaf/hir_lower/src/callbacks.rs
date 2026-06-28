@@ -1,5 +1,3 @@
-use std::fmt::Display;
-
 use hir::{Node, Parameter};
 use lasso::Spur;
 use mir::{FunctionSignature, Param};
@@ -56,6 +54,7 @@ pub enum CallBackKind {
     FlickerNoise { name: Spur, idx: u32 },
     NoiseTable(Box<NoiseTable>),
     SetRetFlag(RetFlag),
+    QueryPastState(u32),
 }
 
 impl CallBackKind {
@@ -171,6 +170,12 @@ impl CallBackKind {
                 returns: 0,
                 has_sideeffects: true,
             },
+            CallBackKind::QueryPastState(delay) => FunctionSignature {
+                name: format!("query_past_state[{delay}]"),
+                params: 2,
+                returns: 1,
+                has_sideeffects: false,
+            },
         }
     }
     pub fn is_noise(&self) -> bool {
@@ -192,6 +197,7 @@ impl CallBackKind {
                 | CallBackKind::SimParamStr
                 | CallBackKind::LimDiscontinuity
                 | CallBackKind::BuiltinLimit { .. }
+                | CallBackKind::QueryPastState(_)
         )
     }
 

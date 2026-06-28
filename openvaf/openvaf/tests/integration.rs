@@ -300,7 +300,11 @@ fn test_cross_latch() -> Result<()> {
 
     // Advance one timestep: swap prev/next state, re-apply the node voltages
     // (next_iter zeroes the solution), evaluate, and load the DAE residual.
-    let step = |instance: &OsdiInstance, model: &OsdiModel, sim: &mut MockSimulation, vd: f64, first: bool| {
+    let step = |instance: &OsdiInstance,
+                model: &OsdiModel,
+                sim: &mut MockSimulation,
+                vd: f64,
+                first: bool| {
         if !first {
             sim.next_iter();
         }
@@ -312,15 +316,40 @@ fn test_cross_latch() -> Result<()> {
     };
 
     // d high -> latch sets state=1 (residual = -1).
-    float_cmp::assert_approx_eq!(f64, step(&instance, &model, &mut sim, 1.0, true), -1.0, epsilon = 1e-9);
+    float_cmp::assert_approx_eq!(
+        f64,
+        step(&instance, &model, &mut sim, 1.0, true),
+        -1.0,
+        epsilon = 1e-9
+    );
     // dead-band -> state 1 retained.
-    float_cmp::assert_approx_eq!(f64, step(&instance, &model, &mut sim, 0.5, false), -1.0, epsilon = 1e-9);
+    float_cmp::assert_approx_eq!(
+        f64,
+        step(&instance, &model, &mut sim, 0.5, false),
+        -1.0,
+        epsilon = 1e-9
+    );
     // d low -> latch clears state=0 (residual = 0).
-    float_cmp::assert_approx_eq!(f64, step(&instance, &model, &mut sim, 0.0, false), 0.0, epsilon = 1e-9);
+    float_cmp::assert_approx_eq!(
+        f64,
+        step(&instance, &model, &mut sim, 0.0, false),
+        0.0,
+        epsilon = 1e-9
+    );
     // dead-band -> state 0 retained.
-    float_cmp::assert_approx_eq!(f64, step(&instance, &model, &mut sim, 0.5, false), 0.0, epsilon = 1e-9);
+    float_cmp::assert_approx_eq!(
+        f64,
+        step(&instance, &model, &mut sim, 0.5, false),
+        0.0,
+        epsilon = 1e-9
+    );
     // d high again -> latch flips back to state=1.
-    float_cmp::assert_approx_eq!(f64, step(&instance, &model, &mut sim, 1.0, false), -1.0, epsilon = 1e-9);
+    float_cmp::assert_approx_eq!(
+        f64,
+        step(&instance, &model, &mut sim, 1.0, false),
+        -1.0,
+        epsilon = 1e-9
+    );
     Ok(())
 }
 
@@ -389,7 +418,11 @@ fn test_cross_array() -> Result<()> {
     let mut instance = model.new_instance();
     let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
 
-    let step = |instance: &OsdiInstance, model: &OsdiModel, sim: &mut MockSimulation, vd: f64, first: bool| {
+    let step = |instance: &OsdiInstance,
+                model: &OsdiModel,
+                sim: &mut MockSimulation,
+                vd: f64,
+                first: bool| {
         if !first {
             sim.next_iter();
         }

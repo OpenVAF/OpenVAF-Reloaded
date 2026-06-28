@@ -712,11 +712,8 @@ impl Ctx {
                     }
                     _ => base_ty.clone(),
                 };
-                let var = Var {
-                    name: name.as_name(),
-                    ast_id: self.source_ast_id_map.ast_id(&var),
-                    ty,
-                };
+                let var =
+                    Var { name: name.as_name(), ast_id: self.source_ast_id_map.ast_id(&var), ty };
                 let id = self.tree.data.variables.push_and_get_key(var);
                 dst.push(id.into())
             }

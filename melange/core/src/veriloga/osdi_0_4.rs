@@ -63,6 +63,7 @@ pub const NOISE_TYPE_WHITE: u32 = 0;
 pub const NOISE_TYPE_FLICKER: u32 = 1;
 pub const NOISE_TYPE_TABLE: u32 = 2;
 pub const MODULEFLAG_ABSTIME: u32 = 1;
+pub const MODULEFLAG_ABSDELAY: u32 = 2;
 
 #[repr(C)]
 pub struct OsdiLimFunction {
@@ -85,6 +86,19 @@ pub struct OsdiSimInfo {
     pub prev_state: *mut f64,
     pub next_state: *mut f64,
     pub flags: u32,
+    pub history_ctx: *mut c_void,
+    pub query_past_state: fn(*mut c_void, u32, f64, f64) -> f64,
+}
+impl OsdiSimInfo {
+    pub fn query_past_state(
+        &self,
+        history_ctx: *mut c_void,
+        delay_id: u32,
+        time: f64,
+        current_value: f64,
+    ) -> f64 {
+        (self.query_past_state)(history_ctx, delay_id, time, current_value)
+    }
 }
 #[repr(C)]
 pub union OsdiInitErrorPayload {
@@ -136,6 +150,11 @@ pub struct OsdiParamOpvar {
 pub struct OsdiNoiseSource {
     pub name: *mut c_char,
     pub nodes: OsdiNodePair,
+}
+#[repr(C)]
+pub struct OsdiDelayDescriptor {
+    pub source_offset: u32,
+    pub flags: u32,
 }
 #[repr(C)]
 pub struct OsdiNatureRef {
@@ -197,6 +216,8 @@ pub struct OsdiDescriptor {
     pub noise_source_type: *mut u32,
     pub load_noise_params: fn(*mut c_void, *mut c_void, *mut f64, *mut f64),
     pub module_flags: u32,
+    pub num_delay: u32,
+    pub delay: *mut OsdiDelayDescriptor,
 }
 impl OsdiDescriptor {
     pub fn access(

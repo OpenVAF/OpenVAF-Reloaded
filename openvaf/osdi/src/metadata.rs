@@ -29,12 +29,12 @@ use crate::inst_data::{
 };
 use crate::load::JacobianLoadType;
 use crate::metadata::osdi_0_4::{
-    OsdiDescriptor, OsdiJacobianEntry, OsdiNatureRef, OsdiNode, OsdiNodePair, OsdiNoiseSource,
-    OsdiParamOpvar, OsdiTys, JACOBIAN_ENTRY_REACT, JACOBIAN_ENTRY_REACT_CONST,
-    JACOBIAN_ENTRY_RESIST, JACOBIAN_ENTRY_RESIST_CONST, MODULEFLAG_ABSTIME, NATREF_DISCIPLINE_FLOW,
-    NATREF_DISCIPLINE_POTENTIAL, NATREF_NONE, NOISE_TYPE_FLICKER, NOISE_TYPE_TABLE,
-    NOISE_TYPE_WHITE, PARA_KIND_INST, PARA_KIND_MODEL, PARA_KIND_OPVAR, PARA_TY_INT, PARA_TY_REAL,
-    PARA_TY_STR,
+    OsdiDelayDescriptor, OsdiDescriptor, OsdiJacobianEntry, OsdiNatureRef, OsdiNode, OsdiNodePair,
+    OsdiNoiseSource, OsdiParamOpvar, OsdiTys, JACOBIAN_ENTRY_REACT, JACOBIAN_ENTRY_REACT_CONST,
+    JACOBIAN_ENTRY_RESIST, JACOBIAN_ENTRY_RESIST_CONST, MODULEFLAG_ABSDELAY, MODULEFLAG_ABSTIME,
+    NATREF_DISCIPLINE_FLOW, NATREF_DISCIPLINE_POTENTIAL, NATREF_NONE, NOISE_TYPE_FLICKER,
+    NOISE_TYPE_TABLE, NOISE_TYPE_WHITE, PARA_KIND_INST, PARA_KIND_MODEL, PARA_KIND_OPVAR,
+    PARA_TY_INT, PARA_TY_REAL, PARA_TY_STR,
 };
 use crate::ty_len;
 
@@ -393,7 +393,7 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
 
             let noise_source_type: Vec<_> =
                 zip(&module.dae_system.noise_sources, &self.inst_data.noise)
-                    .map(|(src, eval_outputs)| match src.kind {
+                    .map(|(src, _eval_outputs)| match src.kind {
                         NoiseSourceKind::WhiteNoise { .. } => NOISE_TYPE_WHITE,
                         NoiseSourceKind::FlickerNoise { .. } => NOISE_TYPE_FLICKER,
                         NoiseSourceKind::NoiseTable { .. } => NOISE_TYPE_TABLE,
@@ -401,6 +401,11 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                     .collect();
 
             let (uvec, rvec) = self.unknown_residual_natures(db);
+            let delay: Vec<_> = inst_data
+                .delay_source_offsets(target_data)
+                .into_iter()
+                .map(|source_offset| OsdiDelayDescriptor { source_offset, flags: 0 })
+                .collect();
 
             let mut module_flags = 0u32;
             module.intern.params.iter().for_each(|(p, _)| {
@@ -408,6 +413,9 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                     module_flags |= MODULEFLAG_ABSTIME;
                 }
             });
+            if !delay.is_empty() {
+                module_flags |= MODULEFLAG_ABSDELAY;
+            }
 
             OsdiDescriptor {
                 name: module.info.module.name(db),
@@ -466,6 +474,8 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                 noise_source_type,
                 load_noise_params: self.load_noise_params(),
                 module_flags,
+                num_delay: delay.len() as u32,
+                delay,
             }
         }
     }

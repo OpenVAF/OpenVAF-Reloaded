@@ -292,14 +292,12 @@ fn opt_lvl() -> Arg {
 }
 
 fn run_mode() -> Arg {
-    flag(RUN, "run")
-        .help("Run the module's imperative initial/final procedural blocks.")
-        .long_help(
-            "Lower the module's standalone `initial`/`final` procedural blocks to MIR and
+    flag(RUN, "run").help("Run the module's imperative initial/final procedural blocks.").long_help(
+        "Lower the module's standalone `initial`/`final` procedural blocks to MIR and
 interpret them, executing system tasks such as $display/$strobe/$finish.
 No shared library is produced and no circuit is simulated; this is the
 standalone VerilogA runner lane.",
-        )
+    )
 }
 fn expand() -> Arg {
     flag(PRINT_EXPANSION, "print-expansion")

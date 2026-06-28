@@ -4,7 +4,7 @@ use mir::{Block, Value};
 use stdx::iter::zip;
 
 use crate::ctx::LoweringCtx;
-use crate::{CallBackKind, ParamKind, PlaceKind};
+use crate::{ParamKind, PlaceKind};
 
 pub struct BodyLoweringCtx<'a, 'c1, 'c2> {
     pub ctx: &'a mut LoweringCtx<'c1, 'c2>,

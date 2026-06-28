@@ -176,10 +176,7 @@ impl Module {
     /// The imperative `initial`/`final` procedural body executed by the standalone
     /// VerilogA runner (`openvaf-r run`). Empty for ordinary device models.
     pub fn procedural_block(&self, db: &CompilationDB) -> Body {
-        Body::new(
-            DefWithBodyId::ModuleId { kind: ModuleBodyKind::Procedural, module: self.id },
-            db,
-        )
+        Body::new(DefWithBodyId::ModuleId { kind: ModuleBodyKind::Procedural, module: self.id }, db)
     }
 
     // todo: just temporary for VAE, this needs to be cleaned up

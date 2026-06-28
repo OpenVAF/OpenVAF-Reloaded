@@ -2,12 +2,12 @@ use hir::builtin::{
     FLICKER_NOISE_NAME, NOISE_TABLE_FILE_NAME, NOISE_TABLE_INLINE_NAME, WHITE_NOISE_NAME,
 };
 use hir::signatures::{
-    ABS_INT, ABS_REAL, BOOL_EQ, DDX_POT, IDTMOD_IC, IDTMOD_IC_MODULUS, IDTMOD_IC_MODULUS_OFFSET,
-    IDTMOD_IC_MODULUS_OFFSET_NATURE, IDTMOD_IC_MODULUS_OFFSET_TOL, IDTMOD_NO_IC, IDT_IC,
-    IDT_IC_ASSERT, IDT_IC_ASSERT_NATURE, IDT_IC_ASSERT_TOL, IDT_NO_IC, INT_EQ, INT_OP,
-    LIMIT_BUILTIN_FUNCTION, MAX_INT, MAX_REAL, NATURE_ACCESS_BRANCH, NATURE_ACCESS_NODES,
-    NATURE_ACCESS_NODE_GND, NATURE_ACCESS_PORT_FLOW, REAL_EQ, REAL_OP, SIMPARAM_DEFAULT,
-    SIMPARAM_NO_DEFAULT, STR_EQ,
+    ABSDELAY_MAX, ABS_INT, ABS_REAL, BOOL_EQ, DDX_POT, IDTMOD_IC, IDTMOD_IC_MODULUS,
+    IDTMOD_IC_MODULUS_OFFSET, IDTMOD_IC_MODULUS_OFFSET_NATURE, IDTMOD_IC_MODULUS_OFFSET_TOL,
+    IDTMOD_NO_IC, IDT_IC, IDT_IC_ASSERT, IDT_IC_ASSERT_NATURE, IDT_IC_ASSERT_TOL, IDT_NO_IC,
+    INT_EQ, INT_OP, LIMIT_BUILTIN_FUNCTION, MAX_INT, MAX_REAL, NATURE_ACCESS_BRANCH,
+    NATURE_ACCESS_NODES, NATURE_ACCESS_NODE_GND, NATURE_ACCESS_PORT_FLOW, REAL_EQ, REAL_OP,
+    SIMPARAM_DEFAULT, SIMPARAM_NO_DEFAULT, STR_EQ,
 };
 use hir::{Body, BuiltIn, Expr, ExprId, Literal, /*ParamSysFun,*/ Ref, ResolvedFun, Type};
 use mir::builder::InstBuilder;
@@ -731,33 +731,32 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 GRAVESTONE
             }
 
-            /* TODO: absdelay
             BuiltIn::absdelay => {
-                let arg = self.lower_expr(args[0]);
+                let source = self.lower_expr(args[0]);
+                if self.ctx.no_equations {
+                    return source;
+                }
                 let mut delay = self.lower_expr(args[1]);
-                let (eq1, res) = self.ctx.implicit_equation(ImplicitEquationKind::Absdelay);
-                let (eq2, intermediate) = self.ctx.implicit_equation(ImplicitEquationKind::Absdelay);
                 if signature == ABSDELAY_MAX {
                     let max_delay = self.lower_expr(args[2]);
                     let use_delay = self.ctx.ins().fle(delay, max_delay);
-                    delay = self.lower_select_with(use_delay, |_| delay, |_| max_delay);
-                } else {
-                    delay = self.ctx.call1(CallBackKind::StoreDelayTime(eq1), &[delay]);
+                    delay = self.ctx.make_select(
+                        use_delay,
+                        |_ctx, branch| {
+                            if branch {
+                                delay
+                            } else {
+                                max_delay
+                            }
+                        },
+                    );
                 }
-
-                let mut resist_val = self.ctx.ins().fsub(res, arg);
-                resist_val = self.ctx.ins().fdiv(resist_val, delay);
-                self.ctx.def_resist_residual(resist_val, eq1);
-                self.ctx.def_react_residual(intermediate, eq1);
-
-                let mut resist_val = self.ctx.ins().fsub(res, intermediate);
-                resist_val = self.ctx.ins().fdiv(resist_val, delay);
-                self.ctx.def_resist_residual(resist_val, eq2);
-                let react_val = self.ctx.ins().fdiv(res, F_THREE);
-                self.ctx.def_react_residual(react_val, eq2);
-
-                res
-            }*/
+                let delay_id = self.ctx.intern.absdelay.len() as u32;
+                self.ctx.intern.absdelay.push(source);
+                let time = self.ctx.use_param(ParamKind::Abstime);
+                let query_time = self.ctx.ins().fsub(time, delay);
+                self.ctx.call1(CallBackKind::QueryPastState(delay_id), &[query_time, source])
+            }
             BuiltIn::transition => {
                 // `transition` accepts an integer or real first argument; the
                 // builtin signature types it as Real, so `lower_expr` already widens
@@ -793,7 +792,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
                     x
                 }
             }
-            BuiltIn::slew | BuiltIn::limit | BuiltIn::absdelay => self.lower_expr(args[0]),
+            BuiltIn::slew | BuiltIn::limit => self.lower_expr(args[0]),
 
             _ => unreachable!(),
         }

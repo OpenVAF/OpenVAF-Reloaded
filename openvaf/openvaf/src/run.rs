@@ -15,13 +15,13 @@ use anyhow::{bail, Context, Result};
 use basedb::diagnostics::ConsoleSink;
 use hir::CompilationDB;
 use hir_lower::fmt::{DisplayKind, FmtArg, FmtArgKind};
-use hir_lower::{CallBackKind, HirInterner, MirBuilder, PlaceKind, RetFlag};
+use hir_lower::{CallBackKind, MirBuilder, PlaceKind, RetFlag};
 use lasso::{Rodeo, Spur};
 use mir::{FuncRef, Value};
 use mir_interpret::{Data, Func, Interpreter, InterpreterState};
 use paths::AbsPathBuf;
 use sim_back::collect_modules;
-use typed_index_collections::{TiSlice, TiVec};
+use typed_index_collections::TiVec;
 
 use crate::Opts;
 
@@ -34,7 +34,10 @@ struct CbCtx {
 }
 
 enum CbCtxKind {
-    Print { kind: DisplayKind, arg_tys: Box<[FmtArg]> },
+    Print {
+        kind: DisplayKind,
+        arg_tys: Box<[FmtArg]>,
+    },
     SetRetFlag(RetFlag),
     /// A callback the runner does not implement (e.g. simulator-only tasks). It is
     /// ignored at runtime after a one-line warning.
@@ -75,6 +78,9 @@ pub fn run(opts: &Opts) -> Result<i32> {
         MirBuilder::new(&db, module.module, &is_output, &mut std::iter::empty())
             .with_procedural()
             .build(&mut literals);
+    if !analog_intern.absdelay.is_empty() || !proc_intern.absdelay.is_empty() {
+        bail!("absdelay requires simulator transient history; openvaf run does not support it")
+    }
 
     // analog behaviour first, then procedural blocks; an early-exit request from the
     // first body skips the second.
@@ -231,7 +237,7 @@ fn render_arg(
         's' => literals.resolve(&state.read::<Spur>(arg)).to_owned(),
         'e' | 'E' => format!("{:e}", state.read::<f64>(arg)),
         'f' | 'F' | 'g' | 'G' => format!("{}", state.read::<f64>(arg)),
-        // Best-effort fallback driven by the inferred argument type.
+        // Best-effort rendering driven by the inferred argument type.
         _ => match ty.ty {
             hir::Type::Integer => format!("{}", state.read::<i32>(arg)),
             hir::Type::String => literals.resolve(&state.read::<Spur>(arg)).to_owned(),

@@ -246,7 +246,10 @@ pub enum AssignmentLhs {
     FunctionReturn(Function),
     FunctionArg(FunctionArg),
     /// `arr[index] = …` — assignment to an array element.
-    ArrayElement { var: Variable, index: ExprId },
+    ArrayElement {
+        var: Variable,
+        index: ExprId,
+    },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -289,13 +292,30 @@ impl Stmt<'_> {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Expr<'a> {
     Read(Ref),
-    BinaryOp { lhs: ExprId, rhs: ExprId, op: BinaryOp },
-    UnaryOp { expr: ExprId, op: UnaryOp },
-    Select { cond: ExprId, then_val: ExprId, else_val: ExprId },
-    Call { fun: ResolvedFun, args: &'a [ExprId] },
+    BinaryOp {
+        lhs: ExprId,
+        rhs: ExprId,
+        op: BinaryOp,
+    },
+    UnaryOp {
+        expr: ExprId,
+        op: UnaryOp,
+    },
+    Select {
+        cond: ExprId,
+        then_val: ExprId,
+        else_val: ExprId,
+    },
+    Call {
+        fun: ResolvedFun,
+        args: &'a [ExprId],
+    },
     Array(&'a [ExprId]),
     /// Array element access `base[index]`.
-    Index { base: ExprId, index: ExprId },
+    Index {
+        base: ExprId,
+        index: ExprId,
+    },
     Literal(&'a Literal),
 }
 impl Expr<'_> {

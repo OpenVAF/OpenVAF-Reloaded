@@ -152,7 +152,10 @@ pub enum GlobalEvent {
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
 #[non_exhaustive]
 pub enum Event {
-    Global { kind: GlobalEvent, phases: Vec<String> },
+    Global {
+        kind: GlobalEvent,
+        phases: Vec<String>,
+    },
     /// A monitored analog event such as `@(cross(...))` / `@(timer(...))`. Variables
     /// assigned inside its body are given cross-timestep retention during lowering.
     Cross,

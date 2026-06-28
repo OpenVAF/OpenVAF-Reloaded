@@ -43,8 +43,14 @@ pub enum ResolvedFun {
 pub enum AssignDst {
     Var(VarId),
     /// `arr[index] = …` — assignment to an array element.
-    VarElement { var: VarId, index: ExprId },
-    FunVar { fun: FunctionId, arg: Option<LocalFunctionArgId> },
+    VarElement {
+        var: VarId,
+        index: ExprId,
+    },
+    FunVar {
+        fun: FunctionId,
+        arg: Option<LocalFunctionArgId>,
+    },
     Flow(BranchWrite),
     Potential(BranchWrite),
 }

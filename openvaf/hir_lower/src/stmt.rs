@@ -23,10 +23,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 // inside it are treated as initial values (read from the retained
                 // state) rather than per-evaluation resets. Other events lower their
                 // body directly; their effect is gated by guards in the body.
-                if matches!(
-                    event,
-                    hir::Event::Global { kind: hir::GlobalEvent::InitialStep, .. }
-                ) {
+                if matches!(event, hir::Event::Global { kind: hir::GlobalEvent::InitialStep, .. }) {
                     let prev = self.ctx.in_initial_step;
                     self.ctx.in_initial_step = true;
                     self.lower_stmt(body);

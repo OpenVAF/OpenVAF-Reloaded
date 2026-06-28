@@ -108,8 +108,7 @@ fn body_test(file: &Path) -> Result {
     let mut actual = String::new();
     for (_, scope) in &def_map[def_map.entry()].children {
         if let ScopeOrigin::Module(module) = def_map[*scope].origin {
-            let analog_block =
-                DefWithBodyId::ModuleId { kind: ModuleBodyKind::Analog, module };
+            let analog_block = DefWithBodyId::ModuleId { kind: ModuleBodyKind::Analog, module };
             actual.push_str(&db.body(analog_block).dump(&db));
             for (_, scope) in &def_map[*scope].children {
                 if let ScopeOrigin::Function(func) = def_map[*scope].origin {
