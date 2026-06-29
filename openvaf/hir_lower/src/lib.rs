@@ -49,6 +49,12 @@ pub enum ImplicitEquationKind {
     /// (`V(out) : f(...) == 0`): the source value of the target branch, solved so the
     /// constraint residual is zero.
     IndirectBranch,
+    /// Auxiliary unknown exposing a general absdelay input expression to the
+    /// simulator as a node voltage.
+    AbsDelayInput,
+    /// Auxiliary unknown whose row is stamped by the simulator as the absdelay
+    /// output equation.
+    AbsDelayOutput,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -234,6 +240,20 @@ impl_debug_display! {
     match LimitState {LimitState(i) => "lim_state{}", i;}
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub enum AbsDelayInput {
+    Voltage { hi: Node, lo: Option<Node> },
+    Internal(ImplicitEquation),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct AbsDelayInfo {
+    pub input: AbsDelayInput,
+    pub output: ImplicitEquation,
+    pub delay: Value,
+    pub max_delay: Option<Value>,
+}
+
 /// A mapping between abstractions used in the MIR and the corresponding
 /// information from the HIR. This allows the MIR to remain independent of the frontend/HIR
 #[derive(Debug, PartialEq, Clone)]
@@ -242,7 +262,7 @@ pub struct HirInterner {
     pub params: TiMap<Param, ParamKind, Value>,
     pub callbacks: TiSet<FuncRef, CallBackKind>,
     pub callback_uses: TiVec<FuncRef, Vec<Inst>>,
-    pub absdelay: Vec<Value>,
+    pub absdelay: Vec<AbsDelayInfo>,
     pub tagged_reads: IndexMap<Value, Variable, BuildHasherDefault<FxHasher>>,
     pub implicit_equations: TiVec<ImplicitEquation, ImplicitEquationKind>,
     pub lim_state: TiMap<LimitState, Value, Vec<(Value, bool)>>,

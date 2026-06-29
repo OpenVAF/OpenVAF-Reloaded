@@ -736,26 +736,35 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 if self.ctx.no_equations {
                     return source;
                 }
-                let mut delay = self.lower_expr(args[1]);
-                if signature == ABSDELAY_MAX {
-                    let max_delay = self.lower_expr(args[2]);
-                    let use_delay = self.ctx.ins().fle(delay, max_delay);
-                    delay = self.ctx.make_select(
-                        use_delay,
-                        |_ctx, branch| {
-                            if branch {
-                                delay
-                            } else {
-                                max_delay
-                            }
-                        },
-                    );
-                }
-                let delay_id = self.ctx.intern.absdelay.len() as u32;
-                self.ctx.intern.absdelay.push(source);
-                let time = self.ctx.use_param(ParamKind::Abstime);
-                let query_time = self.ctx.ins().fsub(time, delay);
-                self.ctx.call1(CallBackKind::QueryPastState(delay_id), &[query_time, source])
+                let delay = self.lower_expr(args[1]);
+                let max_delay = (signature == ABSDELAY_MAX).then(|| self.lower_expr(args[2]));
+
+                let source_pair = match self.ctx.dfg().value_def(source) {
+                    mir::ValueDef::Param(param) => {
+                        match self.ctx.intern.params.get_index(param).unwrap().0 {
+                            ParamKind::Voltage { hi, lo } => Some((*hi, *lo)),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                let input = if let Some((hi, lo)) = source_pair {
+                    crate::AbsDelayInput::Voltage { hi, lo }
+                } else {
+                    let (eq, x) = self.ctx.implicit_equation(ImplicitEquationKind::AbsDelayInput);
+                    let residual = self.ctx.ins().fsub(source, x);
+                    self.ctx.def_resist_residual(residual, eq);
+                    crate::AbsDelayInput::Internal(eq)
+                };
+
+                let (output, y) = self.ctx.implicit_equation(ImplicitEquationKind::AbsDelayOutput);
+                self.ctx.intern.absdelay.push(crate::AbsDelayInfo {
+                    input,
+                    output,
+                    delay,
+                    max_delay,
+                });
+                y
             }
             BuiltIn::transition => {
                 // `transition` accepts an integer or real first argument; the

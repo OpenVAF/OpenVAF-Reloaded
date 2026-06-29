@@ -171,7 +171,8 @@ jobs:
                   /System/*|/usr/lib/*|@*) continue ;;
                 esac
                 [ -f "$dep" ] || continue
-                cp -n "$dep" "dist/$PKG/lib/$(basename "$dep")"
+                dst="dist/$PKG/lib/$(basename "$dep")"
+                [ -e "$dst" ] || cp "$dep" "$dst"
               done
             done
           done

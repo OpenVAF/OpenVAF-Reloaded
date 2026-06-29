@@ -91,8 +91,6 @@ pub const DOMAIN_CONTINUOUS: u32 = 2;
 pub const NOISE_TYPE_WHITE: u32 = 0;
 pub const NOISE_TYPE_FLICKER: u32 = 1;
 pub const NOISE_TYPE_TABLE: u32 = 2;
-pub const MODULEFLAG_ABSTIME: u32 = 1;
-pub const MODULEFLAG_ABSDELAY: u32 = 2;
 
 pub struct OsdiLimFunction<'ll> {
     pub name: String,
@@ -140,8 +138,6 @@ impl OsdiTyBuilder<'_, '_, '_> {
             ctx.ty_ptr(),
             ctx.ty_ptr(),
             ctx.ty_int(),
-            ctx.ty_ptr(),
-            ctx.ty_ptr(),
         ];
         let ty = ctx.ty_struct("OsdiSimInfo", &fields);
         self.osdi_sim_info = Some(ty);
@@ -345,28 +341,36 @@ impl OsdiTyBuilder<'_, '_, '_> {
         self.osdi_noise_source = Some(ty);
     }
 }
-pub struct OsdiDelayDescriptor {
-    pub source_offset: u32,
-    pub flags: u32,
+pub struct OsdiAbsDelayInfo {
+    pub input_node_1: u32,
+    pub input_node_2: u32,
+    pub output_node: u32,
+    pub delay_offset: u32,
+    pub max_delay_offset: u32,
 }
-impl OsdiDelayDescriptor {
+impl OsdiAbsDelayInfo {
     pub fn to_ll_val<'ll>(
         &self,
         ctx: &CodegenCx<'_, 'll>,
         tys: &'ll OsdiTys,
     ) -> &'ll llvm_sys::LLVMValue {
-        let fields =
-            [ctx.const_unsigned_int(self.source_offset), ctx.const_unsigned_int(self.flags)];
-        let ty = tys.osdi_delay_descriptor;
+        let fields = [
+            ctx.const_unsigned_int(self.input_node_1),
+            ctx.const_unsigned_int(self.input_node_2),
+            ctx.const_unsigned_int(self.output_node),
+            ctx.const_unsigned_int(self.delay_offset),
+            ctx.const_unsigned_int(self.max_delay_offset),
+        ];
+        let ty = tys.osdi_abs_delay_info;
         ctx.const_struct(ty, &fields)
     }
 }
 impl OsdiTyBuilder<'_, '_, '_> {
-    fn osdi_delay_descriptor(&mut self) {
+    fn osdi_abs_delay_info(&mut self) {
         let ctx = self.ctx;
-        let fields = [ctx.ty_int(), ctx.ty_int()];
-        let ty = ctx.ty_struct("OsdiDelayDescriptor", &fields);
-        self.osdi_delay_descriptor = Some(ty);
+        let fields = [ctx.ty_int(), ctx.ty_int(), ctx.ty_int(), ctx.ty_int(), ctx.ty_int()];
+        let ty = ctx.ty_struct("OsdiAbsDelayInfo", &fields);
+        self.osdi_abs_delay_info = Some(ty);
     }
 }
 pub struct OsdiNatureRef {
@@ -443,9 +447,7 @@ pub struct OsdiDescriptor<'ll> {
     pub residual_nature: Vec<OsdiNatureRef>,
     pub noise_source_type: Vec<u32>,
     pub load_noise_params: &'ll llvm_sys::LLVMValue,
-    pub module_flags: u32,
-    pub num_delay: u32,
-    pub delay: Vec<OsdiDelayDescriptor>,
+    pub absdelay_info: Vec<OsdiAbsDelayInfo>,
 }
 impl<'ll> OsdiDescriptor<'ll> {
     pub fn to_ll_val(
@@ -463,7 +465,7 @@ impl<'ll> OsdiDescriptor<'ll> {
         let arr_47: Vec<_> = self.residual_nature.iter().map(|it| it.to_ll_val(ctx, tys)).collect();
         let arr_48: Vec<_> =
             self.noise_source_type.iter().map(|it| ctx.const_unsigned_int(*it)).collect();
-        let arr_52: Vec<_> = self.delay.iter().map(|it| it.to_ll_val(ctx, tys)).collect();
+        let arr_51: Vec<_> = self.absdelay_info.iter().map(|it| it.to_ll_val(ctx, tys)).collect();
         let fields = [
             ctx.const_str_uninterned(&self.name),
             ctx.const_unsigned_int(self.num_nodes),
@@ -515,9 +517,8 @@ impl<'ll> OsdiDescriptor<'ll> {
             ctx.const_arr_ptr(tys.osdi_nature_ref, &arr_47),
             ctx.const_arr_ptr(ctx.ty_int(), &arr_48),
             self.load_noise_params,
-            ctx.const_unsigned_int(self.module_flags),
-            ctx.const_unsigned_int(self.num_delay),
-            ctx.const_arr_ptr(tys.osdi_delay_descriptor, &arr_52),
+            ctx.const_unsigned_int(self.absdelay_info.len() as u32),
+            ctx.const_arr_ptr(tys.osdi_abs_delay_info, &arr_51),
         ];
         let ty = tys.osdi_descriptor;
         ctx.const_struct(ty, &fields)
@@ -577,7 +578,6 @@ impl OsdiTyBuilder<'_, '_, '_> {
             ctx.ty_ptr(),
             ctx.ty_ptr(),
             ctx.ty_ptr(),
-            ctx.ty_int(),
             ctx.ty_int(),
             ctx.ty_ptr(),
         ];
@@ -767,7 +767,7 @@ pub struct OsdiTys<'ll> {
     pub osdi_node: &'ll llvm_sys::LLVMType,
     pub osdi_param_opvar: &'ll llvm_sys::LLVMType,
     pub osdi_noise_source: &'ll llvm_sys::LLVMType,
-    pub osdi_delay_descriptor: &'ll llvm_sys::LLVMType,
+    pub osdi_abs_delay_info: &'ll llvm_sys::LLVMType,
     pub osdi_nature_ref: &'ll llvm_sys::LLVMType,
     pub osdi_descriptor: &'ll llvm_sys::LLVMType,
     pub osdi_nature: &'ll llvm_sys::LLVMType,
@@ -791,7 +791,7 @@ impl<'ll> OsdiTys<'ll> {
             osdi_node: None,
             osdi_param_opvar: None,
             osdi_noise_source: None,
-            osdi_delay_descriptor: None,
+            osdi_abs_delay_info: None,
             osdi_nature_ref: None,
             osdi_descriptor: None,
             osdi_nature: None,
@@ -810,7 +810,7 @@ impl<'ll> OsdiTys<'ll> {
         builder.osdi_node();
         builder.osdi_param_opvar();
         builder.osdi_noise_source();
-        builder.osdi_delay_descriptor();
+        builder.osdi_abs_delay_info();
         builder.osdi_nature_ref();
         builder.osdi_descriptor();
         builder.osdi_nature();
@@ -834,7 +834,7 @@ struct OsdiTyBuilder<'a, 'b, 'll> {
     osdi_node: Option<&'ll llvm_sys::LLVMType>,
     osdi_param_opvar: Option<&'ll llvm_sys::LLVMType>,
     osdi_noise_source: Option<&'ll llvm_sys::LLVMType>,
-    osdi_delay_descriptor: Option<&'ll llvm_sys::LLVMType>,
+    osdi_abs_delay_info: Option<&'ll llvm_sys::LLVMType>,
     osdi_nature_ref: Option<&'ll llvm_sys::LLVMType>,
     osdi_descriptor: Option<&'ll llvm_sys::LLVMType>,
     osdi_nature: Option<&'ll llvm_sys::LLVMType>,
@@ -856,7 +856,7 @@ impl<'ll> OsdiTyBuilder<'_, '_, 'll> {
             osdi_node: self.osdi_node.unwrap(),
             osdi_param_opvar: self.osdi_param_opvar.unwrap(),
             osdi_noise_source: self.osdi_noise_source.unwrap(),
-            osdi_delay_descriptor: self.osdi_delay_descriptor.unwrap(),
+            osdi_abs_delay_info: self.osdi_abs_delay_info.unwrap(),
             osdi_nature_ref: self.osdi_nature_ref.unwrap(),
             osdi_descriptor: self.osdi_descriptor.unwrap(),
             osdi_nature: self.osdi_nature.unwrap(),
