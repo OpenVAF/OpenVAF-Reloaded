@@ -5,7 +5,7 @@ use hir_def::db::HirDefDB;
 use hir_def::item_tree::diagnostics::ItemTreeDiagnosticWrapped;
 use hir_def::nameres::diagnostics::DefDiagnosticWrapped;
 use hir_def::nameres::{DefMap, LocalScopeId, ScopeDefItem, ScopeOrigin};
-use hir_def::DefWithBodyId;
+use hir_def::{DefWithBodyId, ModuleBodyKind};
 use hir_ty::diagnostics::InferenceDiagnosticWrapped;
 use hir_ty::validation::{
     self, BodyValidationDiagnostic, BodyValidationDiagnosticWrapped,
@@ -55,7 +55,7 @@ pub(crate) fn collect(db: &CompilationDB, root_file: FileId, sink: &mut impl Dia
             collect_body_diagnostcs(
                 db,
                 sink,
-                DefWithBodyId::ModuleId { initial: true, module },
+                DefWithBodyId::ModuleId { kind: ModuleBodyKind::AnalogInitial, module },
                 &parse,
                 &sm,
                 root_file,
@@ -64,7 +64,16 @@ pub(crate) fn collect(db: &CompilationDB, root_file: FileId, sink: &mut impl Dia
             collect_body_diagnostcs(
                 db,
                 sink,
-                DefWithBodyId::ModuleId { initial: false, module },
+                DefWithBodyId::ModuleId { kind: ModuleBodyKind::Analog, module },
+                &parse,
+                &sm,
+                root_file,
+                &ast_id_map,
+            );
+            collect_body_diagnostcs(
+                db,
+                sink,
+                DefWithBodyId::ModuleId { kind: ModuleBodyKind::Procedural, module },
                 &parse,
                 &sm,
                 root_file,

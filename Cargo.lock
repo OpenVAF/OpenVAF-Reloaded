@@ -811,6 +811,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "llvm-sys"
+version = "221.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2abcc34a3b190f03c2a61b555f218f529589ff13657bdd2ff8ac3e85f2abe6bb"
+dependencies = [
+ "anyhow",
+ "cc",
+ "lazy_static",
+ "libc",
+ "regex-lite",
+ "semver",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -962,6 +976,7 @@ dependencies = [
  "llvm-sys 191.1.0",
  "llvm-sys 201.0.1",
  "llvm-sys 211.0.1",
+ "llvm-sys 221.0.1",
  "log",
  "mir",
  "target",
@@ -1060,7 +1075,9 @@ dependencies = [
  "expect-test",
  "float-cmp",
  "hir",
+ "hir_lower",
  "indexmap 2.14.0",
+ "lasso",
  "libc",
  "libloading",
  "linker",
@@ -1068,8 +1085,11 @@ dependencies = [
  "llvm-sys 191.1.0",
  "llvm-sys 201.0.1",
  "llvm-sys 211.0.1",
+ "llvm-sys 221.0.1",
  "md5",
  "mini_harness",
+ "mir",
+ "mir_interpret",
  "mir_llvm",
  "osdi",
  "paths",
@@ -1078,6 +1098,7 @@ dependencies = [
  "target",
  "termcolor",
  "tokens",
+ "typed-index-collections",
 ]
 
 [[package]]
@@ -1127,6 +1148,7 @@ dependencies = [
  "llvm-sys 191.1.0",
  "llvm-sys 201.0.1",
  "llvm-sys 211.0.1",
+ "llvm-sys 221.0.1",
  "log",
  "mini_harness",
  "mir",
@@ -1654,6 +1676,7 @@ dependencies = [
  "llvm-sys 191.1.0",
  "llvm-sys 201.0.1",
  "llvm-sys 211.0.1",
+ "llvm-sys 221.0.1",
  "md5",
  "mir",
  "mir_autodiff",

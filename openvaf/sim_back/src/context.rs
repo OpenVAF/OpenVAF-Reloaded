@@ -308,7 +308,13 @@ impl<'a> Context<'a> {
                             | PlaceKind::LastCrossingOutput(..)
                     )
                 {
-                    self.output_values.insert(val.unwrap_unchecked());
+                    // The output value may be `None` if it was never materialized (e.g. a
+                    // `$bound_step()` whose value got eliminated). `unwrap_unchecked()` would
+                    // otherwise yield the reserved sentinel `Value(u32::MAX)` and blow up the
+                    // bitset insert (issue #10).
+                    if let Some(val) = val.expand() {
+                        self.output_values.insert(val);
+                    }
                 }
             }
         }

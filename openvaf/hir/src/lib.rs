@@ -22,8 +22,8 @@ pub use hir_def::nameres::diagnostics::PathResolveError;
 use hir_def::nameres::{DefMap, LocalScopeId, ScopeDefItem};
 use hir_def::{
     AliasParamId, BlockId, BlockLoc, BranchId, DefWithBodyId, DisciplineId, FunctionId,
-    LocalFunctionArgId, Lookup, ModuleId, ModuleLoc, NatureAttrId, NatureId, NodeId, ParamId,
-    VarId,
+    LocalFunctionArgId, Lookup, ModuleBodyKind, ModuleId, ModuleLoc, NatureAttrId, NatureId,
+    NodeId, ParamId, VarId,
 };
 pub use hir_def::{BuiltIn, Case, Literal, ParamSysFun, Path, Type};
 pub use hir_ty::builtin;
@@ -164,11 +164,20 @@ impl Module {
     }
 
     pub fn analog_initial_block(&self, db: &CompilationDB) -> Body {
-        Body::new(DefWithBodyId::ModuleId { initial: true, module: self.id }, db)
+        Body::new(
+            DefWithBodyId::ModuleId { kind: ModuleBodyKind::AnalogInitial, module: self.id },
+            db,
+        )
     }
 
     pub fn analog_block(&self, db: &CompilationDB) -> Body {
-        Body::new(DefWithBodyId::ModuleId { initial: false, module: self.id }, db)
+        Body::new(DefWithBodyId::ModuleId { kind: ModuleBodyKind::Analog, module: self.id }, db)
+    }
+
+    /// The imperative `initial`/`final` procedural body executed by the standalone
+    /// VerilogA runner (`openvaf-r run`). Empty for ordinary device models.
+    pub fn procedural_block(&self, db: &CompilationDB) -> Body {
+        Body::new(DefWithBodyId::ModuleId { kind: ModuleBodyKind::Procedural, module: self.id }, db)
     }
 
     // todo: just temporary for VAE, this needs to be cleaned up

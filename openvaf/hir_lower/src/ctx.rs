@@ -1,4 +1,4 @@
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 use hir::{CompilationDB, Node, Type, Variable};
 use mir::builder::{InsertBuilder, InstBuilder};
 use mir::{
@@ -32,7 +32,13 @@ pub struct LoweringCtx<'a, 'c> {
     pub num_slews: u32,
     /// Number of `last_crossing()` call sites with hidden state lowered so far
     pub num_last_crossings: u32,
+    pub retained_states: AHashMap<Variable, Vec<LimitState>>,
+    pub in_initial_step: bool,
 }
+
+/// Synthetic constant base used as the (non-parameter) `lim_state` key for retained
+/// `@(cross)` slots, chosen to not collide with ordinary integer literals.
+const RETAINED_STATE_KEY_BASE: i32 = 0x5E7A_0000;
 
 impl<'a, 'c> LoweringCtx<'a, 'c> {
     pub fn new(
@@ -53,6 +59,8 @@ impl<'a, 'c> LoweringCtx<'a, 'c> {
             num_noise_sources: 0,
             num_slews: 0,
             num_last_crossings: 0,
+            retained_states: AHashMap::default(),
+            in_initial_step: false,
         }
     }
 
@@ -99,6 +107,7 @@ impl<'a, 'c> LoweringCtx<'a, 'c> {
                 PlaceKind::LastCrossingOutput(i, slot) => {
                     self.use_param(ParamKind::HiddenState(HiddenStateKey::LastCrossing(i, slot)))
                 }
+                PlaceKind::VarElement(..) => F_ZERO,
                 PlaceKind::ImplicitResidual { .. } | PlaceKind::Contribute { .. } => F_ZERO,
                 PlaceKind::CollapseImplicitEquation(_) => TRUE,
                 PlaceKind::IsVoltageSrc(_) => FALSE,
@@ -240,6 +249,30 @@ impl<'a, 'c> LoweringCtx<'a, 'c> {
         debug_assert!(self.inside_lim);
         self.inside_lim = false;
         val
+    }
+
+    /// Allocate a limit-state slot used purely to retain a value across timesteps
+    /// (the latch state of an `@(cross)` variable). It reuses the limit state-array
+    /// machinery (`prev_state`/`next_state`) but is keyed on a synthetic constant and
+    /// marked retained, so the limit-specific passes skip it.
+    pub fn alloc_retained_state(&mut self) -> LimitState {
+        let idx = self.intern.lim_state.len() as i32;
+        let key = self.iconst(RETAINED_STATE_KEY_BASE.wrapping_add(idx));
+        let dst = self.intern.lim_state.raw.entry(key);
+        let state = LimitState::from(dst.index());
+        dst.or_default().push((F_ZERO, false));
+        self.intern.retained_lim_states.insert(state);
+        state
+    }
+
+    /// Read the value retained from the previous accepted timestep.
+    pub fn retained_prev(&mut self, state: LimitState) -> Value {
+        self.use_param(ParamKind::PrevState(state))
+    }
+
+    /// Store `val` as the retained value for the next timestep.
+    pub fn store_retained(&mut self, state: LimitState, val: Value) {
+        self.call1(CallBackKind::StoreLimit(state), &[val]);
     }
 
     pub fn implicit_equation(&mut self, kind: ImplicitEquationKind) -> (ImplicitEquation, Value) {

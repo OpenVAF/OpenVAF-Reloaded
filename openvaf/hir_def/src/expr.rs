@@ -87,6 +87,11 @@ pub enum Expr {
         args: Vec<ExprId>,
     },
     Array(Vec<ExprId>),
+    /// Array element / bus node access `base[index]`.
+    Index {
+        base: ExprId,
+        index: ExprId,
+    },
     Literal(Literal),
 }
 
@@ -105,6 +110,10 @@ impl Expr {
                 f(cond);
                 f(then_val);
                 f(else_val);
+            }
+            Expr::Index { base, index } => {
+                f(base);
+                f(index);
             }
             Expr::Call { args: ref exprs, .. } | Expr::Array(ref exprs) => {
                 for e in exprs {
@@ -149,7 +158,13 @@ pub enum GlobalEvent {
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
 #[non_exhaustive]
 pub enum Event {
-    Global { kind: GlobalEvent, phases: Vec<String> },
+    Global {
+        kind: GlobalEvent,
+        phases: Vec<String>,
+    },
+    /// A monitored analog event such as `@(cross(...))` / `@(timer(...))`. Variables
+    /// assigned inside its body are given cross-timestep retention during lowering.
+    Cross,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

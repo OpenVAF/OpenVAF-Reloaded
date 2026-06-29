@@ -5,10 +5,12 @@ const MODULE_ITEM_RECOVERY: TokenSet = DIRECTION_TS.union(TokenSet::new(&[
     NET_TYPE,
     ANALOG_KW,
     INITIAL_KW,
+    FINAL_KW,
     BRANCH_KW,
     STRING_KW,
     REAL_KW,
     INTEGER_KW,
+    GENVAR_KW,
     PARAMETER_KW,
     LOCALPARAM_KW,
     ENDMODULE_KW,
@@ -102,6 +104,17 @@ fn port_decl<const MODULE_HEAD: bool>(p: &mut Parser, m: Marker) {
         width_range(p);
     }
 
+    // Optional vectored/bus range, e.g. `input [0:3] in;` / `output [0:bits-1] out;`.
+    if p.at(T!['[']) {
+        let dim = p.start();
+        p.bump(T!['[']);
+        expr(p);
+        p.expect(T![:]);
+        expr(p);
+        p.expect(T![']']);
+        dim.complete(p, DIMENSION);
+    }
+
     if MODULE_HEAD {
         decl_list(p, T![')'], module_port, MODULE_PORT_RECOVERY);
     } else {
@@ -135,6 +148,13 @@ fn module_items(p: &mut Parser) {
                 stmt_with_attrs(p);
                 m.complete(p, ANALOG_BEHAVIOUR);
             }
+            // Standalone (non-analog) procedural blocks: `initial <stmt>` / `final <stmt>`.
+            // These are imperative blocks executed by the standalone VerilogA runner.
+            INITIAL_KW | FINAL_KW => {
+                p.bump_any();
+                stmt_with_attrs(p);
+                m.complete(p, PROCEDURAL_BLOCK);
+            }
             NET_TYPE => {
                 net_decl::<true>(p, m);
             }
@@ -154,6 +174,7 @@ fn module_items(p: &mut Parser) {
                 branch_decl(p, m);
             }
             INTEGER_KW | REAL_KW | STRING_KW => var_decl(p, m),
+            GENVAR_KW => genvar_decl(p, m),
             INPUT_KW | OUTPUT_KW | INOUT_KW => port_decl::<false>(p, m),
             _ => {
                 error_range = if let Some(error_range) = error_range {
@@ -169,6 +190,7 @@ fn module_items(p: &mut Parser) {
                         PORT_DECL,
                         NET_DECL,
                         ANALOG_BEHAVIOUR,
+                        PROCEDURAL_BLOCK,
                     ]);
                     p.error(err);
                     p.bump_any();
@@ -180,6 +202,13 @@ fn module_items(p: &mut Parser) {
             }
         }
     }
+}
+
+fn genvar_decl(p: &mut Parser, m: Marker) {
+    p.bump(GENVAR_KW);
+    decl_list(p, T![;], decl_name, MODULE_ITEM_OR_ATTR_RECOVERY);
+    p.eat(T![;]);
+    m.complete(p, GENVAR_DECL);
 }
 
 fn net_decl<const NET_TYPE_FIRST: bool>(p: &mut Parser, m: Marker) {

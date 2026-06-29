@@ -25,17 +25,37 @@ impl BodyLoweringCtx<'_, '_, '_> {
             {
                 self.lower_global_event(*kind, phases, body)
             }
-            Stmt::EventControl { body, .. } => {
-                // TODO handle porperly
+            Stmt::EventControl { event, body } => {
+                let previous = self.ctx.in_initial_step;
+                self.ctx.in_initial_step |= matches!(event, Event::Global { kind: GlobalEvent::InitialStep, .. });
                 self.lower_stmt(body);
+                self.ctx.in_initial_step = previous;
             }
             Stmt::Assignment { lhs, rhs } => {
+                // A retained variable's `@(initial_step)` reset is its initial value
+                // (already loaded from the retained state); skip it so it is not
+                // re-applied on every evaluation.
+                if self.ctx.in_initial_step {
+                    let retained = match &lhs {
+                        hir::AssignmentLhs::Variable(var)
+                        | hir::AssignmentLhs::ArrayElement { var, .. } => {
+                            self.ctx.retained_states.contains_key(var)
+                        }
+                        _ => false,
+                    };
+                    if retained {
+                        return;
+                    }
+                }
                 let val_ = self.lower_expr(rhs);
-                self.ctx.def_place(lhs.into(), val_);
+                match lhs {
+                    hir::AssignmentLhs::ArrayElement { var, index } => {
+                        self.assign_array_element(var, index, val_)
+                    }
+                    _ => self.ctx.def_place(lhs.into(), val_),
+                }
             }
-            Stmt::Contribute { kind, branch, rhs } => {
-                self.contribute(kind == ContributeKind::Potential, branch, rhs)
-            }
+            Stmt::Contribute { kind, branch, rhs } => self.contribute(kind == ContributeKind::Potential, branch, rhs),
             Stmt::IndirectContribute { kind, branch, constraint_lhs, constraint_rhs } => self
                 .indirect_contribute(
                     kind == ContributeKind::Potential,
@@ -173,6 +193,29 @@ impl BodyLoweringCtx<'_, '_, '_> {
 
         self.ctx.seal_block(end);
         self.ctx.switch_to_block(end);
+    }
+
+    /// Lower `arr[index] = val`. A constant index writes the element place directly;
+    /// a runtime index conditionally rewrites every element (`elem_i = (index==i) ?
+    /// val : elem_i`), keeping the array in pure SSA.
+    fn assign_array_element(&mut self, var: hir::Variable, index: ExprId, val: mir::Value) {
+        let len = self.array_len(var);
+        if len == 0 {
+            return;
+        }
+        if let Some(c) = self.body.as_literalint(&index) {
+            let c = (c.max(0) as u32).min(len - 1);
+            self.ctx.def_place(PlaceKind::VarElement(var, c), val);
+            return;
+        }
+        let idx_val = self.lower_expr(index);
+        for i in 0..len {
+            let current = self.ctx.use_place(PlaceKind::VarElement(var, i));
+            let i_const = self.ctx.iconst(i as i32);
+            let cond = self.ctx.ins().ieq(idx_val, i_const);
+            let new = self.ctx.make_select(cond, |_s, branch| if branch { val } else { current });
+            self.ctx.def_place(PlaceKind::VarElement(var, i), new);
+        }
     }
 
     fn lower_loop(&mut self, cond: ExprId, lower_body: impl FnOnce(&mut Self)) {

@@ -13,6 +13,9 @@ pub struct InterpreterState {
     vals: TiVec<Value, Data>,
     prev_bb: Block,
     next_inst: Option<Inst>,
+    /// Set by a callback (e.g. `$finish`/`$stop`/`$fatal` in the runner) to request
+    /// early termination of `run()` with the given process exit code.
+    exit: Option<i32>,
 }
 
 impl InterpreterState {
@@ -22,6 +25,19 @@ impl InterpreterState {
 
     pub fn read<T: From<Data>>(&self, val: Value) -> T {
         self.vals[val].into()
+    }
+
+    /// Request early termination of the interpreter with `code`. The first request
+    /// wins (mirrors `$finish` semantics — later tasks don't override it).
+    pub fn request_exit(&mut self, code: i32) {
+        if self.exit.is_none() {
+            self.exit = Some(code);
+        }
+    }
+
+    /// The requested exit code, if any.
+    pub fn exit_code(&self) -> Option<i32> {
+        self.exit
     }
 }
 
@@ -56,15 +72,23 @@ impl<'a> Interpreter<'a> {
         let entry =
             func.layout.entry_block().expect("Function without entry block can not be interpreted");
 
-        let state =
-            InterpreterState { vals, prev_bb: entry, next_inst: func.layout.first_inst(entry) };
+        let state = InterpreterState {
+            vals,
+            prev_bb: entry,
+            next_inst: func.layout.first_inst(entry),
+            exit: None,
+        };
 
         Interpreter { state, calls, func }
     }
 
     pub fn run(&mut self) {
         while let Some(inst) = self.state.next_inst {
-            self.eval(inst)
+            self.eval(inst);
+            // A callback (e.g. `$finish`/`$fatal`) may request early termination.
+            if self.state.exit.is_some() {
+                break;
+            }
         }
     }
 

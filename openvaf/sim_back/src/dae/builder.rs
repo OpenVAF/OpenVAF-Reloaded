@@ -224,6 +224,11 @@ impl<'a> Builder<'a> {
     ) {
         for residual in &mut self.system.residual {
             for (state, (unchanged, lim_vals)) in self.intern.lim_state.iter_enumerated() {
+                // Retained `@(cross)` slots reuse the state array but carry no limit
+                // function; they take no part in limit-rhs construction.
+                if self.intern.retained_lim_states.contains(&state) {
+                    continue;
+                }
                 for &(val, neg) in lim_vals {
                     let unknown = if let Some(unknown) = derivative_info.unknowns.index(&val) {
                         unknown

@@ -1,0 +1,72 @@
+param "$mfactor"
+units = "", desc = "Multiplier (Verilog-A $mfactor)", flags = ParameterFlags(PARA_KIND_INST)
+param "bits"
+units = "", desc = "", flags = ParameterFlags(PARA_TY_INT)
+param "fullscale"
+units = "", desc = "", flags = ParameterFlags(0x0)
+param "dly"
+units = "", desc = "", flags = ParameterFlags(PARA_TY_INT)
+param "ttime"
+units = "", desc = "", flags = ParameterFlags(0x0)
+
+10 terminals
+node "in" units = "V", runits = "A"
+node "clk" units = "V", runits = "A"
+node "out[0]" units = "V", runits = "A"
+node "out[1]" units = "V", runits = "A"
+node "out[2]" units = "V", runits = "A"
+node "out[3]" units = "V", runits = "A"
+node "out[4]" units = "V", runits = "A"
+node "out[5]" units = "V", runits = "A"
+node "out[6]" units = "V", runits = "A"
+node "out[7]" units = "V", runits = "A"
+node(flow) "flow(out[0])" units = "A", runits = "V"
+node(flow) "flow(out[1])" units = "A", runits = "V"
+node(flow) "flow(out[2])" units = "A", runits = "V"
+node(flow) "flow(out[3])" units = "A", runits = "V"
+node(flow) "flow(out[4])" units = "A", runits = "V"
+node(flow) "flow(out[5])" units = "A", runits = "V"
+node(flow) "flow(out[6])" units = "A", runits = "V"
+node(flow) "flow(out[7])" units = "A", runits = "V"
+node "implicit_equation_0" units = "", runits = ""
+node "implicit_equation_1" units = "", runits = ""
+node "implicit_equation_2" units = "", runits = ""
+node "implicit_equation_3" units = "", runits = ""
+node "implicit_equation_4" units = "", runits = ""
+node "implicit_equation_5" units = "", runits = ""
+node "implicit_equation_6" units = "", runits = ""
+node "implicit_equation_7" units = "", runits = ""
+jacobian (out[0], flow(out[0])) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (out[1], flow(out[1])) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (out[2], flow(out[2])) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (out[3], flow(out[3])) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (out[4], flow(out[4])) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (out[5], flow(out[5])) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (out[6], flow(out[6])) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (out[7], flow(out[7])) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out[0]), out[0]) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out[0]), implicit_equation_0) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out[1]), out[1]) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out[1]), implicit_equation_1) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out[2]), out[2]) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out[2]), implicit_equation_2) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out[3]), out[3]) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out[3]), implicit_equation_3) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out[4]), out[4]) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out[4]), implicit_equation_4) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out[5]), out[5]) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out[5]), implicit_equation_5) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out[6]), out[6]) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out[6]), implicit_equation_6) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out[7]), out[7]) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out[7]), implicit_equation_7) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (implicit_equation_0, implicit_equation_0) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (implicit_equation_1, implicit_equation_1) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (implicit_equation_2, implicit_equation_2) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (implicit_equation_3, implicit_equation_3) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (implicit_equation_4, implicit_equation_4) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (implicit_equation_5, implicit_equation_5) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (implicit_equation_6, implicit_equation_6) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (implicit_equation_7, implicit_equation_7) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT | JACOBIAN_ENTRY_REACT_CONST)
+10 states
+has bound_step false

@@ -95,7 +95,7 @@ impl Type {
 
     pub fn base_type(&self) -> &Type {
         let mut curr = self;
-        while let Type::Array { ty, .. } = self {
+        while let Type::Array { ty, .. } = curr {
             curr = ty
         }
         curr

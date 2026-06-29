@@ -1,0 +1,34 @@
+`include "disciplines.vams"
+
+// Exercises fixed-size array support: declaration, constant-index read/write,
+// and runtime-index (parameter-driven) read/write. The module behaves as a
+// linear conductance whose value is assembled entirely through array accesses,
+// so the loaded DAE residual/Jacobian directly reflect that the array lowering
+// computed the right number.
+//
+// With sel = 1 the conductance works out to:
+//   g = [1, 2, 4]            (constant-index writes)
+//   g[sel] = 8   -> g[1]=8   (runtime-index write)   => g = [1, 8, 4]
+//   gsum = g[0]+g[1]+g[2] = 13                        (constant-index reads)
+//   gx   = g[sel] = g[1] = 8                          (runtime-index read)
+//   G    = gsum + gx = 21
+module arrays(p, n);
+    inout p, n;
+    electrical p, n;
+
+    parameter integer sel = 1;
+
+    real g[0:2];
+    real gsum;
+    real gx;
+
+    analog begin
+        g[0] = 1.0;
+        g[1] = 2.0;
+        g[2] = 4.0;
+        g[sel] = 8.0;
+        gsum = g[0] + g[1] + g[2];
+        gx = g[sel];
+        I(p, n) <+ (gsum + gx) * V(p, n);
+    end
+endmodule

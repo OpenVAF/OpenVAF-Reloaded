@@ -185,6 +185,7 @@ impl<'a> BodyRef<'a> {
                 Expr::Call { fun, args }
             }
             hir_def::Expr::Array(ref args) => Expr::Array(args),
+            hir_def::Expr::Index { base, index } => Expr::Index { base, index },
             hir_def::Expr::Literal(ref literal) => Expr::Literal(literal),
             _ => panic!("invalid HIR: {:?}", self.body.exprs[expr]),
         }
@@ -233,6 +234,10 @@ impl<'a> BodyRef<'a> {
                     inference::AssignDst::Var(id) => {
                         Stmt::Assignment { lhs: AssignmentLhs::Variable(Variable { id }), rhs: val }
                     }
+                    inference::AssignDst::VarElement { var, index } => Stmt::Assignment {
+                        lhs: AssignmentLhs::ArrayElement { var: Variable { id: var }, index },
+                        rhs: val,
+                    },
                     inference::AssignDst::FunVar { fun, arg: None } => Stmt::Assignment {
                         lhs: AssignmentLhs::FunctionReturn(Function { id: fun }),
                         rhs: val,
@@ -272,6 +277,11 @@ pub enum AssignmentLhs {
     Variable(Variable),
     FunctionReturn(Function),
     FunctionArg(FunctionArg),
+    /// `arr[index] = …` — assignment to an array element.
+    ArrayElement {
+        var: Variable,
+        index: ExprId,
+    },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -339,11 +349,30 @@ impl Stmt<'_> {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Expr<'a> {
     Read(Ref),
-    BinaryOp { lhs: ExprId, rhs: ExprId, op: BinaryOp },
-    UnaryOp { expr: ExprId, op: UnaryOp },
-    Select { cond: ExprId, then_val: ExprId, else_val: ExprId },
-    Call { fun: ResolvedFun, args: &'a [ExprId] },
+    BinaryOp {
+        lhs: ExprId,
+        rhs: ExprId,
+        op: BinaryOp,
+    },
+    UnaryOp {
+        expr: ExprId,
+        op: UnaryOp,
+    },
+    Select {
+        cond: ExprId,
+        then_val: ExprId,
+        else_val: ExprId,
+    },
+    Call {
+        fun: ResolvedFun,
+        args: &'a [ExprId],
+    },
     Array(&'a [ExprId]),
+    /// Array element access `base[index]`.
+    Index {
+        base: ExprId,
+        index: ExprId,
+    },
     Literal(&'a Literal),
 }
 impl Expr<'_> {

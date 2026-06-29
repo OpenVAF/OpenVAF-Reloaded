@@ -1,5 +1,3 @@
-use std::fmt::Display;
-
 use hir::{Node, Parameter};
 use lasso::Spur;
 use mir::{FunctionSignature, Param};
@@ -17,7 +15,7 @@ pub enum ParamInfoKind {
     MaxExclusive,
 }
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub enum RetFlag {
     Abort,
     Finish,
@@ -119,7 +117,10 @@ impl CallBackKind {
                 name: format!("$store[{state:?}]"),
                 params: 1,
                 returns: 1,
-                has_sideeffects: false,
+                // Writing `next_state` is a side effect: when the stored value is not
+                // otherwise used (retained `@(cross)` state) the call must not be
+                // eliminated. The limit path still uses the return value as before.
+                has_sideeffects: true,
             },
             CallBackKind::LimDiscontinuity => FunctionSignature {
                 name: "$discontinuty[-1]".to_owned(),

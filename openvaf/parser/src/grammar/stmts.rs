@@ -60,21 +60,27 @@ fn assign_or_expr(p: &mut Parser) -> bool {
 fn event_stmt(p: &mut Parser, m: Marker) {
     p.bump(T![@]);
     p.expect(T!['(']);
-    p.expect_ts_r(
-        TokenSet::new(&[INITIAL_STEP_KW, FINAL_STEP_KW]),
-        TokenSet::new(&[T![')'], T!['(']]),
-    );
-    if p.eat(T!['(']) {
-        while !p.at_ts(TokenSet::new(&[T![')'], T![begin], ENDMODULE_KW])) {
-            let mut succ = p.expect(STR_LIT);
-            if !p.at(T![')']) {
-                succ |= p.expect_with(T![,], &[T![')'], T![,]]);
-                if !succ {
-                    p.bump_any()
+    if p.at_ts(TokenSet::new(&[INITIAL_STEP_KW, FINAL_STEP_KW])) {
+        // Global events: `@(initial_step)` / `@(final_step)` with optional sim phases.
+        p.bump_any();
+        if p.eat(T!['(']) {
+            while !p.at_ts(TokenSet::new(&[T![')'], T![begin], ENDMODULE_KW])) {
+                let mut succ = p.expect(STR_LIT);
+                if !p.at(T![')']) {
+                    succ |= p.expect_with(T![,], &[T![')'], T![,]]);
+                    if !succ {
+                        p.bump_any()
+                    }
                 }
             }
+            p.eat(T![')']);
         }
-        p.eat(T![')']);
+    } else {
+        // Monitored events: `@(cross(expr, dir, tol))`, `@(timer(...))`, ... parsed as
+        // a call expression. Currently the event condition is not used for scheduling
+        // (the guarded body is always evaluated, see hir_lower EventControl), so we
+        // only need to accept and consume it.
+        expr(p);
     }
     p.expect(T![')']);
     stmt_with_attrs(p);

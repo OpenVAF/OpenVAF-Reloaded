@@ -1,0 +1,21 @@
+`include "disciplines.vams"
+
+// Exercises `@(cross)` state retention across timesteps. `state` is assigned only
+// inside cross handlers, so it must hold its value between evaluations (a latch).
+// A rising crossing past 0.7 sets it; a falling crossing past 0.3 clears it; in
+// the 0.3..0.7 dead-band neither guard fires and the previous value is retained.
+//
+// The output drives q toward `state` (residual at q is V(q) - state), so reading
+// the q residual with V(q)=0 yields exactly -state -- a direct, retained readout.
+module cross_latch(d, q);
+    inout d, q;
+    electrical d, q;
+
+    integer state;
+
+    analog begin
+        @(cross(V(d) - 0.7, +1)) if (V(d) > 0.7) state = 1;
+        @(cross(V(d) - 0.3, -1)) if (V(d) < 0.3) state = 0;
+        I(q) <+ V(q) - state;
+    end
+endmodule
