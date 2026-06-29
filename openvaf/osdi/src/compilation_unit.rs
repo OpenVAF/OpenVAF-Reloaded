@@ -252,8 +252,7 @@ pub fn general_callbacks<'ll>(
                 | CallBackKind::NoiseTable(_)
                 | CallBackKind::WhiteNoise { .. }
                 | CallBackKind::FlickerNoise { .. }
-                | CallBackKind::TimeDerivative
-                | CallBackKind::QueryPastState(_) => return None,
+                | CallBackKind::TimeDerivative => return None,
 
                 CallBackKind::Print { kind, arg_tys } => {
                     let (fun, fun_ty) = print_callback(builder.cx, *kind, arg_tys);

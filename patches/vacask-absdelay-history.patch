@@ -1,62 +1,42 @@
-From 95fdaaf55f813e28ab51e5f938c4ba93ac71d89e Mon Sep 17 00:00:00 2001
-From: Kreijstal <rainb@tfwno.gf>
-Date: Sun, 28 Jun 2026 19:47:50 +0200
-Subject: [PATCH] Implement absdelay history
-
----
- include/osdi.h         | 14 +++++++-
- include/osdifile.h     |  1 +
- include/osdiinstance.h |  6 ++++
- lib/osdifile.cpp       |  6 ++++
- lib/osdiinstance.cpp   | 81 ++++++++++++++++++++++++++++++++++++++++++
- 5 files changed, 107 insertions(+), 1 deletion(-)
-
 diff --git a/include/osdi.h b/include/osdi.h
-index b927f2a..7867f82 100644
+index 544c7a2..a88428f 100644
 --- a/include/osdi.h
 +++ b/include/osdi.h
-@@ -80,6 +80,9 @@
+@@ -80,8 +80,6 @@
  #define NOISE_TYPE_FLICKER 1
  #define NOISE_TYPE_TABLE 2
  
-+#define MODULEFLAG_ABSTIME 1
-+#define MODULEFLAG_ABSDELAY 2
-+
+-#define MODULEFLAG_ABSTIME 1
+-
  typedef struct OsdiLimFunction {
    char *name;
    uint32_t num_args;
-@@ -100,6 +103,8 @@ typedef struct OsdiSimInfo {
-     double *prev_state;
-     double *next_state;
-     uint32_t flags;
-+    void *history_ctx;
-+    double (*query_past_state)(void *history_ctx, uint32_t delay_id, double time, double current_value);
- }OsdiSimInfo;
- 
- typedef union OsdiInitErrorPayload {
-@@ -153,6 +158,11 @@ typedef struct OsdiNoiseSource {
+@@ -155,6 +153,14 @@ typedef struct OsdiNoiseSource {
    OsdiNodePair nodes;
  }OsdiNoiseSource;
  
-+typedef struct OsdiDelayDescriptor {
-+  uint32_t source_offset;
-+  uint32_t flags;
-+}OsdiDelayDescriptor;
++typedef struct OsdiAbsDelayInfo {
++  uint32_t input_node_1;
++  uint32_t input_node_2;
++  uint32_t output_node;
++  uint32_t delay_offset;
++  uint32_t max_delay_offset;
++}OsdiAbsDelayInfo;
 +
  typedef struct OsdiNatureRef {
    uint32_t ref_type; 
    uint32_t index; 
-@@ -226,6 +236,9 @@ typedef struct OsdiDescriptor {
+@@ -228,7 +234,8 @@ typedef struct OsdiDescriptor {
    OsdiNatureRef* residual_nature;
    uint32_t *noise_source_type;
    void (*load_noise_params)(void *inst, void *model, double *power, double *exponent);
-+  uint32_t module_flags;
-+  uint32_t num_delay;
-+  OsdiDelayDescriptor *delay;
+-  uint32_t module_flags;
++  uint32_t absdelay_count;
++  const OsdiAbsDelayInfo *absdelay_info;
  }OsdiDescriptor;
  
  typedef struct OsdiNature {
-@@ -260,4 +273,3 @@ typedef struct OsdiAttribute {
+@@ -263,4 +270,3 @@ typedef struct OsdiAttribute {
    uint32_t value_type;
    OsdiAttributeValue value;
  }OsdiAttribute;
@@ -74,31 +54,56 @@ index 034fc60..0da24a8 100644
      Id deviceIdentifier(OsdiDeviceIndex index=0, Status& s=Status::ignore);
      OsdiDescriptor *deviceDescriptor(OsdiDeviceIndex index, Status& s=Status::ignore);
 diff --git a/include/osdiinstance.h b/include/osdiinstance.h
-index 5c0f272..ceae57d 100644
+index 5c0f272..201bf6f 100644
 --- a/include/osdiinstance.h
 +++ b/include/osdiinstance.h
-@@ -98,6 +98,8 @@ public:
+@@ -2,6 +2,7 @@
+ #define __OSDIINSTANCE_DEFINED
+ 
+ #include <string>
++#include <vector>
+ #include "status.h"
+ #include "osdimodel.h"
+ #include "devbase.h"
+@@ -98,6 +99,8 @@ public:
      bool outputBypassCheckCore(Circuit& circuit, CommonData& commons, EvalSetup& evalSetup);
      bool evalCore(Circuit& circuit, CommonData& commons, OsdiSimInfo& simInfo, EvalSetup& evalSetup);
      bool loadCore(Circuit& circuit, CommonData& commons, LoadSetup& loadSetup);
-+    void updateDelayHistory(double time);
-+    double queryPastState(uint32_t delayId, double time, double currentValue) const;
++    void evaluateAbsDelay(EvalSetup& evalSetup);
++    void loadAbsDelay(LoadSetup& loadSetup);
      
  protected:
      OsdiFile::OsdiCollapsedNodesIndex collapsedNodesPatternSize() const { return model()->device()->collapsedNodesPatternSize(); };
-@@ -127,6 +129,10 @@ private:
+@@ -120,10 +123,27 @@ protected:
+     OsdiFile::OsdiStateIndex* stateIndexTable() {
+         return getDataPtr<OsdiFile::OsdiStateIndex*>(core_, model()->device()->descriptor()->state_idx_off);
+     };
++    double nodeVoltage(OsdiFile::OsdiNodeIndex node, const double* solution) const;
++    uint32_t absDelayCount() const;
+     
+ private:
++    struct AbsDelayRuntime {
++        bool initialized {};
++        double currentTime {};
++        double currentInput {};
++        double currentOutput {};
++        double delayedInput {};
++        double inputDerivative {};
++        std::vector<double> times;
++        std::vector<double> values;
++        double* jacInput1 {};
++        double* jacInput2 {};
++        double* jacOutput {};
++    };
++
+     void* core_;
+     std::vector<Node*> nodes_;
++    std::vector<AbsDelayRuntime> absDelay_;
      TerminalIndex connectedTerminalCount;
      GlobalStorageIndex offsStates;
      GlobalStorageIndex offsDeviceStates;
-+    bool delayHistoryInitialized {false};
-+    double delayHistoryCurrentTime {0.0};
-+    std::vector<double> delayHistoryTimes;
-+    std::vector<std::vector<double>> delayHistoryValues;
- };
- 
- }
 diff --git a/lib/osdifile.cpp b/lib/osdifile.cpp
-index 1eb545b..a271116 100644
+index ea0de40..bdb085e 100644
 --- a/lib/osdifile.cpp
 +++ b/lib/osdifile.cpp
 @@ -1,4 +1,5 @@
@@ -107,136 +112,290 @@ index 1eb545b..a271116 100644
  #include "dynload.h"
  #include "osdicallback.h"
  #include "limitfunctions.h"
-@@ -189,11 +190,16 @@ OsdiFile::OsdiFile(void* handle_, std::string file_, Status& s)
+@@ -189,14 +190,17 @@ OsdiFile::OsdiFile(void* handle_, std::string file_, Status& s)
          OsdiDescriptor* desc = descriptors[i];
          // Check if device allows bypass. Bypass is not allowed if
          // - device uses $bound_step
-+        // - device uses absdelay history
-         // - device uses $abstime (TODO)
+-        // - device uses $abstime
++        // - device uses absdelay
          // - uses $discontinuity with an argument >=0 (not supported by OpenVAF)
          // - device sets breakpoints (not supported by OpenVAF)
-+        auto numDelay = descriptorSize >= offsetof(OsdiDescriptor, delay) + sizeof(OsdiDelayDescriptor*)
-+            ? desc->num_delay
-+            : 0;
-         allowsBypass_[i] = (
-             desc->bound_step_offset==UINT32_MAX
-+            && numDelay==0
-         );
- 
-         auto& translator = paramOsdiIdTranslators[i];
+         bool allowBypass = true;
+         if (desc->bound_step_offset!=UINT32_MAX) {
+             allowBypass = false;
+         }
+-        if (desc->module_flags & MODULEFLAG_ABSTIME) {
++        if (
++            descriptorSize >= offsetof(OsdiDescriptor, absdelay_info) + sizeof(OsdiAbsDelayInfo*) &&
++            desc->absdelay_count>0
++        ) {
+             allowBypass = false;
+         }
+         allowsBypass_[i] = allowBypass;
 diff --git a/lib/osdiinstance.cpp b/lib/osdiinstance.cpp
-index 81c84f7..2c35016 100644
+index 81c84f7..50cf421 100644
 --- a/lib/osdiinstance.cpp
 +++ b/lib/osdiinstance.cpp
-@@ -1,6 +1,8 @@
+@@ -1,6 +1,7 @@
  #include <cstring>
  #include <cstddef>
-+#include <cstdlib>
  #include <new>
 +#include <algorithm>
  #include "osdiinstance.h"
  #include "circuit.h"
  #include "simulator.h"
-@@ -10,6 +12,20 @@
+@@ -10,6 +11,11 @@
  
  namespace NAMESPACE {
  
-+static double osdiQueryPastState(void *ctx, uint32_t delayId, double time, double currentValue) {
-+    if (!ctx) {
-+        std::abort();
-+    }
-+    return static_cast<OsdiInstance*>(ctx)->queryPastState(delayId, time, currentValue);
-+}
-+
-+static uint32_t osdiDelayCount(const OsdiDevice *device) {
-+    if (device->file()->descriptorStructSize() < offsetof(OsdiDescriptor, delay) + sizeof(OsdiDelayDescriptor*)) {
-+        return 0;
-+    }
-+    return device->descriptor()->num_delay;
++static bool osdiHasAbsDelayInfo(const OsdiDevice *device) {
++    return device->file()->descriptorStructSize() >=
++        offsetof(OsdiDescriptor, absdelay_info) + sizeof(OsdiAbsDelayInfo*);
 +}
 +
  // TODO: check unconnected terminals handling, i.e. BJT with unconnected bulk
  //       how are unconnected terminals handled
  
-@@ -1128,6 +1144,68 @@ bool OsdiInstance::outputBypassCheckCore(Circuit& circuit, CommonData& commons,
+@@ -505,6 +511,28 @@ bool OsdiInstance::populateStructuresCore(Circuit& circuit, Status& s) {
+         }
+     }
+ 
++    auto numAbsDelay = absDelayCount();
++    absDelay_.resize(numAbsDelay);
++    if (numAbsDelay && descr->absdelay_info) {
++        for(uint32_t i=0; i<numAbsDelay; ++i) {
++            auto& delay = descr->absdelay_info[i];
++            auto output = nodes_[delay.output_node];
++            if (delay.input_node_1!=UINT32_MAX) {
++                if (auto [_, ok] = circuit.createJacobianEntry(output, nodes_[delay.input_node_1], EntryFlags::Resistive, s); !ok) {
++                    return false;
++                }
++            }
++            if (delay.input_node_2!=UINT32_MAX) {
++                if (auto [_, ok] = circuit.createJacobianEntry(output, nodes_[delay.input_node_2], EntryFlags::Resistive, s); !ok) {
++                    return false;
++                }
++            }
++            if (auto [_, ok] = circuit.createJacobianEntry(output, output, EntryFlags::Resistive, s); !ok) {
++                return false;
++            }
++        }
++    }
++
+     // Reserve internal states, store indices
+     auto internalStateCount = model()->device()->internalStateCount();
+     auto stateIndices = stateIndexTable();
+@@ -584,6 +612,40 @@ bool OsdiInstance::bindCore(
+             }
+         }
+     }
++
++    if (matResist && absDelayCount() && descr->absdelay_info) {
++        for(uint32_t i=0; i<absDelayCount(); ++i) {
++            auto& delay = descr->absdelay_info[i];
++            auto& runtime = absDelay_[i];
++            auto output = nodes_[delay.output_node]->unknownIndex();
++
++            runtime.jacInput1 = nullptr;
++            runtime.jacInput2 = nullptr;
++            runtime.jacOutput = nullptr;
++
++            if (delay.input_node_1!=UINT32_MAX) {
++                auto input1 = nodes_[delay.input_node_1]->unknownIndex();
++                runtime.jacInput1 = matResist->valuePtr(MatrixEntryPosition(output, input1), compResist, mepResist);
++                if (output && input1 && !runtime.jacInput1) {
++                    s.set(Status::BadConversion, "Matrix is of incorrect type.");
++                    return false;
++                }
++            }
++            if (delay.input_node_2!=UINT32_MAX) {
++                auto input2 = nodes_[delay.input_node_2]->unknownIndex();
++                runtime.jacInput2 = matResist->valuePtr(MatrixEntryPosition(output, input2), compResist, mepResist);
++                if (output && input2 && !runtime.jacInput2) {
++                    s.set(Status::BadConversion, "Matrix is of incorrect type.");
++                    return false;
++                }
++            }
++            runtime.jacOutput = matResist->valuePtr(MatrixEntryPosition(output, output), compResist, mepResist);
++            if (output && !runtime.jacOutput) {
++                s.set(Status::BadConversion, "Matrix is of incorrect type.");
++                return false;
++            }
++        }
++    }
+     return true;
+ }
+ 
+@@ -1128,6 +1190,155 @@ bool OsdiInstance::outputBypassCheckCore(Circuit& circuit, CommonData& commons,
      return converged;
  }
  
-+void OsdiInstance::updateDelayHistory(double time) {
-+    auto descr = model()->device()->descriptor();
-+    auto n = osdiDelayCount(model()->device());
-+    if (n == 0) {
-+        return;
++uint32_t OsdiInstance::absDelayCount() const {
++    auto device = model()->device();
++    if (!osdiHasAbsDelayInfo(device)) {
++        return 0;
 +    }
-+    if (!delayHistoryInitialized) {
-+        delayHistoryInitialized = true;
-+        delayHistoryCurrentTime = time;
-+        delayHistoryValues.assign(n, {});
-+        return;
-+    }
-+    if (time == delayHistoryCurrentTime) {
-+        return;
-+    }
-+
-+    delayHistoryTimes.push_back(delayHistoryCurrentTime);
-+    for (uint32_t i = 0; i < n; ++i) {
-+        auto source = getDataPtr<double*>(core_, descr->delay[i].source_offset);
-+        delayHistoryValues[i].push_back(*source);
-+    }
-+    delayHistoryCurrentTime = time;
++    return device->descriptor()->absdelay_count;
 +}
 +
-+double OsdiInstance::queryPastState(uint32_t delayId, double time, double currentValue) const {
++double OsdiInstance::nodeVoltage(OsdiFile::OsdiNodeIndex node, const double* solution) const {
++    if (node==UINT32_MAX) {
++        return 0.0;
++    }
++    auto u = nodes_[node]->unknownIndex();
++    return u ? solution[u] : 0.0;
++}
++
++void OsdiInstance::evaluateAbsDelay(EvalSetup& evalSetup) {
 +    auto descr = model()->device()->descriptor();
-+    if (delayId >= osdiDelayCount(model()->device()) || delayId >= delayHistoryValues.size()) {
-+        std::abort();
-+    }
-+    const auto& values = delayHistoryValues[delayId];
-+    if (delayHistoryTimes.empty() || values.empty()) {
-+        std::abort();
-+    }
-+    if (time < delayHistoryTimes.front()) {
-+        return values.front();
++    auto count = absDelayCount();
++    if (!count || !descr->absdelay_info) {
++        return;
 +    }
 +
-+    auto upper = std::lower_bound(delayHistoryTimes.begin(), delayHistoryTimes.end(), time);
-+    if (upper == delayHistoryTimes.begin()) {
-+        return values.front();
-+    }
-+    if (upper == delayHistoryTimes.end()) {
-+        auto lastTime = delayHistoryTimes.back();
-+        auto lastValue = values.back();
-+        if (time >= delayHistoryCurrentTime || delayHistoryCurrentTime <= lastTime) {
-+            return lastValue;
++    for(uint32_t i=0; i<count; ++i) {
++        auto& info = descr->absdelay_info[i];
++        auto& runtime = absDelay_[i];
++        auto input =
++            nodeVoltage(info.input_node_1, evalSetup.oldSolution) -
++            nodeVoltage(info.input_node_2, evalSetup.oldSolution);
++        runtime.currentOutput = nodeVoltage(info.output_node, evalSetup.oldSolution);
++
++        if (!runtime.initialized) {
++            runtime.initialized = true;
++            runtime.currentTime = evalSetup.time;
++            runtime.currentInput = input;
++        } else if (evalSetup.time != runtime.currentTime) {
++            runtime.times.push_back(runtime.currentTime);
++            runtime.values.push_back(runtime.currentInput);
++            runtime.currentTime = evalSetup.time;
 +        }
-+        auto frac = (time - lastTime) / (delayHistoryCurrentTime - lastTime);
-+        return lastValue + frac * (currentValue - lastValue);
++
++        runtime.currentInput = input;
++
++        double delay = 0.0;
++        if (info.delay_offset!=UINT32_MAX) {
++            delay = *getDataPtr<double*>(core(), info.delay_offset);
++        }
++        if (delay<0.0) {
++            delay = 0.0;
++        }
++
++        if (info.max_delay_offset!=UINT32_MAX) {
++            auto maxDelay = *getDataPtr<double*>(core(), info.max_delay_offset);
++            if (maxDelay>0.0 && !runtime.times.empty()) {
++                auto keepFrom = evalSetup.time - maxDelay;
++                auto firstKeep = std::lower_bound(runtime.times.begin(), runtime.times.end(), keepFrom);
++                if (firstKeep!=runtime.times.begin()) {
++                    auto eraseCount = static_cast<size_t>(firstKeep - runtime.times.begin());
++                    runtime.times.erase(runtime.times.begin(), firstKeep);
++                    runtime.values.erase(runtime.values.begin(), runtime.values.begin() + eraseCount);
++                }
++            }
++        }
++
++        auto targetTime = evalSetup.time - delay;
++        runtime.inputDerivative = 0.0;
++
++        if (delay==0.0 || targetTime>=evalSetup.time || runtime.times.empty()) {
++            runtime.delayedInput = input;
++            runtime.inputDerivative = 1.0;
++            continue;
++        }
++
++        if (targetTime<=runtime.times.front()) {
++            runtime.delayedInput = runtime.values.front();
++            continue;
++        }
++
++        auto upper = std::lower_bound(runtime.times.begin(), runtime.times.end(), targetTime);
++        if (upper==runtime.times.end()) {
++            auto last = runtime.times.size()-1;
++            auto t0 = runtime.times[last];
++            auto v0 = runtime.values[last];
++            if (evalSetup.time<=t0) {
++                runtime.delayedInput = v0;
++                continue;
++            }
++            auto fraction = (targetTime - t0) / (evalSetup.time - t0);
++            runtime.delayedInput = v0 + fraction * (input - v0);
++            runtime.inputDerivative = fraction;
++            continue;
++        }
++
++        auto hi = static_cast<size_t>(upper - runtime.times.begin());
++        if (hi==0) {
++            runtime.delayedInput = runtime.values.front();
++            continue;
++        }
++        auto lo = hi - 1;
++        auto t0 = runtime.times[lo];
++        auto t1 = runtime.times[hi];
++        if (t1<=t0) {
++            runtime.delayedInput = runtime.values[lo];
++            continue;
++        }
++        auto fraction = (targetTime - t0) / (t1 - t0);
++        runtime.delayedInput = runtime.values[lo] + fraction * (runtime.values[hi] - runtime.values[lo]);
++    }
++}
++
++void OsdiInstance::loadAbsDelay(LoadSetup& loadSetup) {
++    auto descr = model()->device()->descriptor();
++    auto count = absDelayCount();
++    if (!count || !descr->absdelay_info) {
++        return;
 +    }
 +
-+    auto hi = static_cast<size_t>(upper - delayHistoryTimes.begin());
-+    auto lo = hi - 1;
-+    auto t0 = delayHistoryTimes[lo];
-+    auto t1 = delayHistoryTimes[hi];
-+    if (t1 <= t0) {
-+        return values[lo];
++    for(uint32_t i=0; i<count; ++i) {
++        auto& info = descr->absdelay_info[i];
++        auto& runtime = absDelay_[i];
++        auto out = nodes_[info.output_node]->unknownIndex();
++        if (!out) {
++            continue;
++        }
++
++        double residual = runtime.delayedInput - runtime.currentOutput;
++        if (loadSetup.resistiveResidual) {
++            loadSetup.resistiveResidual[out] += residual;
++        }
++        if (loadSetup.maxResistiveResidualContribution) {
++            auto contrib = std::abs(residual);
++            if (contrib > loadSetup.maxResistiveResidualContribution[out]) {
++                loadSetup.maxResistiveResidualContribution[out] = contrib;
++            }
++        }
++        if (loadSetup.loadResistiveJacobian) {
++            if (runtime.jacInput1) {
++                *runtime.jacInput1 += runtime.inputDerivative;
++            }
++            if (runtime.jacInput2) {
++                *runtime.jacInput2 -= runtime.inputDerivative;
++            }
++            if (runtime.jacOutput) {
++                *runtime.jacOutput -= 1.0;
++            }
++        }
 +    }
-+    auto frac = (time - t0) / (t1 - t0);
-+    return values[lo] + frac * (values[hi] - values[lo]);
 +}
 +
  bool OsdiInstance::evalCore(Circuit& circuit, CommonData& commons, OsdiSimInfo& simInfo, EvalSetup& evalSetup) {
      // Get descriptor 
      auto model_ = model();
-@@ -1155,6 +1233,9 @@ bool OsdiInstance::evalCore(Circuit& circuit, CommonData& commons, OsdiSimInfo&
-     // Set beginning of state vector chunk belonging to this instance
-     simInfo.prev_state = evalSetup.oldStates + offsStates;
-     simInfo.next_state = evalSetup.newStates + offsStates;
-+    simInfo.history_ctx = this;
-+    simInfo.query_past_state = osdiQueryPastState;
-+    updateDelayHistory(evalSetup.time);
+@@ -1243,6 +1454,7 @@ bool OsdiInstance::evalCore(Circuit& circuit, CommonData& commons, OsdiSimInfo&
+         
+         // Core evaluation, need to call it always to compute bound step
+         auto evalFlags = descr->eval(&handle, core(), model_->core(), &simInfo);
++        evaluateAbsDelay(evalSetup);
+         
+         // if constexpr(devacct) {
+         //     device->tovh += Accounting::wclkDelta(td0);
+@@ -1456,6 +1668,8 @@ bool OsdiInstance::loadCore(Circuit& circuit, CommonData& commons, LoadSetup& lo
+         }
+     }
  
-     // Get bound step offset
-     auto bsOffs = descr->bound_step_offset;
--- 
-2.54.0
-
++    loadAbsDelay(loadSetup);
++
+     // Update maximal resistive residual contribution
+     if (loadSetup.maxResistiveResidualContribution) {
+         for(auto i : model()->device()->nonzeroResistiveResiduals()) {

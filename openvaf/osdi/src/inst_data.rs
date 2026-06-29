@@ -220,9 +220,15 @@ pub struct OsdiInstanceData<'ll> {
     pub residual: TiVec<SimUnknown, Residual>,
     pub noise: Vec<NoiseSource>,
     pub opvars: IndexMap<Variable, EvalOutput, BuildHasherDefault<FxHasher>>,
-    pub delay_sources: Vec<EvalOutputSlot>,
+    pub absdelay: Vec<AbsDelaySlots>,
     pub jacobian: TiVec<MatrixEntryId, MatrixEntry>,
     pub bound_step: Option<EvalOutputSlot>,
+}
+
+#[derive(Clone, Copy)]
+pub struct AbsDelaySlots {
+    pub delay: EvalOutputSlot,
+    pub max_delay: Option<EvalOutputSlot>,
 }
 
 impl<'ll> OsdiInstanceData<'ll> {
@@ -282,13 +288,18 @@ impl<'ll> OsdiInstanceData<'ll> {
             let slot = eval_outputs.insert_full(val, ty_f64).0;
             Some(slot)
         });
-        let delay_sources = module
+        let absdelay = module
             .intern
             .absdelay
             .iter()
-            .map(|&val| {
-                let val = strip_optbarrier(module.eval, val);
-                eval_outputs.insert_full(val, ty_f64).0
+            .map(|delay| {
+                let delay_val = strip_optbarrier(module.eval, delay.delay);
+                let delay_slot = eval_outputs.insert_full(delay_val, ty_f64).0;
+                let max_delay = delay.max_delay.map(|val| {
+                    let val = strip_optbarrier(module.eval, val);
+                    eval_outputs.insert_full(val, ty_f64).0
+                });
+                AbsDelaySlots { delay: delay_slot, max_delay }
             })
             .collect();
 
@@ -340,7 +351,7 @@ impl<'ll> OsdiInstanceData<'ll> {
             residual,
             noise,
             opvars,
-            delay_sources,
+            absdelay,
             jacobian,
             bound_step,
         }
@@ -361,15 +372,23 @@ impl<'ll> OsdiInstanceData<'ll> {
         Some(elem)
     }
 
-    pub fn delay_source_offsets(&self, target_data: &LLVMTargetDataRef) -> Vec<u32> {
-        self.delay_sources
+    pub fn absdelay_offsets(&self, target_data: &LLVMTargetDataRef) -> Vec<(u32, u32)> {
+        self.absdelay
             .iter()
-            .map(|&slot| unsafe {
-                LLVMOffsetOfElement(
+            .map(|slots| unsafe {
+                let delay = LLVMOffsetOfElement(
                     *target_data,
                     NonNull::from(self.ty).as_ptr(),
-                    self.eval_output_slot_elem(slot),
-                ) as u32
+                    self.eval_output_slot_elem(slots.delay),
+                ) as u32;
+                let max_delay = slots.max_delay.map_or(u32::MAX, |slot| {
+                    LLVMOffsetOfElement(
+                        *target_data,
+                        NonNull::from(self.ty).as_ptr(),
+                        self.eval_output_slot_elem(slot),
+                    ) as u32
+                });
+                (delay, max_delay)
             })
             .collect()
     }

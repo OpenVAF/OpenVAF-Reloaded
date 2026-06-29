@@ -9,9 +9,7 @@ use llvm_sys::core::{
 };
 use llvm_sys::LLVMIntPredicate::{LLVMIntNE, LLVMIntULT};
 use log::info;
-use mir_llvm::{
-    Builder, BuilderVal, BuiltCallbackFun, CallbackFun, InlineCallbackBuilder, MemLoc, UNNAMED,
-};
+use mir_llvm::{Builder, BuilderVal, BuiltCallbackFun, CallbackFun, MemLoc, UNNAMED};
 use sim_back::SimUnknownKind;
 use typed_index_collections::TiVec;
 
@@ -352,26 +350,6 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                         num_state: 0,
                     })
                 }
-                CallBackKind::QueryPastState(delay_id) => {
-                    let history_ctx = unsafe {
-                        let ptr = builder.struct_gep(sim_info_ty, sim_info, 6);
-                        builder.load(cx.ty_ptr(), ptr)
-                    };
-                    let query_fun = unsafe {
-                        let ptr = builder.struct_gep(sim_info_ty, sim_info, 7);
-                        builder.load(cx.ty_ptr(), ptr)
-                    };
-                    let fun_ty = cx.ty_func(
-                        &[cx.ty_ptr(), cx.ty_int(), cx.ty_double(), cx.ty_double()],
-                        cx.ty_double(),
-                    );
-                    CallbackFun::Prebuilt(BuiltCallbackFun {
-                        fun_ty,
-                        fun: query_fun,
-                        state: Box::new([history_ctx, cx.const_unsigned_int(delay_id)]),
-                        num_state: 0,
-                    })
-                }
                 _ => continue,
             };
             builder.callbacks[func] = Some(cb);
@@ -450,8 +428,11 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
             Self::build_store_results(&mut builder, llfunc, &flags, CALC_NOISE, &store_noise);
 
             inst_data.store_bound_step(instance, &builder);
-            for &slot in &inst_data.delay_sources {
-                inst_data.store_eval_output_slot(slot, instance, &builder);
+            for delay in &inst_data.absdelay {
+                inst_data.store_eval_output_slot(delay.delay, instance, &builder);
+                if let Some(max_delay) = delay.max_delay {
+                    inst_data.store_eval_output_slot(max_delay, instance, &builder);
+                }
             }
 
             builder.ret();

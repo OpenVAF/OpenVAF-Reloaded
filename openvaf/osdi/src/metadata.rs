@@ -3,8 +3,7 @@ use std::iter::once;
 
 use hir::{CompilationDB, ParamSysFun, Type};
 use hir_def::db::HirDefDB;
-use hir_def::ndatable::NDATable;
-use hir_lower::{CurrentKind, ParamKind};
+use hir_lower::CurrentKind;
 use lasso::{Rodeo, Spur};
 use llvm_sys::core::{
     LLVMConstArray2, LLVMConstInt, LLVMConstPtrToInt, LLVMGetArrayLength2, LLVMGetDataLayoutStr,
@@ -29,12 +28,12 @@ use crate::inst_data::{
 };
 use crate::load::JacobianLoadType;
 use crate::metadata::osdi_0_4::{
-    OsdiDelayDescriptor, OsdiDescriptor, OsdiJacobianEntry, OsdiNatureRef, OsdiNode, OsdiNodePair,
+    OsdiAbsDelayInfo, OsdiDescriptor, OsdiJacobianEntry, OsdiNatureRef, OsdiNode, OsdiNodePair,
     OsdiNoiseSource, OsdiParamOpvar, OsdiTys, JACOBIAN_ENTRY_REACT, JACOBIAN_ENTRY_REACT_CONST,
-    JACOBIAN_ENTRY_RESIST, JACOBIAN_ENTRY_RESIST_CONST, MODULEFLAG_ABSDELAY, MODULEFLAG_ABSTIME,
-    NATREF_DISCIPLINE_FLOW, NATREF_DISCIPLINE_POTENTIAL, NATREF_NONE, NOISE_TYPE_FLICKER,
-    NOISE_TYPE_TABLE, NOISE_TYPE_WHITE, PARA_KIND_INST, PARA_KIND_MODEL, PARA_KIND_OPVAR,
-    PARA_TY_INT, PARA_TY_REAL, PARA_TY_STR,
+    JACOBIAN_ENTRY_RESIST, JACOBIAN_ENTRY_RESIST_CONST, NATREF_DISCIPLINE_FLOW,
+    NATREF_DISCIPLINE_POTENTIAL, NATREF_NONE, NOISE_TYPE_FLICKER, NOISE_TYPE_TABLE,
+    NOISE_TYPE_WHITE, PARA_KIND_INST, PARA_KIND_MODEL, PARA_KIND_OPVAR, PARA_TY_INT, PARA_TY_REAL,
+    PARA_TY_STR,
 };
 use crate::ty_len;
 
@@ -401,21 +400,48 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                     .collect();
 
             let (uvec, rvec) = self.unknown_residual_natures(db);
-            let delay: Vec<_> = inst_data
-                .delay_source_offsets(target_data)
-                .into_iter()
-                .map(|source_offset| OsdiDelayDescriptor { source_offset, flags: 0 })
+            let absdelay_offsets = inst_data.absdelay_offsets(target_data);
+            let absdelay_info: Vec<_> = zip(&module.intern.absdelay, &absdelay_offsets)
+                .map(|(delay, &(delay_offset, max_delay_offset))| {
+                    let (input_node_1, input_node_2) = match delay.input {
+                        hir_lower::AbsDelayInput::Voltage { hi, lo } => {
+                            let hi = module
+                                .dae_system
+                                .unknowns
+                                .unwrap_index(&SimUnknownKind::KirchoffLaw(hi))
+                                .into();
+                            let lo = lo.map_or(u32::MAX, |lo| {
+                                module
+                                    .dae_system
+                                    .unknowns
+                                    .unwrap_index(&SimUnknownKind::KirchoffLaw(lo))
+                                    .into()
+                            });
+                            (hi, lo)
+                        }
+                        hir_lower::AbsDelayInput::Internal(eq) => {
+                            let input = module
+                                .dae_system
+                                .unknowns
+                                .unwrap_index(&SimUnknownKind::Implicit(eq))
+                                .into();
+                            (input, u32::MAX)
+                        }
+                    };
+                    let output_node = module
+                        .dae_system
+                        .unknowns
+                        .unwrap_index(&SimUnknownKind::Implicit(delay.output))
+                        .into();
+                    OsdiAbsDelayInfo {
+                        input_node_1,
+                        input_node_2,
+                        output_node,
+                        delay_offset,
+                        max_delay_offset,
+                    }
+                })
                 .collect();
-
-            let mut module_flags = 0u32;
-            module.intern.params.iter().for_each(|(p, _)| {
-                if let ParamKind::Abstime = p {
-                    module_flags |= MODULEFLAG_ABSTIME;
-                }
-            });
-            if !delay.is_empty() {
-                module_flags |= MODULEFLAG_ABSDELAY;
-            }
 
             OsdiDescriptor {
                 name: module.info.module.name(db),
@@ -473,9 +499,7 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                 residual_nature: rvec,
                 noise_source_type,
                 load_noise_params: self.load_noise_params(),
-                module_flags,
-                num_delay: delay.len() as u32,
-                delay,
+                absdelay_info,
             }
         }
     }

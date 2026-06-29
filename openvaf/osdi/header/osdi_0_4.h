@@ -80,9 +80,6 @@
 #define NOISE_TYPE_FLICKER 1
 #define NOISE_TYPE_TABLE 2
 
-#define MODULEFLAG_ABSTIME 1
-#define MODULEFLAG_ABSDELAY 2
-
 typedef struct OsdiLimFunction {
   char *name;
   uint32_t num_args;
@@ -103,8 +100,6 @@ typedef struct OsdiSimInfo {
     double *prev_state;
     double *next_state;
     uint32_t flags;
-    void *history_ctx;
-    double (*query_past_state)(void *history_ctx, uint32_t delay_id, double time, double current_value);
 }OsdiSimInfo;
 
 typedef union OsdiInitErrorPayload {
@@ -158,10 +153,13 @@ typedef struct OsdiNoiseSource {
   OsdiNodePair nodes;
 }OsdiNoiseSource;
 
-typedef struct OsdiDelayDescriptor {
-  uint32_t source_offset;
-  uint32_t flags;
-}OsdiDelayDescriptor;
+typedef struct OsdiAbsDelayInfo {
+  uint32_t input_node_1;
+  uint32_t input_node_2;
+  uint32_t output_node;
+  uint32_t delay_offset;
+  uint32_t max_delay_offset;
+}OsdiAbsDelayInfo;
 
 typedef struct OsdiNatureRef {
   uint32_t ref_type; 
@@ -236,9 +234,8 @@ typedef struct OsdiDescriptor {
   OsdiNatureRef* residual_nature;
   uint32_t *noise_source_type;
   void (*load_noise_params)(void *inst, void *model, double *power, double *exponent);
-  uint32_t module_flags;
-  uint32_t num_delay;
-  OsdiDelayDescriptor *delay;
+  uint32_t absdelay_count;
+  const OsdiAbsDelayInfo *absdelay_info;
 }OsdiDescriptor;
 
 typedef struct OsdiNature {
