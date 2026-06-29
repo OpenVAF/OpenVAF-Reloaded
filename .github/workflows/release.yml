@@ -1,0 +1,217 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  LLVM_VERSION: "21"
+  LLVM_ENV_VAR: LLVM_SYS_211_PREFIX
+  CARGO_FEATURES: --no-default-features --features llvm21
+  RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install LLVM and packaging tools
+        run: |
+          set -euo pipefail
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh "$LLVM_VERSION"
+          sudo apt-get update
+          sudo apt-get install -y build-essential "llvm-$LLVM_VERSION" "llvm-$LLVM_VERSION-dev" "libclang-$LLVM_VERSION-dev" patchelf
+
+      - name: Configure LLVM
+        run: |
+          {
+            echo "${LLVM_ENV_VAR}=/usr/lib/llvm-$LLVM_VERSION"
+            echo "PATH=/usr/lib/llvm-$LLVM_VERSION/bin:$PATH"
+          } >> "$GITHUB_ENV"
+
+      - name: Build openvaf-r
+        run: cargo build --release --package openvaf-driver $CARGO_FEATURES
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="openvaf-r-${RELEASE_TAG}-linux-x86_64"
+          mkdir -p "dist/$PKG/bin" "dist/$PKG/lib"
+          cp target/release/openvaf-r "dist/$PKG/bin/"
+          cp -a "$(llvm-config-"$LLVM_VERSION" --libdir)"/libLLVM*.so* "dist/$PKG/lib/"
+          patchelf --set-rpath '$ORIGIN/../lib' "dist/$PKG/bin/openvaf-r"
+          ldd "dist/$PKG/bin/openvaf-r"
+          tar -C dist -czf "$PKG.tar.gz" "$PKG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openvaf-r-linux-x86_64
+          path: "*.tar.gz"
+
+  windows-x86_64:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sys: UCRT64
+            artifact: windows-x86_64-ucrt
+          - sys: MINGW64
+            artifact: windows-x86_64-mingw
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.sys }}
+          update: true
+          install: base-devel git ca-certificates
+          pacboy: >-
+            openssl:p
+            clang:p
+            llvm:p
+            rust:p
+            cc:p
+            zip:p
+
+      - name: Configure Cargo to use CLI Git
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          {
+            echo "[net]"
+            echo "git-fetch-with-cli = true"
+          } > .cargo/config.toml
+
+      - name: Build openvaf-r
+        shell: msys2 {0}
+        run: cargo build --release --package openvaf-driver --features llvm21
+
+      - name: Package
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          PKG="openvaf-r-${RELEASE_TAG}-${{ matrix.artifact }}"
+          mkdir -p "dist/$PKG"
+          cp target/release/openvaf-r.exe "dist/$PKG/"
+          ldd target/release/openvaf-r.exe \
+            | awk '/mingw64|ucrt64/ {print $3}' \
+            | while read -r dll; do
+                [ -f "$dll" ] && cp -n "$dll" "dist/$PKG/"
+              done
+          (cd dist && zip -r "../$PKG.zip" "$PKG")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openvaf-r-${{ matrix.artifact }}
+          path: "*.zip"
+
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: macos-15-intel
+            artifact: macos-x86_64
+          - image: macos-15
+            artifact: macos-aarch64
+    runs-on: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install LLVM
+        uses: tecolicom/actions-use-homebrew-tools@v1
+        with:
+          tools: llvm
+          cache: yes
+
+      - name: Configure LLVM
+        run: |
+          LLVM_PREFIX="$(brew --prefix llvm)"
+          echo "LLVM_SYS_211_PREFIX=$LLVM_PREFIX" >> "$GITHUB_ENV"
+          echo "$LLVM_PREFIX/bin" >> "$GITHUB_PATH"
+
+      - name: Build openvaf-r
+        run: cargo build --release --package openvaf-driver --features llvm21
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="openvaf-r-${RELEASE_TAG}-${{ matrix.artifact }}"
+          mkdir -p "dist/$PKG/bin" "dist/$PKG/lib"
+          cp target/release/openvaf-r "dist/$PKG/bin/"
+          for _ in 1 2 3 4 5; do
+            for obj in "dist/$PKG/bin/openvaf-r" "dist/$PKG/lib/"*.dylib; do
+              [ -f "$obj" ] || continue
+              otool -L "$obj" | tail -n +2 | awk '{print $1}' | while read -r dep; do
+                case "$dep" in
+                  /System/*|/usr/lib/*|@*) continue ;;
+                esac
+                [ -f "$dep" ] || continue
+                cp -n "$dep" "dist/$PKG/lib/$(basename "$dep")"
+              done
+            done
+          done
+          chmod -R u+w "dist/$PKG"
+          for obj in "dist/$PKG/bin/openvaf-r" "dist/$PKG/lib/"*.dylib; do
+            [ -f "$obj" ] || continue
+            if [ "$obj" = "dist/$PKG/bin/openvaf-r" ]; then
+              prefix="@executable_path/../lib"
+            else
+              prefix="@loader_path"
+              install_name_tool -id "$prefix/$(basename "$obj")" "$obj" || true
+            fi
+            otool -L "$obj" | tail -n +2 | awk '{print $1}' | while read -r dep; do
+              base="$(basename "$dep")"
+              [ -f "dist/$PKG/lib/$base" ] || continue
+              install_name_tool -change "$dep" "$prefix/$base" "$obj" || true
+            done
+          done
+          otool -L "dist/$PKG/bin/openvaf-r"
+          tar -C dist -czf "$PKG.tar.gz" "$PKG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openvaf-r-${{ matrix.artifact }}
+          path: "*.tar.gz"
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [linux-x86_64, windows-x86_64, macos]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+          name: OpenVAF Reloaded ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+          generate_release_notes: true
+          files: artifacts/*
