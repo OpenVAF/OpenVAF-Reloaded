@@ -1,0 +1,28 @@
+`include "constants.vams"
+`include "disciplines.vams"
+
+// Verilog-AMS LRM 2.4 section 4.5.8, transition() Example 1 (QAM modulator).
+// Exercises vectored input ports declared bare in the head and ranged in the body
+// (`input [0:3] in; voltage [0:3] in;`), bus indexing `V(in[k])`, transition(), and
+// $abstime. Kept as a compile+load regression for vector ports.
+module qam16(in, out);
+    input [0:3] in;
+    output out;
+    voltage [0:3] in;
+    voltage out;
+    parameter real freq = 1.0 from (0:inf);
+    parameter real ampl = 1.0;
+    parameter real thresh = 2.5;
+    parameter real tdelay = 0 from [0:inf);
+    localparam real ttransit = 1/freq;
+    real x, y, phi;
+    integer row, col;
+    analog begin
+        row = 2 * (V(in[3]) > thresh) + (V(in[2]) > thresh);
+        col = 2 * (V(in[1]) > thresh) + (V(in[0]) > thresh);
+        x = transition(row - 1.5, tdelay, ttransit);
+        y = transition(col - 1.5, tdelay, ttransit);
+        phi = `M_TWO_PI * freq * $abstime;
+        V(out) <+ ampl * (x * cos(phi) + y * sin(phi));
+    end
+endmodule

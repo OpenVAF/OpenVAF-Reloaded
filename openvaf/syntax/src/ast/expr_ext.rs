@@ -366,6 +366,30 @@ impl ast::SelectExpr {
     }
 }
 
+impl ast::IndexExpr {
+    /// The indexed expression (e.g. the array/bus name in `den[k]`).
+    pub fn base(&self) -> Option<ast::Expr> {
+        support::children(self.syntax()).next()
+    }
+
+    /// The index expression (e.g. `k` in `den[k]`).
+    pub fn index(&self) -> Option<ast::Expr> {
+        support::children(self.syntax()).nth(1)
+    }
+}
+
+impl ast::Dimension {
+    /// The most-significant bound of `[msb:lsb]`.
+    pub fn msb(&self) -> Option<ast::Expr> {
+        support::children(self.syntax()).next()
+    }
+
+    /// The least-significant bound of `[msb:lsb]`.
+    pub fn lsb(&self) -> Option<ast::Expr> {
+        support::children(self.syntax()).nth(1)
+    }
+}
+
 pub enum AsssigmentOp {
     /// a variable assignment stmt
     /// lhs must be an identifier (example `I = V(a,c)/R;`)

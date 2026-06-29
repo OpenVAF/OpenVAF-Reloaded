@@ -1,0 +1,9 @@
+// Ideal op-amp via indirect branch assignment (Verilog-AMS LRM, issue #80).
+// `V(out):V(pin,nin) == 0` solves the output so the differential input is zero.
+`include "disciplines.vams"
+module opamp_indirect(out, pin, nin);
+    inout out, pin, nin;
+    electrical out, pin, nin;
+    analog
+        V(out) : V(pin,nin) == 0;
+endmodule

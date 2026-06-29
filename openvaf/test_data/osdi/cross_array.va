@@ -1,0 +1,25 @@
+`include "disciplines.vams"
+
+// Retained `@(cross)` ARRAY state: s[0]/s[1] are assigned only inside cross
+// handlers, so each element must hold its value across timesteps independently
+// (the ADC sampled-bit-vector pattern, minimal form). Residual at q0/q1 is
+// V(q) - s[k], so with V(q)=0 it reads back -s[0] / -s[1].
+module cross_array(d, q0, q1);
+    inout d, q0, q1;
+    electrical d, q0, q1;
+
+    integer s[0:1];
+
+    analog begin
+        @(cross(V(d) - 0.7, +1)) if (V(d) > 0.7) begin
+            s[0] = 1;
+            s[1] = 2;
+        end
+        @(cross(V(d) - 0.3, -1)) if (V(d) < 0.3) begin
+            s[0] = 0;
+            s[1] = 0;
+        end
+        I(q0) <+ V(q0) - s[0];
+        I(q1) <+ V(q1) - s[1];
+    end
+endmodule

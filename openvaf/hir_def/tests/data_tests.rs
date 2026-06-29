@@ -6,7 +6,7 @@ use basedb::{AbsPathBuf, BaseDB, BaseDatabase, FileId, Vfs, VfsEntry, VfsPath, V
 use expect_test::expect_file;
 use hir_def::db::{HirDefDB, HirDefDatabase, InternDatabase};
 use hir_def::nameres::{DefMap, LocalScopeId, ScopeDefItem, ScopeOrigin};
-use hir_def::DefWithBodyId;
+use hir_def::{DefWithBodyId, ModuleBodyKind};
 use mini_harness::{harness, Result};
 use parking_lot::RwLock;
 use stdx::{ignore_dev_tests, ignore_never, is_va_file, openvaf_test_data, project_root, Upcast};
@@ -108,7 +108,7 @@ fn body_test(file: &Path) -> Result {
     let mut actual = String::new();
     for (_, scope) in &def_map[def_map.entry()].children {
         if let ScopeOrigin::Module(module) = def_map[*scope].origin {
-            let analog_block = DefWithBodyId::ModuleId { initial: false, module };
+            let analog_block = DefWithBodyId::ModuleId { kind: ModuleBodyKind::Analog, module };
             actual.push_str(&db.body(analog_block).dump(&db));
             for (_, scope) in &def_map[*scope].children {
                 if let ScopeOrigin::Function(func) = def_map[*scope].origin {

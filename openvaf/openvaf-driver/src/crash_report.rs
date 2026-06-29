@@ -78,8 +78,8 @@ pub fn print_msg<P: AsRef<Path>>(file_path: Option<P>) -> io::Result<()> {
     writeln!(
         stderr,
         "\nA log file has been generated at \"{}\".
-To help us fix the problem, please open an issue at https://github.com/pascalkuthe/OpenVAF/
-or send an email to pascal.kuthe@semimod.de and attach the log file.
+To help us fix the problem, please open an issue at https://github.com/arpadbuermen/OpenVAF/
+and attach the log file.
 If possible please also attach the source file that OpenVAF was compiling.",
         match file_path {
             Some(fp) => format!("{}", fp.as_ref().display()),

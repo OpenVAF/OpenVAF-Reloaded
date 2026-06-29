@@ -7,6 +7,8 @@ extern crate llvm_sys_191 as llvm_sys;
 extern crate llvm_sys_201 as llvm_sys;
 #[cfg(feature = "llvm21")]
 extern crate llvm_sys_211 as llvm_sys;
+#[cfg(feature = "llvm22")]
+extern crate llvm_sys_221 as llvm_sys;
 
 use std::fs;
 use std::io::Write;
@@ -133,6 +135,9 @@ fn build_model(
 
     if full_compile {
         let (func, intern, mut literals, cfg) = build_module_mir(&db, &info);
+        if !intern.absdelay.is_empty() {
+            bail!("absdelay requires transient history; the VerilogAE stateless evaluator does not support it")
+        }
         let interned_model = info.intern_model(&db, &mut literals);
         let param_init = build_param_init_mir(&db, &info, &mut literals);
 

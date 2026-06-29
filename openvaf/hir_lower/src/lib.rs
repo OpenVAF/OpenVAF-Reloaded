@@ -45,6 +45,10 @@ pub enum ImplicitEquationKind {
     Ddt,
     NoiseSrc,
     Idt(IdtKind),
+    /// Auxiliary unknown introduced by an indirect branch assignment
+    /// (`V(out) : f(...) == 0`): the source value of the target branch, solved so the
+    /// constraint residual is zero.
+    IndirectBranch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -154,6 +158,9 @@ impl IdtKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PlaceKind {
     Var(Variable),
+    /// Element `idx` of a fixed-size array variable (compile-time array lowered to
+    /// one place per element).
+    VarElement(Variable, u32),
     FunctionReturn(hir::Function),
     FunctionArg(hir::FunctionArg),
     Contribute {
@@ -178,6 +185,10 @@ impl PlaceKind {
     pub fn ty(&self, db: &CompilationDB) -> Type {
         match *self {
             PlaceKind::Var(var) => var.ty(db),
+            PlaceKind::VarElement(var, _) => match var.ty(db) {
+                Type::Array { ty, .. } => *ty,
+                ty => ty,
+            },
             PlaceKind::FunctionReturn(fun) => fun.return_ty(db),
             PlaceKind::FunctionArg(arg) => arg.ty(db),
 
@@ -202,6 +213,9 @@ impl From<hir::AssignmentLhs> for PlaceKind {
             hir::AssignmentLhs::Variable(var) => PlaceKind::Var(var),
             hir::AssignmentLhs::FunctionReturn(fun) => PlaceKind::FunctionReturn(fun),
             hir::AssignmentLhs::FunctionArg(arg) => PlaceKind::FunctionArg(arg),
+            hir::AssignmentLhs::ArrayElement { .. } => {
+                unreachable!("array element assignment is lowered directly, not via PlaceKind")
+            }
         }
     }
 }
@@ -228,9 +242,15 @@ pub struct HirInterner {
     pub params: TiMap<Param, ParamKind, Value>,
     pub callbacks: TiSet<FuncRef, CallBackKind>,
     pub callback_uses: TiVec<FuncRef, Vec<Inst>>,
+    pub absdelay: Vec<Value>,
     pub tagged_reads: IndexMap<Value, Variable, BuildHasherDefault<FxHasher>>,
     pub implicit_equations: TiVec<ImplicitEquation, ImplicitEquationKind>,
     pub lim_state: TiMap<LimitState, Value, Vec<(Value, bool)>>,
+    /// Limit-state slots that actually back `@(cross)` retained variables (latch
+    /// state stored across timesteps). They reuse the limit state-array machinery
+    /// but carry no limit function, so the limit-specific derivative/value passes
+    /// must skip them.
+    pub retained_lim_states: ahash::AHashSet<LimitState>,
 }
 
 pub type LiveParams<'a> = FilterMap<
@@ -245,9 +265,11 @@ impl Default for HirInterner {
             params: TiMap::default(),
             callbacks: TiSet::default(),
             callback_uses: TiVec::default(),
+            absdelay: Vec::new(),
             tagged_reads: IndexMap::with_hasher(BuildHasherDefault::<FxHasher>::default()),
             implicit_equations: TiVec::default(),
             lim_state: TiMap::default(),
+            retained_lim_states: ahash::AHashSet::default(),
         }
     }
 }
@@ -319,7 +341,12 @@ impl HirInterner {
             }
         }
 
-        for (param, vals) in self.lim_state.iter() {
+        for (state, (param, vals)) in self.lim_state.iter_enumerated() {
+            // Retained `@(cross)` slots are not limited node voltages; their key is a
+            // synthetic constant, so skip the limit derivative handling for them.
+            if self.retained_lim_states.contains(&state) {
+                continue;
+            }
             for &(val, neg) in vals {
                 let param = func.dfg.value_def(*param).unwrap_param();
 
@@ -421,6 +448,9 @@ pub struct MirBuilder<'a> {
     tag_writes: bool,
     ctx: Option<&'a mut FunctionBuilderContext>,
     lower_equations: bool,
+    /// When set, lower the module's imperative `initial`/`final` procedural body
+    /// (the standalone runner lane) instead of the analog DAE bodies.
+    procedural: bool,
 }
 
 impl<'a> MirBuilder<'a> {
@@ -439,7 +469,15 @@ impl<'a> MirBuilder<'a> {
             ctx: None,
             lower_equations: false,
             tag_writes: false,
+            procedural: false,
         }
+    }
+
+    /// Lower the module's standalone `initial`/`final` procedural body instead of the
+    /// analog DAE bodies. Used by the VerilogA runner (`openvaf-r run`).
+    pub fn with_procedural(mut self) -> Self {
+        self.procedural = true;
+        self
     }
 
     pub fn tag_reads(&mut self, var: Variable) -> bool {
@@ -494,19 +532,29 @@ impl<'a> MirBuilder<'a> {
         let builder: FunctionBuilder<'_> =
             FunctionBuilder::new(&mut func, literals, ctx, self.tag_writes);
         let path = self.module.name(self.db);
-        let analog_initial_body = self.module.analog_initial_block(self.db);
-        let analog_body = self.module.analog_block(self.db);
 
         let mut ctx = LoweringCtx::new(self.db, builder, !self.lower_equations, &mut interner)
             .with_tagged_vars(self.tagged_reads);
-        let mut body_ctx =
-            BodyLoweringCtx { ctx: &mut ctx, body: analog_initial_body.borrow(), path: &path };
 
-        // lower analog initial blocks first
-        body_ctx.lower_entry_stmts();
-        // ... and normal analog blocks afterwards
-        body_ctx.body = analog_body.borrow();
-        body_ctx.lower_entry_stmts();
+        if self.procedural {
+            // Runner lane: lower only the imperative procedural body (all `initial`
+            // blocks in source order, then all `final` blocks). No analog/DAE bodies.
+            let procedural_body = self.module.procedural_block(self.db);
+            let mut body_ctx =
+                BodyLoweringCtx { ctx: &mut ctx, body: procedural_body.borrow(), path: &path };
+            body_ctx.lower_entry_stmts();
+        } else {
+            let analog_initial_body = self.module.analog_initial_block(self.db);
+            let analog_body = self.module.analog_block(self.db);
+            let mut body_ctx =
+                BodyLoweringCtx { ctx: &mut ctx, body: analog_initial_body.borrow(), path: &path };
+
+            // lower analog initial blocks first
+            body_ctx.lower_entry_stmts();
+            // ... and normal analog blocks afterwards
+            body_ctx.body = analog_body.borrow();
+            body_ctx.lower_entry_stmts();
+        }
 
         for var in self.required_vars {
             ctx.dec_place(PlaceKind::Var(var));

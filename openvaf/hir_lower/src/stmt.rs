@@ -1,9 +1,10 @@
-use hir::{BranchWrite, Case, CaseCond, ContributeKind, ExprId, Node, Stmt, StmtId, Type};
+use hir::{BranchWrite, Case, CaseCond, ContributeKind, Expr, ExprId, Node, Stmt, StmtId, Type};
 use mir::builder::InstBuilder;
-use mir::{Opcode, F_ZERO};
+use mir::{Opcode, Value, F_ZERO};
+use syntax::ast::BinaryOp;
 
 use crate::body::BodyLoweringCtx;
-use crate::{CallBackKind, CurrentKind, ParamKind, PlaceKind};
+use crate::{CallBackKind, CurrentKind, ImplicitEquationKind, ParamKind, PlaceKind};
 
 impl BodyLoweringCtx<'_, '_, '_> {
     pub(super) fn lower_stmt(&mut self, stmnt: StmtId) {
@@ -17,17 +18,50 @@ impl BodyLoweringCtx<'_, '_, '_> {
             Stmt::Expr(expr) => {
                 self.lower_expr(expr);
             }
-            Stmt::EventControl { body, .. } => {
-                // TODO handle porperly
-                self.lower_stmt(body);
+            Stmt::EventControl { event, body } => {
+                // Track `@(initial_step)` so resets of retained (`@cross`) variables
+                // inside it are treated as initial values (read from the retained
+                // state) rather than per-evaluation resets. Other events lower their
+                // body directly; their effect is gated by guards in the body.
+                if matches!(event, hir::Event::Global { kind: hir::GlobalEvent::InitialStep, .. }) {
+                    let prev = self.ctx.in_initial_step;
+                    self.ctx.in_initial_step = true;
+                    self.lower_stmt(body);
+                    self.ctx.in_initial_step = prev;
+                } else {
+                    self.lower_stmt(body);
+                }
             }
             Stmt::Assignment { lhs, rhs } => {
+                // A retained variable's `@(initial_step)` reset is its initial value
+                // (already loaded from the retained state); skip it so it is not
+                // re-applied on every evaluation.
+                if self.ctx.in_initial_step {
+                    let retained = match &lhs {
+                        hir::AssignmentLhs::Variable(var)
+                        | hir::AssignmentLhs::ArrayElement { var, .. } => {
+                            self.ctx.retained_states.contains_key(var)
+                        }
+                        _ => false,
+                    };
+                    if retained {
+                        return;
+                    }
+                }
                 let val_ = self.lower_expr(rhs);
-                self.ctx.def_place(lhs.into(), val_);
+                match lhs {
+                    hir::AssignmentLhs::ArrayElement { var, index } => {
+                        self.assign_array_element(var, index, val_)
+                    }
+                    _ => self.ctx.def_place(lhs.into(), val_),
+                }
             }
-            Stmt::Contribute { kind, branch, rhs } => {
-                self.contribute(kind == ContributeKind::Potential, branch, rhs)
-            }
+            Stmt::Contribute { kind, branch, rhs } => match kind {
+                ContributeKind::Potential => self.contribute(true, branch, rhs),
+                ContributeKind::Flow => self.contribute(false, branch, rhs),
+                ContributeKind::IndirectPotential => self.indirect_contribute(true, branch, rhs),
+                ContributeKind::IndirectFlow => self.indirect_contribute(false, branch, rhs),
+            },
 
             Stmt::Block { body } => {
                 for stmt in body {
@@ -119,6 +153,29 @@ impl BodyLoweringCtx<'_, '_, '_> {
         self.ctx.switch_to_block(end);
     }
 
+    /// Lower `arr[index] = val`. A constant index writes the element place directly;
+    /// a runtime index conditionally rewrites every element (`elem_i = (index==i) ?
+    /// val : elem_i`), keeping the array in pure SSA.
+    fn assign_array_element(&mut self, var: hir::Variable, index: ExprId, val: mir::Value) {
+        let len = self.array_len(var);
+        if len == 0 {
+            return;
+        }
+        if let Some(c) = self.body.as_literalint(&index) {
+            let c = (c.max(0) as u32).min(len - 1);
+            self.ctx.def_place(PlaceKind::VarElement(var, c), val);
+            return;
+        }
+        let idx_val = self.lower_expr(index);
+        for i in 0..len {
+            let current = self.ctx.use_place(PlaceKind::VarElement(var, i));
+            let i_const = self.ctx.iconst(i as i32);
+            let cond = self.ctx.ins().ieq(idx_val, i_const);
+            let new = self.ctx.make_select(cond, |_s, branch| if branch { val } else { current });
+            self.ctx.def_place(PlaceKind::VarElement(var, i), new);
+        }
+    }
+
     fn lower_loop(&mut self, cond: ExprId, lower_body: impl FnOnce(&mut Self)) {
         let loop_cond_head = self.ctx.create_block();
         let loop_body_head = self.ctx.create_block();
@@ -141,7 +198,22 @@ impl BodyLoweringCtx<'_, '_, '_> {
         self.ctx.switch_to_block(loop_end);
     }
 
-    fn contribute(&mut self, voltage_src: bool, mut write: BranchWrite, rhs: ExprId) {
+    fn contribute(&mut self, voltage_src: bool, write: BranchWrite, rhs: ExprId) {
+        let is_zero = self.body.get_expr(rhs).is_zero();
+        self.contribute_with(voltage_src, write, is_zero, |s| s.lower_expr(rhs));
+    }
+
+    /// Shared body of a branch contribution. `lower_rhs` is invoked to produce the
+    /// contributed value at the exact point the old direct lowering did, so ordinary
+    /// contributions keep byte-identical MIR; indirect assignments supply an
+    /// already-computed implicit unknown instead.
+    fn contribute_with(
+        &mut self,
+        voltage_src: bool,
+        mut write: BranchWrite,
+        rhs_is_zero: bool,
+        lower_rhs: impl FnOnce(&mut Self) -> Value,
+    ) {
         let mut negate = false;
         if let BranchWrite::Unnamed { hi, lo } = &mut write {
             self.lower_contribute_unnamed_branch(&mut negate, hi, lo, voltage_src)
@@ -149,8 +221,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
         self.ctx.def_place(PlaceKind::IsVoltageSrc(write), voltage_src.into());
 
         let (mut hi, mut lo) = write.nodes(self.ctx.db);
-        let is_zero = self.body.get_expr(rhs).is_zero();
-        if voltage_src && is_zero {
+        if voltage_src && rhs_is_zero {
             if matches!(write, BranchWrite::Named(_)) {
                 self.lower_contribute_unnamed_branch(&mut negate, &mut hi, &mut lo, voltage_src)
             }
@@ -163,7 +234,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
             F_ZERO,
         );
 
-        let rhs = self.lower_expr(rhs);
+        let rhs = lower_rhs(self);
         if rhs == F_ZERO {
             return;
         }
@@ -178,6 +249,49 @@ impl BodyLoweringCtx<'_, '_, '_> {
             self.ctx.ins().fadd(old, rhs)
         };
         self.ctx.def_place(place, new);
+    }
+
+    /// Lower an indirect branch assignment `V(out) : f(...) == 0` (or the `I(out)`
+    /// flow form). The target branch becomes a source whose value is a fresh implicit
+    /// unknown `u`; an auxiliary equation pins `u` so the constraint residual is zero.
+    /// This reuses exactly the implicit-equation/DAE machinery behind `idt`.
+    fn indirect_contribute(&mut self, voltage_src: bool, write: BranchWrite, constraint: ExprId) {
+        let (eq, unknown) = self.ctx.implicit_equation(ImplicitEquationKind::IndirectBranch);
+        // Drive the branch as a source whose value is the implicit unknown.
+        self.contribute_with(voltage_src, write, false, |_| unknown);
+        // Residual of the auxiliary equation: `lhs - rhs` of the `==` constraint (== 0).
+        let residual = self.lower_constraint_residual(constraint);
+        self.ctx.def_resist_residual(residual, eq);
+    }
+
+    /// Lower the constraint of an indirect branch assignment to its residual value.
+    /// The canonical form is `lhs == rhs`, whose residual is `lhs - rhs`; a bare
+    /// expression is treated leniently as `expr == 0`.
+    fn lower_constraint_residual(&mut self, constraint: ExprId) -> Value {
+        if let Expr::BinaryOp { lhs, rhs, op: BinaryOp::EqualityTest } =
+            self.body.get_expr(constraint)
+        {
+            let lhs = self.lower_real_operand(lhs);
+            let rhs = self.lower_real_operand(rhs);
+            self.ctx.ins().fsub(lhs, rhs)
+        } else {
+            self.lower_real_operand(constraint)
+        }
+    }
+
+    /// Lower an expression and coerce the result to `Real` (integer/bool constraint
+    /// operands are widened so the residual is a floating-point quantity).
+    fn lower_real_operand(&mut self, expr: ExprId) -> Value {
+        let val = self.lower_expr(expr);
+        let ty = match self.body.needs_cast(expr) {
+            Some((_, dst)) => dst.clone(),
+            None => self.body.expr_type(expr),
+        };
+        match ty {
+            Type::Real => val,
+            Type::Integer | Type::Bool => self.ctx.insert_cast(val, &ty, &Type::Real),
+            _ => val,
+        }
     }
 
     fn lower_contribute_unnamed_branch(

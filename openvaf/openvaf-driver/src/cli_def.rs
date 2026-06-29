@@ -38,6 +38,7 @@ pub fn main_command() -> Command {
             codegen_opts(),
             interface(),
             expand(),
+            run_mode(),
             dump_json(),
             input(),
         ])
@@ -64,6 +65,7 @@ pub const CACHE_DIR: &str = "cache-dir";
 pub const OPT_LVL: &str = "opt_lvl";
 pub const DEFINE: &str = "define";
 pub const PRINT_EXPANSION: &str = "print-expansion";
+pub const RUN: &str = "run";
 pub const DUMP_JSON: &str = "dump-json";
 pub const ALLOW: &str = "allow";
 pub const WARN: &str = "warn";
@@ -289,6 +291,14 @@ fn opt_lvl() -> Arg {
         .default_value("3").required(false)
 }
 
+fn run_mode() -> Arg {
+    flag(RUN, "run").help("Run the module's imperative initial/final procedural blocks.").long_help(
+        "Lower the module's standalone `initial`/`final` procedural blocks to MIR and
+interpret them, executing system tasks such as $display/$strobe/$finish.
+No shared library is produced and no circuit is simulated; this is the
+standalone VerilogA runner lane.",
+    )
+}
 fn expand() -> Arg {
     flag(PRINT_EXPANSION, "print-expansion")
         .help("Abort after preprocessing and print expanded sourcecode.")

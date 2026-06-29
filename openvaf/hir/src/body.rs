@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use hir_def::db::HirDefDB;
-pub use hir_def::expr::Event;
+pub use hir_def::expr::{Event, GlobalEvent};
 use hir_def::DefWithBodyId;
 pub use hir_def::{/*expr::CaseCond,*/ BuiltIn, Case, ExprId, Literal, ParamSysFun, StmtId, Type,};
 use hir_ty::db::HirTyDB;
@@ -167,6 +167,7 @@ impl<'a> BodyRef<'a> {
                 Expr::Call { fun, args }
             }
             hir_def::Expr::Array(ref args) => Expr::Array(args),
+            hir_def::Expr::Index { base, index } => Expr::Index { base, index },
             hir_def::Expr::Literal(ref literal) => Expr::Literal(literal),
             _ => panic!("invalid HIR: {:?}", self.body.exprs[expr]),
         }
@@ -187,11 +188,16 @@ impl<'a> BodyRef<'a> {
             hir_def::Stmt::EventControl { ref event, body } => {
                 Some(Stmt::EventControl { event, body })
             }
-            hir_def::Stmt::Assignment { val, .. } => {
+            hir_def::Stmt::Assignment { val, assignment_kind, .. } => {
+                let indirect = assignment_kind == syntax::ast::AssignOp::Indirect;
                 let stmt = match self.infere.assignment_destination[&stmnt] {
                     inference::AssignDst::Var(id) => {
                         Stmt::Assignment { lhs: AssignmentLhs::Variable(Variable { id }), rhs: val }
                     }
+                    inference::AssignDst::VarElement { var, index } => Stmt::Assignment {
+                        lhs: AssignmentLhs::ArrayElement { var: Variable { id: var }, index },
+                        rhs: val,
+                    },
                     inference::AssignDst::FunVar { fun, arg: None } => Stmt::Assignment {
                         lhs: AssignmentLhs::FunctionReturn(Function { id: fun }),
                         rhs: val,
@@ -201,12 +207,20 @@ impl<'a> BodyRef<'a> {
                         rhs: val,
                     },
                     inference::AssignDst::Flow(branch) => Stmt::Contribute {
-                        kind: ContributeKind::Flow,
+                        kind: if indirect {
+                            ContributeKind::IndirectFlow
+                        } else {
+                            ContributeKind::Flow
+                        },
                         branch: branch.into(),
                         rhs: val,
                     },
                     inference::AssignDst::Potential(branch) => Stmt::Contribute {
-                        kind: ContributeKind::Potential,
+                        kind: if indirect {
+                            ContributeKind::IndirectPotential
+                        } else {
+                            ContributeKind::Potential
+                        },
                         branch: branch.into(),
                         rhs: val,
                     },
@@ -231,12 +245,25 @@ pub enum AssignmentLhs {
     Variable(Variable),
     FunctionReturn(Function),
     FunctionArg(FunctionArg),
+    /// `arr[index] = …` — assignment to an array element.
+    ArrayElement {
+        var: Variable,
+        index: ExprId,
+    },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ContributeKind {
     Flow,
     Potential,
+    /// Indirect branch assignment `I(out) : f(...) == 0` — `out` becomes a current
+    /// source whose value is solved so the constraint `f == 0` holds. `rhs` is the
+    /// constraint equation.
+    IndirectFlow,
+    /// Indirect branch assignment `V(out) : f(...) == 0` — `out` becomes a voltage
+    /// source whose value is solved so the constraint `f == 0` holds. `rhs` is the
+    /// constraint equation.
+    IndirectPotential,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -265,11 +292,30 @@ impl Stmt<'_> {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Expr<'a> {
     Read(Ref),
-    BinaryOp { lhs: ExprId, rhs: ExprId, op: BinaryOp },
-    UnaryOp { expr: ExprId, op: UnaryOp },
-    Select { cond: ExprId, then_val: ExprId, else_val: ExprId },
-    Call { fun: ResolvedFun, args: &'a [ExprId] },
+    BinaryOp {
+        lhs: ExprId,
+        rhs: ExprId,
+        op: BinaryOp,
+    },
+    UnaryOp {
+        expr: ExprId,
+        op: UnaryOp,
+    },
+    Select {
+        cond: ExprId,
+        then_val: ExprId,
+        else_val: ExprId,
+    },
+    Call {
+        fun: ResolvedFun,
+        args: &'a [ExprId],
+    },
     Array(&'a [ExprId]),
+    /// Array element access `base[index]`.
+    Index {
+        base: ExprId,
+        index: ExprId,
+    },
     Literal(&'a Literal),
 }
 impl Expr<'_> {

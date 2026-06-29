@@ -101,7 +101,7 @@ fn atom_expr(p: &mut Parser) -> Option<CompletedMarker> {
 
     let done = match p.current() {
         T!['('] => paren_expr(p),
-        // T!["'{"] => array_expr(p), TODO properly implement arrays
+        T!["'{"] | T!['{'] => array_expr(p),
         T![~] | T![!] | T![-] | T![+] => {
             let m = p.start();
             p.bump_ts(TokenSet::new(&[T![~], T![!], T![-], T![+]]));
@@ -112,6 +112,10 @@ fn atom_expr(p: &mut Parser) -> Option<CompletedMarker> {
             let m = path(p);
             if p.at(T!('(')) {
                 call(p, m)
+            } else if p.at(T!['[']) {
+                // Index expression `base[index]` (array element or bus node access).
+                let base = m.precede(p).complete(p, PATH_EXPR);
+                index_expr(p, base)
             } else {
                 let m = m.precede(p);
                 m.complete(p, PATH_EXPR)
@@ -159,21 +163,29 @@ fn paren_expr(p: &mut Parser) -> CompletedMarker {
     m.complete(p, PAREN_EXPR)
 }
 
-// fn array_expr(p: &mut Parser) -> CompletedMarker {
-//     let m = p.start();
-//     p.bump(T!["'{"]);
-//     while !p.at(EOF) && !p.at(T![']']) {
-//         // test array_attrs
-//         // const A: &[i64] = &[1, #[cfg(test)] 2];
-//         if expr(p).is_none() {
-//             break;
-//         }
+/// `'{ e0, e1, ... }` (or plain `{ ... }`) array literal.
+fn array_expr(p: &mut Parser) -> CompletedMarker {
+    let m = p.start();
+    // Accept both the SystemVerilog-style `'{` and the plain `{` Verilog-A spelling.
+    p.bump_ts(TokenSet::new(&[T!["'{"], T!['{']]));
+    while !p.at(EOF) && !p.at(T!['}']) {
+        if expr(p).is_none() {
+            break;
+        }
+        if !p.at(T!['}']) && !p.expect(T![,]) {
+            break;
+        }
+    }
+    p.expect(T!['}']);
 
-//         if !p.at(T!['}']) && !p.expect(T![,]) {
-//             break;
-//         }
-//     }
-//     p.expect(T!['}']);
+    m.complete(p, ARRAY_EXPR)
+}
 
-//     m.complete(p, ARRAY_EXPR)
-// }
+/// `base[index]` — `base` is the already-parsed/completed base expression.
+fn index_expr(p: &mut Parser, base: CompletedMarker) -> CompletedMarker {
+    let m = base.precede(p);
+    p.bump(T!['[']);
+    expr(p);
+    p.expect(T![']']);
+    m.complete(p, INDEX_EXPR)
+}

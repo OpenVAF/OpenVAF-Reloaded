@@ -7,6 +7,7 @@ use basedb::lints::{Lint, LintSrc};
 use basedb::{AttrDiagnostic, LintAttrs};
 use lower::LowerCtx;
 use stdx::Ieee64;
+use syntax::name::AsName;
 use syntax::{ast, AstNode, AstPtr};
 
 use crate::db::HirDefDB;
@@ -14,7 +15,8 @@ use crate::item_tree::{DisciplineAttr, ItemTreeId, ItemTreeNode, NatureAttr};
 use crate::nameres::{DefMapSource, LocalScopeId};
 use crate::{
     DefWithBodyId, DisciplineAttrLoc, DisciplineLoc, Expr, ExprId, FunctionLoc, Literal, Lookup,
-    ModuleLoc, NatureAttrLoc, NatureLoc, ParamId, ParamLoc, ScopeId, Stmt, StmtId, Type, VarLoc,
+    ModuleBodyKind, ModuleLoc, NatureAttrLoc, NatureLoc, ParamId, ParamLoc, ScopeId, Stmt, StmtId,
+    Type, VarLoc,
 };
 
 mod lower;
@@ -67,7 +69,7 @@ impl Body {
                 let (body, sm, _) = db.param_body_with_sourcemap(param);
                 return (body, sm);
             }
-            DefWithBodyId::ModuleId { initial, module } => {
+            DefWithBodyId::ModuleId { kind, module } => {
                 let ModuleLoc { scope, id: item_tree } = module.lookup(db);
 
                 let ast_id = tree[item_tree].ast_id();
@@ -81,11 +83,39 @@ impl Body {
                     ast_id_map: &ast_id_map,
                     curr_scope,
                     registry: &registry,
+                    genvar_names: ast
+                        .module_items()
+                        .filter_map(|it| match it {
+                            ast::ModuleItem::GenvarDecl(g) => Some(g),
+                            _ => None,
+                        })
+                        .flat_map(|g| g.names().map(|n| n.as_name()))
+                        .collect(),
+                    bus_names: ast
+                        .module_items()
+                        .filter_map(|it| match it {
+                            ast::ModuleItem::NetDecl(net) if net.dimension().is_some() => Some(net),
+                            _ => None,
+                        })
+                        .flat_map(|net| net.names().map(|n| n.as_name()))
+                        .collect(),
+                    module: Some(ast.clone()),
+                    genvars: Vec::new(),
                 };
-                body.entry_stmts = if initial {
-                    ast.analog_initial_behaviour().map(|stmt| ctx.collect_stmt(stmt)).collect()
-                } else {
-                    ast.analog_behaviour().map(|stmt| ctx.collect_stmt(stmt)).collect()
+                body.entry_stmts = match kind {
+                    ModuleBodyKind::AnalogInitial => {
+                        ast.analog_initial_behaviour().map(|stmt| ctx.collect_stmt(stmt)).collect()
+                    }
+                    ModuleBodyKind::Analog => {
+                        ast.analog_behaviour().map(|stmt| ctx.collect_stmt(stmt)).collect()
+                    }
+                    // Procedural runner lane: all `initial` blocks (source order) then
+                    // all `final` blocks, as one imperative sequence.
+                    ModuleBodyKind::Procedural => ast
+                        .initial_behaviour()
+                        .chain(ast.final_behaviour())
+                        .map(|stmt| ctx.collect_stmt(stmt))
+                        .collect(),
                 };
             }
 
@@ -110,6 +140,10 @@ impl Body {
                     ast_id_map: &ast_id_map,
                     curr_scope,
                     registry: &registry,
+                    genvar_names: Vec::new(),
+                    bus_names: Vec::new(),
+                    module: None,
+                    genvars: Vec::new(),
                 };
                 body.entry_stmts = ast.body().map(|stmt| ctx.collect_stmt(stmt)).collect();
             }
@@ -127,15 +161,21 @@ impl Body {
                     ast_id_map: &ast_id_map,
                     curr_scope,
                     registry: &registry,
+                    genvar_names: Vec::new(),
+                    bus_names: Vec::new(),
+                    module: None,
+                    genvars: Vec::new(),
                 };
 
                 let expr = if let Some(expr) = ast.default() {
                     ctx.collect_expr(expr)
                 } else {
                     let default_val = match db.var_data(var).ty {
-                        Type::Real => Literal::Float(Ieee64::with_float(0.0)),
                         Type::Integer => Literal::Int(0),
-                        _ => unreachable!("invalid var type (TODO arrays)"),
+                        // Arrays have no scalar default (their elements are managed
+                        // per-element during lowering); use 0.0 as a placeholder.
+                        Type::Real | Type::Array { .. } => Literal::Float(Ieee64::with_float(0.0)),
+                        _ => unreachable!("invalid var type"),
                     };
                     ctx.alloc_expr_desugared(Expr::Literal(default_val))
                 };
@@ -160,6 +200,10 @@ impl Body {
                     ast_id_map: &ast_id_map,
                     curr_scope,
                     registry: &registry,
+                    genvar_names: Vec::new(),
+                    bus_names: Vec::new(),
+                    module: None,
+                    genvars: Vec::new(),
                 };
                 let expr = ctx.collect_opt_expr(ast.val());
                 let stmt = ctx.alloc_stmt_desugared(Stmt::Expr(expr));
@@ -182,6 +226,10 @@ impl Body {
                     ast_id_map: &ast_id_map,
                     curr_scope,
                     registry: &registry,
+                    genvar_names: Vec::new(),
+                    bus_names: Vec::new(),
+                    module: None,
+                    genvars: Vec::new(),
                 };
                 let expr = ctx.collect_opt_expr(ast.val());
                 let stmt = ctx.alloc_stmt_desugared(Stmt::Expr(expr));
@@ -216,6 +264,10 @@ impl Body {
             ast_id_map: &ast_id_map,
             curr_scope: (scope, ast_id.into()),
             registry: &registry,
+            genvar_names: Vec::new(),
+            bus_names: Vec::new(),
+            module: None,
+            genvars: Vec::new(),
         };
 
         let default = ctx.collect_opt_expr(ast.default());
