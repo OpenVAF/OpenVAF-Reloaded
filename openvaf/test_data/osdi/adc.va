@@ -1,0 +1,31 @@
+`include "constants.vams"
+`include "disciplines.vams"
+module adc(in, clk, out);
+    parameter bits = 8, fullscale = 1.0, dly = 0, ttime = 10n;
+    input in, clk;
+    output [0:bits-1] out;
+    electrical in, clk;
+    electrical [0:bits-1] out;
+    real sample, thresh;
+    integer result[0:bits-1];
+    genvar i;
+    analog begin
+        @(cross(V(clk)-2.5, +1)) begin
+            sample = V(in);
+            thresh = fullscale/2.0;
+            for (i = bits - 1; i >= 0; i = i - 1) begin
+                if (sample > thresh) begin
+                    result[i] = 1.0;
+                    sample = sample - thresh;
+                end
+                else begin
+                    result[i] = 0.0;
+                end
+                sample = 2.0*sample;
+            end
+        end
+        for (i = 0; i < bits; i = i + 1) begin
+            V(out[i]) <+ transition(result[i], dly, ttime);
+        end
+    end
+endmodule

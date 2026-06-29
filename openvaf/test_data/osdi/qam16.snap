@@ -1,0 +1,30 @@
+param "$mfactor"
+units = "", desc = "Multiplier (Verilog-A $mfactor)", flags = ParameterFlags(PARA_KIND_INST)
+param "freq"
+units = "", desc = "", flags = ParameterFlags(0x0)
+param "ampl"
+units = "", desc = "", flags = ParameterFlags(0x0)
+param "thresh"
+units = "", desc = "", flags = ParameterFlags(0x0)
+param "tdelay"
+units = "", desc = "", flags = ParameterFlags(0x0)
+param "ttransit"
+units = "", desc = "", flags = ParameterFlags(0x0)
+
+5 terminals
+node "in[0]" units = "V", runits = ""
+node "in[1]" units = "V", runits = ""
+node "in[2]" units = "V", runits = ""
+node "in[3]" units = "V", runits = ""
+node "out" units = "V", runits = ""
+node(flow) "flow(out)" units = "", runits = "V"
+node "implicit_equation_0" units = "", runits = ""
+node "implicit_equation_1" units = "", runits = ""
+jacobian (out, flow(out)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out), out) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out), implicit_equation_0) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out), implicit_equation_1) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (implicit_equation_0, implicit_equation_0) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (implicit_equation_1, implicit_equation_1) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT | JACOBIAN_ENTRY_REACT_CONST)
+0 states
+has bound_step false

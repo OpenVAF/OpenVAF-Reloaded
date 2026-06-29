@@ -2,12 +2,12 @@ use hir::builtin::{
     FLICKER_NOISE_NAME, NOISE_TABLE_FILE_NAME, NOISE_TABLE_INLINE_NAME, WHITE_NOISE_NAME,
 };
 use hir::signatures::{
-    ABS_INT, ABS_REAL, BOOL_EQ, DDX_POT, IDTMOD_IC, IDTMOD_IC_MODULUS, IDTMOD_IC_MODULUS_OFFSET,
-    IDTMOD_IC_MODULUS_OFFSET_NATURE, IDTMOD_IC_MODULUS_OFFSET_TOL, IDTMOD_NO_IC, IDT_IC,
-    IDT_IC_ASSERT, IDT_IC_ASSERT_NATURE, IDT_IC_ASSERT_TOL, IDT_NO_IC, INT_EQ, INT_OP,
-    LIMIT_BUILTIN_FUNCTION, MAX_INT, MAX_REAL, NATURE_ACCESS_BRANCH, NATURE_ACCESS_NODES,
-    NATURE_ACCESS_NODE_GND, NATURE_ACCESS_PORT_FLOW, REAL_EQ, REAL_OP, SIMPARAM_DEFAULT,
-    SIMPARAM_NO_DEFAULT, STR_EQ,
+    ABSDELAY_MAX, ABS_INT, ABS_REAL, BOOL_EQ, DDX_POT, IDTMOD_IC, IDTMOD_IC_MODULUS,
+    IDTMOD_IC_MODULUS_OFFSET, IDTMOD_IC_MODULUS_OFFSET_NATURE, IDTMOD_IC_MODULUS_OFFSET_TOL,
+    IDTMOD_NO_IC, IDT_IC, IDT_IC_ASSERT, IDT_IC_ASSERT_NATURE, IDT_IC_ASSERT_TOL, IDT_NO_IC,
+    INT_EQ, INT_OP, LIMIT_BUILTIN_FUNCTION, MAX_INT, MAX_REAL, NATURE_ACCESS_BRANCH,
+    NATURE_ACCESS_NODES, NATURE_ACCESS_NODE_GND, NATURE_ACCESS_PORT_FLOW, REAL_EQ, REAL_OP,
+    SIMPARAM_DEFAULT, SIMPARAM_NO_DEFAULT, STR_EQ,
 };
 use hir::{Body, BuiltIn, Expr, ExprId, Literal, /*ParamSysFun,*/ Ref, ResolvedFun, Type};
 use mir::builder::InstBuilder;
@@ -49,6 +49,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
 
                 self.ctx.ins().phi(&[then_src, else_src])
             }
+            Expr::Index { base, index } => self.lower_index(base, index),
             Expr::Call { args, fun } => match fun {
                 ResolvedFun::User { func, limit } => self.lower_user_fun(func, limit, args),
                 ResolvedFun::BuiltIn(builtin) => self.lower_builtin(expr, builtin, args),
@@ -258,6 +259,43 @@ impl BodyLoweringCtx<'_, '_, '_> {
         }
 
         self.ctx.use_place(PlaceKind::FunctionReturn(fun))
+    }
+
+    /// The number of elements of an array-typed variable (0 if not an array).
+    pub(crate) fn array_len(&self, var: hir::Variable) -> u32 {
+        match var.ty(self.ctx.db) {
+            Type::Array { len, .. } => len,
+            _ => 0,
+        }
+    }
+
+    /// Lower an array element read `base[index]`. A fixed-size array is one MIR place
+    /// per element; a constant index reads it directly, a runtime index builds a
+    /// select chain over all elements.
+    fn lower_index(&mut self, base: ExprId, index: ExprId) -> Value {
+        let var = match self.body.get_expr(base) {
+            Expr::Read(Ref::Variable(var)) => var,
+            // only array-variable indexing is supported
+            _ => return F_ZERO,
+        };
+        let len = self.array_len(var);
+        if len == 0 {
+            return F_ZERO;
+        }
+        if let Some(c) = self.body.as_literalint(&index) {
+            let c = (c.max(0) as u32).min(len - 1);
+            return self.ctx.use_place(PlaceKind::VarElement(var, c));
+        }
+        let idx_val = self.lower_expr(index);
+        let mut res = self.ctx.use_place(PlaceKind::VarElement(var, 0));
+        for i in 1..len {
+            let elem = self.ctx.use_place(PlaceKind::VarElement(var, i));
+            let i_const = self.ctx.iconst(i as i32);
+            let cond = self.ctx.ins().ieq(idx_val, i_const);
+            let prev = res;
+            res = self.ctx.make_select(cond, |_s, branch| if branch { elem } else { prev });
+        }
+        res
     }
 
     fn lower_builtin(&mut self, expr: ExprId, builtin: BuiltIn, args: &[ExprId]) -> Value {
@@ -530,6 +568,10 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 }
             }
 
+            // Without equation lowering (e.g. op-var contexts) a filter is a no-op.
+            BuiltIn::laplace_nd if self.ctx.no_equations => F_ZERO,
+            BuiltIn::laplace_nd => self.lower_laplace_nd(args),
+
             BuiltIn::idt => {
                 let kind = match_signature! {
                     signature:
@@ -689,36 +731,68 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 GRAVESTONE
             }
 
-            /* TODO: absdelay
             BuiltIn::absdelay => {
-                let arg = self.lower_expr(args[0]);
+                let source = self.lower_expr(args[0]);
+                if self.ctx.no_equations {
+                    return source;
+                }
                 let mut delay = self.lower_expr(args[1]);
-                let (eq1, res) = self.ctx.implicit_equation(ImplicitEquationKind::Absdelay);
-                let (eq2, intermediate) = self.ctx.implicit_equation(ImplicitEquationKind::Absdelay);
                 if signature == ABSDELAY_MAX {
                     let max_delay = self.lower_expr(args[2]);
                     let use_delay = self.ctx.ins().fle(delay, max_delay);
-                    delay = self.lower_select_with(use_delay, |_| delay, |_| max_delay);
-                } else {
-                    delay = self.ctx.call1(CallBackKind::StoreDelayTime(eq1), &[delay]);
+                    delay = self.ctx.make_select(
+                        use_delay,
+                        |_ctx, branch| {
+                            if branch {
+                                delay
+                            } else {
+                                max_delay
+                            }
+                        },
+                    );
                 }
-
-                let mut resist_val = self.ctx.ins().fsub(res, arg);
-                resist_val = self.ctx.ins().fdiv(resist_val, delay);
-                self.ctx.def_resist_residual(resist_val, eq1);
-                self.ctx.def_react_residual(intermediate, eq1);
-
-                let mut resist_val = self.ctx.ins().fsub(res, intermediate);
-                resist_val = self.ctx.ins().fdiv(resist_val, delay);
-                self.ctx.def_resist_residual(resist_val, eq2);
-                let react_val = self.ctx.ins().fdiv(res, F_THREE);
-                self.ctx.def_react_residual(react_val, eq2);
-
-                res
-            }*/
-            BuiltIn::slew | BuiltIn::transition | BuiltIn::limit | BuiltIn::absdelay => {
-                self.lower_expr(args[0])
+                let delay_id = self.ctx.intern.absdelay.len() as u32;
+                self.ctx.intern.absdelay.push(source);
+                let time = self.ctx.use_param(ParamKind::Abstime);
+                let query_time = self.ctx.ins().fsub(time, delay);
+                self.ctx.call1(CallBackKind::QueryPastState(delay_id), &[query_time, source])
             }
+            BuiltIn::transition => {
+                // `transition` accepts an integer or real first argument; the
+                // builtin signature types it as Real, so `lower_expr` already widens
+                // an integer/bool argument to Real for us (the operator returns Real).
+                let target = self.lower_expr(args[0]);
+                if self.ctx.no_equations {
+                    // No DAE context (AC/noise setup, op-vars): pass the target through.
+                    target
+                } else {
+                    // Continuous (slew-limited) realization. The ideal `transition` is a
+                    // piecewise-linear ramp from the old value to the new one over the
+                    // rise/fall time; emitting it as an instantaneous jump produces a
+                    // time discontinuity the transient integrator cannot step across
+                    // ("timestep too small"). We realize it as a first-order lag whose
+                    // time constant is the rise time when the target is increasing and
+                    // the fall time when decreasing — a continuous output the solver
+                    // integrates through, with the requested transition speed.
+                    let eps = self.ctx.fconst(1e-12);
+                    let rise = if args.len() > 2 { self.lower_expr(args[2]) } else { eps };
+                    let fall = if args.len() > 3 { self.lower_expr(args[3]) } else { rise };
+                    let (eq, x) =
+                        self.ctx.implicit_equation(ImplicitEquationKind::Idt(IdtKind::Basic));
+                    // tau = (target >= x) ? rise : fall, floored to eps to avoid /0.
+                    let rising = self.ctx.ins().fge(target, x);
+                    let tau = self.ctx.make_select(rising, |_s, b| if b { rise } else { fall });
+                    let tau_ok = self.ctx.ins().fge(tau, eps);
+                    let tau = self.ctx.make_select(tau_ok, |_s, b| if b { tau } else { eps });
+                    // dx/dt = (target - x)/tau  ->  react = x, resist = (x - target)/tau.
+                    let diff = self.ctx.ins().fsub(x, target);
+                    let resist = self.ctx.ins().fdiv(diff, tau);
+                    self.ctx.def_resist_residual(resist, eq);
+                    self.ctx.def_react_residual(x, eq);
+                    x
+                }
+            }
+            BuiltIn::slew | BuiltIn::limit => self.lower_expr(args[0]),
 
             _ => unreachable!(),
         }
@@ -784,6 +858,106 @@ impl BodyLoweringCtx<'_, '_, '_> {
         self.ctx.def_react_residual(residual[1], equation);
 
         val
+    }
+
+    /// Read the coefficient values of an array-valued argument (an array variable's
+    /// elements or an array literal's entries), lowest index first.
+    fn array_coeffs(&mut self, arg: ExprId) -> Vec<Value> {
+        // Laplace coefficients feed real-valued state-space arithmetic, but an
+        // anonymous array literal of integer constants (the LRM's own examples use
+        // `'{-1,0,1}`) lowers to integer values. Widen each coefficient to real so
+        // the residual math stays well-typed.
+        match self.body.get_expr(arg) {
+            Expr::Read(Ref::Variable(var)) => {
+                let len = self.array_len(var);
+                let elem_ty = match var.ty(self.ctx.db) {
+                    Type::Array { ty, .. } => *ty,
+                    other => other,
+                };
+                (0..len)
+                    .map(|i| {
+                        let v = self.ctx.use_place(PlaceKind::VarElement(var, i));
+                        self.coeff_to_real(v, &elem_ty)
+                    })
+                    .collect()
+            }
+            Expr::Array(elems) => elems
+                .iter()
+                .map(|&e| {
+                    let v = self.lower_expr(e);
+                    let ty = self.body.expr_type(e);
+                    self.coeff_to_real(v, &ty)
+                })
+                .collect(),
+            _ => {
+                let v = self.lower_expr(arg);
+                let ty = self.body.expr_type(arg);
+                vec![self.coeff_to_real(v, &ty)]
+            }
+        }
+    }
+
+    /// Widen an integer/bool coefficient value to real; reals pass through.
+    fn coeff_to_real(&mut self, v: Value, ty: &Type) -> Value {
+        match ty {
+            Type::Integer | Type::Bool => self.ctx.insert_cast(v, ty, &Type::Real),
+            _ => v,
+        }
+    }
+
+    /// Lower `laplace_nd(input, num, den)` (coefficients in ascending powers of `s`)
+    /// as a controllable-canonical-form state space using `den.len()-1` integrator
+    /// states (implicit equations), reusing the existing DAE machinery. Coefficients
+    /// may be runtime values.
+    fn lower_laplace_nd(&mut self, args: &[ExprId]) -> Value {
+        let input = self.lower_expr(args[0]);
+        let num = self.array_coeffs(args[1]);
+        let den = self.array_coeffs(args[2]);
+        let n = den.len().saturating_sub(1); // filter order
+        if n == 0 {
+            if num.is_empty() || den.is_empty() {
+                return input;
+            }
+            let g = self.ctx.ins().fdiv(num[0], den[0]);
+            return self.ctx.ins().fmul(g, input);
+        }
+
+        // States x_0..x_{n-1} with x_i = s^i w where D(s) w = input.
+        let mut states = Vec::with_capacity(n);
+        for _ in 0..n {
+            states.push(self.ctx.implicit_equation(ImplicitEquationKind::Idt(IdtKind::Basic)));
+        }
+
+        // dx_i/dt = x_{i+1} for i in 0..n-1.
+        for i in 0..n - 1 {
+            let eq = states[i].0;
+            let next = states[i + 1].1;
+            let neg = self.ctx.ins().fneg(next);
+            self.ctx.def_resist_residual(neg, eq);
+            self.ctx.def_react_residual(states[i].1, eq);
+        }
+
+        // dx_{n-1}/dt = (input - Σ_{i<n} den[i] x_i) / den[n].
+        let mut acc = input;
+        for i in 0..n {
+            let term = self.ctx.ins().fmul(den[i], states[i].1);
+            acc = self.ctx.ins().fsub(acc, term);
+        }
+        let rhs = self.ctx.ins().fdiv(acc, den[n]);
+        let (eq_last, x_last) = states[n - 1];
+        let neg = self.ctx.ins().fneg(rhs);
+        self.ctx.def_resist_residual(neg, eq_last);
+        self.ctx.def_react_residual(x_last, eq_last);
+
+        // y = Σ_k num[k] x_k.
+        let mut out = F_ZERO;
+        for (k, &nk) in num.iter().enumerate() {
+            if k < n {
+                let term = self.ctx.ins().fmul(nk, states[k].1);
+                out = self.ctx.ins().fadd(out, term);
+            }
+        }
+        out
     }
 
     pub fn resolved_ty(&self, expr: ExprId) -> Type {

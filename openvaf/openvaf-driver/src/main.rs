@@ -7,10 +7,10 @@ use camino::Utf8PathBuf;
 use clap::ArgMatches;
 use cli_def::{main_command, INPUT};
 use mimalloc::MiMalloc;
-use openvaf::{compile, expand, CompilationDestination, CompilationTermination, Opts};
+use openvaf::{compile, expand, run, CompilationDestination, CompilationTermination, Opts};
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
-use crate::cli_def::{DUMP_JSON, PRINT_EXPANSION};
+use crate::cli_def::{DUMP_JSON, PRINT_EXPANSION, RUN};
 use crate::cli_process::matches_to_opts;
 
 mod cli_def;
@@ -61,8 +61,14 @@ pub const DATA_ERROR: i32 = 65;
 fn wrapped_main(matches: ArgMatches) -> Result<i32> {
     let print_expansion = matches.get_flag(PRINT_EXPANSION);
     let dump_json_ = matches.get_flag(DUMP_JSON);
+    let run_mode = matches.get_flag(RUN);
     let opts = matches_to_opts(matches)?;
     *ARGS.lock().unwrap() = Some(opts.clone());
+    if run_mode {
+        // Standalone VerilogA runner: interpret the procedural blocks and propagate
+        // the program's own exit code (e.g. from $finish/$fatal).
+        return run(&opts);
+    }
     if print_expansion {
         let res = match expand(&opts)? {
             CompilationTermination::Compiled { .. } => 0,

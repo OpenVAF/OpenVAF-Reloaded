@@ -405,10 +405,21 @@ impl NatureAttrLoc {
 
 impl_intern!(NatureAttrId, NatureAttrLoc, intern_nature_attr, lookup_intern_nature_attr);
 
+/// Which behavioural body of a module is being lowered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModuleBodyKind {
+    /// `analog` block (the DAE device behaviour).
+    Analog,
+    /// `analog initial` block.
+    AnalogInitial,
+    /// Standalone `initial`/`final` procedural blocks (imperative runner lane).
+    Procedural,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DefWithBodyId {
     ParamId(ParamId),
-    ModuleId { initial: bool, module: ModuleId },
+    ModuleId { kind: ModuleBodyKind, module: ModuleId },
     FunctionId(FunctionId),
     VarId(VarId),
     NatureAttrId(NatureAttrId),

@@ -1,4 +1,4 @@
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 use hir::{CompilationDB, Node, Type, Variable};
 use mir::builder::{InsertBuilder, InstBuilder};
 use mir::{
@@ -25,7 +25,21 @@ pub struct LoweringCtx<'a, 'c> {
     /// but necessary to avoid accidental correlation/opimization.
     /// For example white_noise(x) - white_noise(x) is not zero.
     pub num_noise_sources: u32,
+    /// Variables assigned inside `@(cross)` handlers, each mapped to the limit-state
+    /// slot that stores its value across timesteps (latch / event retention).
+    /// Variables assigned inside `@(cross)` handlers that must retain their value
+    /// across timesteps. Each is backed by one retained limit-state slot per scalar,
+    /// or one per element for an array variable (in element order).
+    pub retained_states: AHashMap<Variable, Vec<LimitState>>,
+    /// True while lowering an `@(initial_step)` body: resets of retained variables
+    /// there are their initial value (read from the retained state), not a
+    /// per-evaluation reset.
+    pub in_initial_step: bool,
 }
+
+/// Synthetic constant base used as the (non-parameter) `lim_state` key for retained
+/// `@(cross)` slots, chosen to not collide with ordinary integer literals.
+const RETAINED_STATE_KEY_BASE: i32 = 0x5E7A_0000;
 
 impl<'a, 'c> LoweringCtx<'a, 'c> {
     pub fn new(
@@ -43,6 +57,8 @@ impl<'a, 'c> LoweringCtx<'a, 'c> {
             inside_lim: false,
             intern,
             num_noise_sources: 0,
+            retained_states: AHashMap::default(),
+            in_initial_step: false,
         }
     }
 
@@ -80,6 +96,9 @@ impl<'a, 'c> LoweringCtx<'a, 'c> {
                 | PlaceKind::ParamMax(_) => return place,
 
                 PlaceKind::Var(var) => self.use_param(ParamKind::HiddenState(var)),
+                // Array elements default to 0 (typically written before read in the
+                // initial block; a per-element HiddenState would be more precise).
+                PlaceKind::VarElement(..) => F_ZERO,
                 PlaceKind::ImplicitResidual { .. } | PlaceKind::Contribute { .. } => F_ZERO,
                 PlaceKind::CollapseImplicitEquation(_) => TRUE,
                 PlaceKind::IsVoltageSrc(_) => FALSE,
@@ -218,6 +237,30 @@ impl<'a, 'c> LoweringCtx<'a, 'c> {
         debug_assert!(self.inside_lim);
         self.inside_lim = false;
         val
+    }
+
+    /// Allocate a limit-state slot used purely to retain a value across timesteps
+    /// (the latch state of an `@(cross)` variable). It reuses the limit state-array
+    /// machinery (`prev_state`/`next_state`) but is keyed on a synthetic constant and
+    /// marked retained, so the limit-specific passes skip it.
+    pub fn alloc_retained_state(&mut self) -> LimitState {
+        let idx = self.intern.lim_state.len() as i32;
+        let key = self.iconst(RETAINED_STATE_KEY_BASE.wrapping_add(idx));
+        let dst = self.intern.lim_state.raw.entry(key);
+        let state = LimitState::from(dst.index());
+        dst.or_default().push((F_ZERO, false));
+        self.intern.retained_lim_states.insert(state);
+        state
+    }
+
+    /// Read the value retained from the previous accepted timestep.
+    pub fn retained_prev(&mut self, state: LimitState) -> Value {
+        self.use_param(ParamKind::PrevState(state))
+    }
+
+    /// Store `val` as the retained value for the next timestep.
+    pub fn store_retained(&mut self, state: LimitState, val: Value) {
+        self.call1(CallBackKind::StoreLimit(state), &[val]);
     }
 
     pub fn implicit_equation(&mut self, kind: ImplicitEquationKind) -> (ImplicitEquation, Value) {

@@ -1,0 +1,242 @@
+From 95fdaaf55f813e28ab51e5f938c4ba93ac71d89e Mon Sep 17 00:00:00 2001
+From: Kreijstal <rainb@tfwno.gf>
+Date: Sun, 28 Jun 2026 19:47:50 +0200
+Subject: [PATCH] Implement absdelay history
+
+---
+ include/osdi.h         | 14 +++++++-
+ include/osdifile.h     |  1 +
+ include/osdiinstance.h |  6 ++++
+ lib/osdifile.cpp       |  6 ++++
+ lib/osdiinstance.cpp   | 81 ++++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 107 insertions(+), 1 deletion(-)
+
+diff --git a/include/osdi.h b/include/osdi.h
+index b927f2a..7867f82 100644
+--- a/include/osdi.h
++++ b/include/osdi.h
+@@ -80,6 +80,9 @@
+ #define NOISE_TYPE_FLICKER 1
+ #define NOISE_TYPE_TABLE 2
+ 
++#define MODULEFLAG_ABSTIME 1
++#define MODULEFLAG_ABSDELAY 2
++
+ typedef struct OsdiLimFunction {
+   char *name;
+   uint32_t num_args;
+@@ -100,6 +103,8 @@ typedef struct OsdiSimInfo {
+     double *prev_state;
+     double *next_state;
+     uint32_t flags;
++    void *history_ctx;
++    double (*query_past_state)(void *history_ctx, uint32_t delay_id, double time, double current_value);
+ }OsdiSimInfo;
+ 
+ typedef union OsdiInitErrorPayload {
+@@ -153,6 +158,11 @@ typedef struct OsdiNoiseSource {
+   OsdiNodePair nodes;
+ }OsdiNoiseSource;
+ 
++typedef struct OsdiDelayDescriptor {
++  uint32_t source_offset;
++  uint32_t flags;
++}OsdiDelayDescriptor;
++
+ typedef struct OsdiNatureRef {
+   uint32_t ref_type; 
+   uint32_t index; 
+@@ -226,6 +236,9 @@ typedef struct OsdiDescriptor {
+   OsdiNatureRef* residual_nature;
+   uint32_t *noise_source_type;
+   void (*load_noise_params)(void *inst, void *model, double *power, double *exponent);
++  uint32_t module_flags;
++  uint32_t num_delay;
++  OsdiDelayDescriptor *delay;
+ }OsdiDescriptor;
+ 
+ typedef struct OsdiNature {
+@@ -260,4 +273,3 @@ typedef struct OsdiAttribute {
+   uint32_t value_type;
+   OsdiAttributeValue value;
+ }OsdiAttribute;
+-
+diff --git a/include/osdifile.h b/include/osdifile.h
+index 034fc60..0da24a8 100644
+--- a/include/osdifile.h
++++ b/include/osdifile.h
+@@ -58,6 +58,7 @@ public:
+     inline const std::string& fileName() const { return file; };
+     
+     inline OsdiDeviceIndex deviceCount() { return descriptorCount; };
++    inline size_t descriptorStructSize() const { return descriptorSize; };
+     std::tuple<OsdiDeviceIndex,bool> deviceIndex(Id name, Status& s=Status::ignore);
+     Id deviceIdentifier(OsdiDeviceIndex index=0, Status& s=Status::ignore);
+     OsdiDescriptor *deviceDescriptor(OsdiDeviceIndex index, Status& s=Status::ignore);
+diff --git a/include/osdiinstance.h b/include/osdiinstance.h
+index 5c0f272..ceae57d 100644
+--- a/include/osdiinstance.h
++++ b/include/osdiinstance.h
+@@ -98,6 +98,8 @@ public:
+     bool outputBypassCheckCore(Circuit& circuit, CommonData& commons, EvalSetup& evalSetup);
+     bool evalCore(Circuit& circuit, CommonData& commons, OsdiSimInfo& simInfo, EvalSetup& evalSetup);
+     bool loadCore(Circuit& circuit, CommonData& commons, LoadSetup& loadSetup);
++    void updateDelayHistory(double time);
++    double queryPastState(uint32_t delayId, double time, double currentValue) const;
+     
+ protected:
+     OsdiFile::OsdiCollapsedNodesIndex collapsedNodesPatternSize() const { return model()->device()->collapsedNodesPatternSize(); };
+@@ -127,6 +129,10 @@ private:
+     TerminalIndex connectedTerminalCount;
+     GlobalStorageIndex offsStates;
+     GlobalStorageIndex offsDeviceStates;
++    bool delayHistoryInitialized {false};
++    double delayHistoryCurrentTime {0.0};
++    std::vector<double> delayHistoryTimes;
++    std::vector<std::vector<double>> delayHistoryValues;
+ };
+ 
+ }
+diff --git a/lib/osdifile.cpp b/lib/osdifile.cpp
+index 1eb545b..a271116 100644
+--- a/lib/osdifile.cpp
++++ b/lib/osdifile.cpp
+@@ -1,4 +1,5 @@
+ #include <string.h>
++#include <cstddef>
+ #include "dynload.h"
+ #include "osdicallback.h"
+ #include "limitfunctions.h"
+@@ -189,11 +190,16 @@ OsdiFile::OsdiFile(void* handle_, std::string file_, Status& s)
+         OsdiDescriptor* desc = descriptors[i];
+         // Check if device allows bypass. Bypass is not allowed if
+         // - device uses $bound_step
++        // - device uses absdelay history
+         // - device uses $abstime (TODO)
+         // - uses $discontinuity with an argument >=0 (not supported by OpenVAF)
+         // - device sets breakpoints (not supported by OpenVAF)
++        auto numDelay = descriptorSize >= offsetof(OsdiDescriptor, delay) + sizeof(OsdiDelayDescriptor*)
++            ? desc->num_delay
++            : 0;
+         allowsBypass_[i] = (
+             desc->bound_step_offset==UINT32_MAX
++            && numDelay==0
+         );
+ 
+         auto& translator = paramOsdiIdTranslators[i];
+diff --git a/lib/osdiinstance.cpp b/lib/osdiinstance.cpp
+index 81c84f7..2c35016 100644
+--- a/lib/osdiinstance.cpp
++++ b/lib/osdiinstance.cpp
+@@ -1,6 +1,8 @@
+ #include <cstring>
+ #include <cstddef>
++#include <cstdlib>
+ #include <new>
++#include <algorithm>
+ #include "osdiinstance.h"
+ #include "circuit.h"
+ #include "simulator.h"
+@@ -10,6 +12,20 @@
+ 
+ namespace NAMESPACE {
+ 
++static double osdiQueryPastState(void *ctx, uint32_t delayId, double time, double currentValue) {
++    if (!ctx) {
++        std::abort();
++    }
++    return static_cast<OsdiInstance*>(ctx)->queryPastState(delayId, time, currentValue);
++}
++
++static uint32_t osdiDelayCount(const OsdiDevice *device) {
++    if (device->file()->descriptorStructSize() < offsetof(OsdiDescriptor, delay) + sizeof(OsdiDelayDescriptor*)) {
++        return 0;
++    }
++    return device->descriptor()->num_delay;
++}
++
+ // TODO: check unconnected terminals handling, i.e. BJT with unconnected bulk
+ //       how are unconnected terminals handled
+ 
+@@ -1128,6 +1144,68 @@ bool OsdiInstance::outputBypassCheckCore(Circuit& circuit, CommonData& commons,
+     return converged;
+ }
+ 
++void OsdiInstance::updateDelayHistory(double time) {
++    auto descr = model()->device()->descriptor();
++    auto n = osdiDelayCount(model()->device());
++    if (n == 0) {
++        return;
++    }
++    if (!delayHistoryInitialized) {
++        delayHistoryInitialized = true;
++        delayHistoryCurrentTime = time;
++        delayHistoryValues.assign(n, {});
++        return;
++    }
++    if (time == delayHistoryCurrentTime) {
++        return;
++    }
++
++    delayHistoryTimes.push_back(delayHistoryCurrentTime);
++    for (uint32_t i = 0; i < n; ++i) {
++        auto source = getDataPtr<double*>(core_, descr->delay[i].source_offset);
++        delayHistoryValues[i].push_back(*source);
++    }
++    delayHistoryCurrentTime = time;
++}
++
++double OsdiInstance::queryPastState(uint32_t delayId, double time, double currentValue) const {
++    auto descr = model()->device()->descriptor();
++    if (delayId >= osdiDelayCount(model()->device()) || delayId >= delayHistoryValues.size()) {
++        std::abort();
++    }
++    const auto& values = delayHistoryValues[delayId];
++    if (delayHistoryTimes.empty() || values.empty()) {
++        std::abort();
++    }
++    if (time < delayHistoryTimes.front()) {
++        return values.front();
++    }
++
++    auto upper = std::lower_bound(delayHistoryTimes.begin(), delayHistoryTimes.end(), time);
++    if (upper == delayHistoryTimes.begin()) {
++        return values.front();
++    }
++    if (upper == delayHistoryTimes.end()) {
++        auto lastTime = delayHistoryTimes.back();
++        auto lastValue = values.back();
++        if (time >= delayHistoryCurrentTime || delayHistoryCurrentTime <= lastTime) {
++            return lastValue;
++        }
++        auto frac = (time - lastTime) / (delayHistoryCurrentTime - lastTime);
++        return lastValue + frac * (currentValue - lastValue);
++    }
++
++    auto hi = static_cast<size_t>(upper - delayHistoryTimes.begin());
++    auto lo = hi - 1;
++    auto t0 = delayHistoryTimes[lo];
++    auto t1 = delayHistoryTimes[hi];
++    if (t1 <= t0) {
++        return values[lo];
++    }
++    auto frac = (time - t0) / (t1 - t0);
++    return values[lo] + frac * (values[hi] - values[lo]);
++}
++
+ bool OsdiInstance::evalCore(Circuit& circuit, CommonData& commons, OsdiSimInfo& simInfo, EvalSetup& evalSetup) {
+     // Get descriptor 
+     auto model_ = model();
+@@ -1155,6 +1233,9 @@ bool OsdiInstance::evalCore(Circuit& circuit, CommonData& commons, OsdiSimInfo&
+     // Set beginning of state vector chunk belonging to this instance
+     simInfo.prev_state = evalSetup.oldStates + offsStates;
+     simInfo.next_state = evalSetup.newStates + offsStates;
++    simInfo.history_ctx = this;
++    simInfo.query_past_state = osdiQueryPastState;
++    updateDelayHistory(evalSetup.time);
+ 
+     // Get bound step offset
+     auto bsOffs = descr->bound_step_offset;
+-- 
+2.54.0
+

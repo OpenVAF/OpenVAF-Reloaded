@@ -183,6 +183,12 @@ impl Printer<'_> {
                 }
                 w!(self, "}}");
             }
+            Expr::Index { base, index } => {
+                self.pretty_print_expr(base);
+                w!(self, "[");
+                self.pretty_print_expr(index);
+                w!(self, "]");
+            }
             Expr::Literal(ref lit) => w!(self, "{:?}", lit),
         }
     }

@@ -1,5 +1,3 @@
-use std::fmt::Display;
-
 use hir::{Node, Parameter};
 use lasso::Spur;
 use mir::{FunctionSignature, Param};
@@ -17,7 +15,7 @@ pub enum ParamInfoKind {
     MaxExclusive,
 }
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub enum RetFlag {
     Abort,
     Finish,
@@ -56,6 +54,7 @@ pub enum CallBackKind {
     FlickerNoise { name: Spur, idx: u32 },
     NoiseTable(Box<NoiseTable>),
     SetRetFlag(RetFlag),
+    QueryPastState(u32),
 }
 
 impl CallBackKind {
@@ -119,7 +118,10 @@ impl CallBackKind {
                 name: format!("$store[{state:?}]"),
                 params: 1,
                 returns: 1,
-                has_sideeffects: false,
+                // Writing `next_state` is a side effect: when the stored value is not
+                // otherwise used (retained `@(cross)` state) the call must not be
+                // eliminated. The limit path still uses the return value as before.
+                has_sideeffects: true,
             },
             CallBackKind::LimDiscontinuity => FunctionSignature {
                 name: "$discontinuty[-1]".to_owned(),
@@ -168,6 +170,12 @@ impl CallBackKind {
                 returns: 0,
                 has_sideeffects: true,
             },
+            CallBackKind::QueryPastState(delay) => FunctionSignature {
+                name: format!("query_past_state[{delay}]"),
+                params: 2,
+                returns: 1,
+                has_sideeffects: false,
+            },
         }
     }
     pub fn is_noise(&self) -> bool {
@@ -189,6 +197,7 @@ impl CallBackKind {
                 | CallBackKind::SimParamStr
                 | CallBackKind::LimDiscontinuity
                 | CallBackKind::BuiltinLimit { .. }
+                | CallBackKind::QueryPastState(_)
         )
     }
 

@@ -86,7 +86,17 @@ pub(super) fn var_decl(p: &mut Parser, m: Marker) {
 
 fn var(p: &mut Parser) -> bool {
     let m = p.start();
-    name_r(p, TokenSet::new(&[T![,], T![=], T![;]]));
+    name_r(p, TokenSet::new(&[T!['['], T![,], T![=], T![;]]));
+    // Optional array dimension, e.g. `real den[order:0];`.
+    if p.at(T!['[']) {
+        let dim = p.start();
+        p.bump(T!['[']);
+        expr(p);
+        p.expect(T![:]);
+        expr(p);
+        p.expect(T![']']);
+        dim.complete(p, DIMENSION);
+    }
     if p.eat(T![=]) {
         expr(p);
     }

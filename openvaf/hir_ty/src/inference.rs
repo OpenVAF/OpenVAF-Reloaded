@@ -42,7 +42,15 @@ pub enum ResolvedFun {
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum AssignDst {
     Var(VarId),
-    FunVar { fun: FunctionId, arg: Option<LocalFunctionArgId> },
+    /// `arr[index] = …` — assignment to an array element.
+    VarElement {
+        var: VarId,
+        index: ExprId,
+    },
+    FunVar {
+        fun: FunctionId,
+        arg: Option<LocalFunctionArgId>,
+    },
     Flow(BranchWrite),
     Potential(BranchWrite),
 }
@@ -92,7 +100,12 @@ impl InferenceResult {
                     .infere_expr(body.entry_stmts[0], db.param_exprs(param).default)
                     .and_then(|ty| ty.to_value()),
             },
-            DefWithBodyId::VarId(var) => Some(db.var_data(var).ty.clone()),
+            DefWithBodyId::VarId(var) => Some(match db.var_data(var).ty.clone() {
+                // An array variable's desugared default is a scalar placeholder; check
+                // it against the element type rather than the array type.
+                Type::Array { ty, .. } => *ty,
+                ty => ty,
+            }),
             _ => None,
         };
 
@@ -124,7 +137,15 @@ impl Ctx<'_> {
             }
             Stmt::Assignment { dst, val, assignment_kind } => {
                 let dst_ty = self.infere_assignment_dst(stmt, dst, assignment_kind);
-                self.infere_assignment(stmt, val, dst_ty);
+                if assignment_kind == ast::AssignOp::Indirect {
+                    // `V(out) : f(...) == 0` — the rhs is the constraint equation, not a
+                    // value to assign to the branch. Infer it on its own terms (an
+                    // equality test producing bool, with its operands coerced as usual);
+                    // MIR lowering turns it into an implicit-equation residual.
+                    self.infere_expr(stmt, val);
+                } else {
+                    self.infere_assignment(stmt, val, dst_ty);
+                }
             }
             Stmt::ForLoop { cond, .. } | Stmt::If { cond, .. } | Stmt::WhileLoop { cond, .. } => {
                 self.infere_cond(stmt, cond)
@@ -196,6 +217,25 @@ impl Ctx<'_> {
     ) -> Option<Type> {
         let e = self.infere_expr(stmt, expr);
 
+        // Array element assignment `den[index] = …`. The base must be an array variable.
+        if let Expr::Index { base, index } = self.body.exprs[expr] {
+            if let Ty::Var(Type::Array { ty, .. }, var) = self.result.expr_types[base].clone() {
+                let elem = *ty;
+                if matches!(assignment_kind, ast::AssignOp::Contribute | ast::AssignOp::Indirect) {
+                    self.result.diagnostics.push(InferenceDiagnostic::InvalidAssignDst {
+                        e: expr,
+                        maybe_different_operand: Some(ast::AssignOp::Assign),
+                        assignment_kind,
+                    });
+                } else {
+                    self.result
+                        .assignment_destination
+                        .insert(stmt, AssignDst::VarElement { var, index });
+                }
+                return Some(elem);
+            }
+        }
+
         let (dst, ty) = match e? {
             Ty::Var(ty, var) => (AssignDst::Var(var), ty),
             Ty::FunctionVar { fun, ty, arg } => (AssignDst::FunVar { fun, arg }, ty),
@@ -259,6 +299,15 @@ impl Ctx<'_> {
                 self.result.diagnostics.push(InferenceDiagnostic::InvalidAssignDst {
                     e: expr,
                     maybe_different_operand: Some(ast::AssignOp::Contribute),
+                    assignment_kind,
+                });
+            }
+            // Indirect branch assignment (`V(out) : …`) requires a branch destination,
+            // exactly like a contribution.
+            (AssignDst::Var(_) | AssignDst::FunVar { .. }, ast::AssignOp::Indirect) => {
+                self.result.diagnostics.push(InferenceDiagnostic::InvalidAssignDst {
+                    e: expr,
+                    maybe_different_operand: Some(ast::AssignOp::Assign),
                     assignment_kind,
                 });
             }
@@ -391,6 +440,16 @@ impl Ctx<'_> {
             }
             Expr::Array(ref args) if args.is_empty() => Ty::Val(Type::EmptyArray),
             Expr::Array(ref args) => self.infere_array(stmt, args)?,
+            Expr::Index { base, index } => {
+                // The index is an integer value.
+                self.infere_expr(stmt, index);
+                // The result is the element type of the indexed array.
+                let base_ty = self.infere_expr(stmt, base)?;
+                match base_ty.to_value() {
+                    Some(Type::Array { ty, .. }) => Ty::Val(*ty),
+                    _ => Ty::Val(Type::Err),
+                }
+            }
             Expr::Literal(Literal::Float(_)) => Ty::Literal(Type::Real),
             Expr::Literal(Literal::Int(_)) => Ty::Literal(Type::Integer),
             // +/- inf can only appear in param bounds.
@@ -967,7 +1026,8 @@ impl Ctx<'_> {
             }
         }
 
-        Some(Ty::Val(ty))
+        // An array literal `{e0, e1, ...}` has an array type (element type `ty`).
+        Some(Ty::Val(Type::Array { ty: Box::new(ty), len: args.len() as u32 }))
     }
 
     fn infere_bin_op(

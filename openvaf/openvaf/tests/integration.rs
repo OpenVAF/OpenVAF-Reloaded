@@ -10,7 +10,7 @@ use openvaf::{CompilationDestination, CompilationTermination, LLVMCodeGenOptLeve
 use stdx::{ignore_dev_tests, openvaf_test_data, project_root};
 use target::spec::Target;
 
-use crate::load::{load_osdi_lib, EvalFlags, OsdiDescriptor};
+use crate::load::{load_osdi_lib, EvalFlags, OsdiDescriptor, OsdiInstance, OsdiModel};
 use crate::mock_sim::{MockSimulation, ALPHA};
 
 mod load;
@@ -255,6 +255,256 @@ fn test_noise() -> Result<()> {
     Ok(())
 }
 
+/// Fixed-size arrays: declaration, constant- and runtime-index read/write all
+/// feed a single conductance. See `arrays.va`; with the default `sel=1` the
+/// assembled conductance is G = 21, so the loaded DAE residual/Jacobian must
+/// match exactly if every array access lowered correctly.
+fn test_arrays() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+
+    let desc = test_descriptor(&openvaf_test_data("osdi").join("arrays.va"))?;
+    let model = desc.new_model();
+    model.process_params()?;
+    let mut instance = model.new_instance();
+    let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+
+    sim.set_voltage("p", 1.0);
+    sim.set_voltage("n", 0.0);
+    instance.eval(&model, &mut sim, EvalFlags::empty());
+    instance.load_dae(&model, &mut sim);
+
+    // G = gsum (13) + gx (8) = 21, with I(p,n) = G * V(p,n).
+    float_cmp::assert_approx_eq!(f64, sim.read_residual("p").0, 21.0, epsilon = 1e-9);
+    float_cmp::assert_approx_eq!(f64, sim.read_residual("n").0, -21.0, epsilon = 1e-9);
+    float_cmp::assert_approx_eq!(f64, sim.read_jacobian("p", "p").0, 21.0, epsilon = 1e-9);
+    Ok(())
+}
+
+/// `@(cross)` state retention: `state` is assigned only inside cross handlers, so
+/// it must hold across timesteps. The mock simulator's `next_iter` swaps the
+/// prev/next state arrays, exactly as a real simulator advances a timestep. We
+/// drive the input high/low/dead-band and check the latched output is retained.
+/// See `cross_latch.va`; residual at q equals `-state` (with V(q)=0).
+fn test_cross_latch() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+
+    let desc = test_descriptor(&openvaf_test_data("osdi").join("cross_latch.va"))?;
+    let model = desc.new_model();
+    model.process_params()?;
+    let mut instance = model.new_instance();
+    let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+
+    // Advance one timestep: swap prev/next state, re-apply the node voltages
+    // (next_iter zeroes the solution), evaluate, and load the DAE residual.
+    let step = |instance: &OsdiInstance,
+                model: &OsdiModel,
+                sim: &mut MockSimulation,
+                vd: f64,
+                first: bool| {
+        if !first {
+            sim.next_iter();
+        }
+        sim.set_voltage("q", 0.0);
+        sim.set_voltage("d", vd);
+        instance.eval(model, sim, EvalFlags::ENABLE_LIM | EvalFlags::INIT_LIM);
+        instance.load_dae(model, sim);
+        sim.read_residual("q").0
+    };
+
+    // d high -> latch sets state=1 (residual = -1).
+    float_cmp::assert_approx_eq!(
+        f64,
+        step(&instance, &model, &mut sim, 1.0, true),
+        -1.0,
+        epsilon = 1e-9
+    );
+    // dead-band -> state 1 retained.
+    float_cmp::assert_approx_eq!(
+        f64,
+        step(&instance, &model, &mut sim, 0.5, false),
+        -1.0,
+        epsilon = 1e-9
+    );
+    // d low -> latch clears state=0 (residual = 0).
+    float_cmp::assert_approx_eq!(
+        f64,
+        step(&instance, &model, &mut sim, 0.0, false),
+        0.0,
+        epsilon = 1e-9
+    );
+    // dead-band -> state 0 retained.
+    float_cmp::assert_approx_eq!(
+        f64,
+        step(&instance, &model, &mut sim, 0.5, false),
+        0.0,
+        epsilon = 1e-9
+    );
+    // d high again -> latch flips back to state=1.
+    float_cmp::assert_approx_eq!(
+        f64,
+        step(&instance, &model, &mut sim, 1.0, false),
+        -1.0,
+        epsilon = 1e-9
+    );
+    Ok(())
+}
+
+/// Regression: `laplace_nd` with anonymous integer coefficient literals (the form
+/// the LRM examples use) must compile without the optimizer panicking on mixed
+/// int/float arithmetic. Compiling + loading the descriptor is enough to guard the
+/// crash. See `laplace_nd_int.va`.
+fn test_laplace_nd_int() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+    test_descriptor(&openvaf_test_data("osdi").join("laplace_nd_int.va"))?;
+    Ok(())
+}
+
+/// Vectored/bus ports: a port declared bare in the head and ranged in the body
+/// (`input [0:3] in`) must expand to in[0]..in[3] and index correctly. The output
+/// sums the four bits with distinct weights, so the loaded residual proves each bit
+/// is a distinct node. See `vector_ports.va`.
+fn test_vector_ports() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+    let desc = test_descriptor(&openvaf_test_data("osdi").join("vector_ports.va"))?;
+    let model = desc.new_model();
+    model.process_params()?;
+    let mut instance = model.new_instance();
+    let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+
+    sim.set_voltage("out", 0.0);
+    sim.set_voltage("in[0]", 1.0);
+    sim.set_voltage("in[1]", 1.0);
+    sim.set_voltage("in[2]", 1.0);
+    sim.set_voltage("in[3]", 1.0);
+    instance.eval(&model, &mut sim, EvalFlags::empty());
+    instance.load_dae(&model, &mut sim);
+
+    // residual(out) = V(out) - (1+2+3+4) = -10.
+    float_cmp::assert_approx_eq!(f64, sim.read_residual("out").0, -10.0, epsilon = 1e-9);
+    Ok(())
+}
+
+/// LRM 2.4 transition() Example 1 (QAM modulator): vectored input ports declared
+/// bare in the head and ranged in the body, bus indexing, transition, $abstime.
+/// Compile+load guard.
+fn test_qam16() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+    test_descriptor(&openvaf_test_data("osdi").join("qam16.va"))?;
+    Ok(())
+}
+
+/// Retained `@(cross)` ARRAY state: each array element assigned inside a cross
+/// handler must retain independently across timesteps. Drives the input
+/// high/dead-band/low and checks both elements hold and flip via the prev/next
+/// state swap. See `cross_array.va`; residual at q0/q1 equals -s[0]/-s[1].
+fn test_cross_array() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+
+    let desc = test_descriptor(&openvaf_test_data("osdi").join("cross_array.va"))?;
+    let model = desc.new_model();
+    model.process_params()?;
+    let mut instance = model.new_instance();
+    let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+
+    let step = |instance: &OsdiInstance,
+                model: &OsdiModel,
+                sim: &mut MockSimulation,
+                vd: f64,
+                first: bool| {
+        if !first {
+            sim.next_iter();
+        }
+        sim.set_voltage("q0", 0.0);
+        sim.set_voltage("q1", 0.0);
+        sim.set_voltage("d", vd);
+        instance.eval(model, sim, EvalFlags::ENABLE_LIM | EvalFlags::INIT_LIM);
+        instance.load_dae(model, sim);
+        (sim.read_residual("q0").0, sim.read_residual("q1").0)
+    };
+
+    let check = |(a, b): (f64, f64), ea: f64, eb: f64| {
+        float_cmp::assert_approx_eq!(f64, a, ea, epsilon = 1e-9);
+        float_cmp::assert_approx_eq!(f64, b, eb, epsilon = 1e-9);
+    };
+
+    check(step(&instance, &model, &mut sim, 1.0, true), -1.0, -2.0); // set s=[1,2]
+    check(step(&instance, &model, &mut sim, 0.5, false), -1.0, -2.0); // dead-band: retained
+    check(step(&instance, &model, &mut sim, 0.0, false), 0.0, 0.0); // clear s=[0,0]
+    check(step(&instance, &model, &mut sim, 0.5, false), 0.0, 0.0); // dead-band: retained
+    check(step(&instance, &model, &mut sim, 1.0, false), -1.0, -2.0); // flips back
+    Ok(())
+}
+
+/// Indirect branch assignment `V(out) : V(pin,nin) == 0` (ideal op-amp, issue #80).
+/// Lowers to an implicit equation whose unknown drives `out` as a voltage source and
+/// whose residual is the constraint `V(pin) - V(nin)`. The constraint residual (and
+/// its Jacobian) is independent of the unknown, so we can check it on the isolated
+/// device: with V(pin)=0.3, V(nin)=0.1 the `implicit_equation_0` row carries 0.2 with
+/// d/dV(pin)=+1, d/dV(nin)=-1. See `opamp_indirect.va`.
+fn test_indirect_opamp() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+
+    let desc = test_descriptor(&openvaf_test_data("osdi").join("opamp_indirect.va"))?;
+    let model = desc.new_model();
+    model.process_params()?;
+    let mut instance = model.new_instance();
+    let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+
+    sim.set_voltage("out", 0.0);
+    sim.set_voltage("pin", 0.3);
+    sim.set_voltage("nin", 0.1);
+    sim.set_voltage("implicit_equation_0", 0.7); // unknown; residual must not depend on it
+    instance.eval(&model, &mut sim, EvalFlags::empty());
+    instance.load_dae(&model, &mut sim);
+
+    // constraint residual = V(pin) - V(nin) = 0.2, regardless of the unknown.
+    float_cmp::assert_approx_eq!(
+        f64,
+        sim.read_residual("implicit_equation_0").0,
+        0.2,
+        epsilon = 1e-9
+    );
+    float_cmp::assert_approx_eq!(
+        f64,
+        sim.read_jacobian("pin", "implicit_equation_0").0,
+        1.0,
+        epsilon = 1e-9
+    );
+    float_cmp::assert_approx_eq!(
+        f64,
+        sim.read_jacobian("nin", "implicit_equation_0").0,
+        -1.0,
+        epsilon = 1e-9
+    );
+    Ok(())
+}
+
+/// LRM 2.4 transition() Example 2 (N-bit A/D converter), legal form (continuous
+/// contributions outside the discrete @(cross) sampler). Exercises the whole new
+/// stack at once: vector ports + genvar unroll + retained @(cross) array +
+/// transition. Compile+load guard.
+fn test_adc() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+    test_descriptor(&openvaf_test_data("osdi").join("adc.va"))?;
+    Ok(())
+}
+
 harness! {
     // TODO: run this in CI, somehow this test is flakey tough regarding the linker invocation (and really slow)
     Test::from_dir("integration", &integration_test, &ignore_dev_tests, &project_root().join("integration_tests")),
@@ -264,5 +514,5 @@ harness! {
     Test::from_dir_filtered("vacask_spice", &vacask_spice_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice")),
     // VACASK simplified SPICE models
     Test::from_dir_filtered("vacask_spice_sn", &vacask_spice_sn_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice/sn")),
-    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise)]
+    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp)]
 }

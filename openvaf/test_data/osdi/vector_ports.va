@@ -1,0 +1,20 @@
+`include "disciplines.vams"
+
+// Exercises vectored/bus PORTS: `in` is declared as a bare name in the module head
+// and given its [0:3] range only in the body (the LRM style), so the head name must
+// reconcile with the body bus expansion into in[0]..in[3]. The output current sums
+// the four bus bits with distinct weights, so the loaded residual/Jacobian prove
+// each bit expanded and indexes to a distinct node.
+//
+//   I(out) = V(out) - (1*V(in0) + 2*V(in1) + 3*V(in2) + 4*V(in3))
+// With V(out)=0 and V(in)= [1,1,1,1], residual(out) = -(1+2+3+4) = -10.
+module vbus(in, out);
+    input [0:3] in;
+    output out;
+    electrical [0:3] in;
+    electrical out;
+    analog begin
+        I(out) <+ V(out)
+            - (1.0*V(in[0]) + 2.0*V(in[1]) + 3.0*V(in[2]) + 4.0*V(in[3]));
+    end
+endmodule

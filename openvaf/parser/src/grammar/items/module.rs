@@ -5,10 +5,12 @@ const MODULE_ITEM_RECOVERY: TokenSet = DIRECTION_TS.union(TokenSet::new(&[
     NET_TYPE,
     ANALOG_KW,
     INITIAL_KW,
+    FINAL_KW,
     BRANCH_KW,
     STRING_KW,
     REAL_KW,
     INTEGER_KW,
+    GENVAR_KW,
     PARAMETER_KW,
     LOCALPARAM_KW,
     ENDMODULE_KW,
@@ -39,12 +41,33 @@ const MODULE_PORTS_RECOVERY: TokenSet = TokenSet::new(&[T![;], T![')'], ENDMODUL
 fn module_ports(p: &mut Parser) {
     while !p.at_ts(MODULE_PORTS_RECOVERY) {
         let m = p.start();
-        if !eat_name(p) {
-            let m = p.start();
+        if p.at(IDENT) && p.nth_at(1, T!['[']) {
+            // Vectored/bus port reference in the module header, e.g.
+            // `rc_ladder(inode[0], inode[n])`. The referenced element is resolved
+            // against the expanded scalar nodes of the bus net declaration.
+            let pr = p.start();
+            name(p);
+            p.bump(T!['[']);
+            expr(p);
+            p.expect(T![']']);
+            pr.complete(p, PORT_REF);
+            m.complete(p, MODULE_PORT);
+        } else if eat_name(p) {
+            m.complete(p, MODULE_PORT);
+        } else if p.at_ts(DIRECTION_TS) || p.at(T!["(*"]) {
+            let inner = p.start();
             attrs(p, MODULE_PORTS_RECOVERY.union(DIRECTION_TS));
-            port_decl::<true>(p, m)
+            port_decl::<true>(p, inner);
+            m.complete(p, MODULE_PORT);
+        } else {
+            // Neither a port name nor a port direction. This happens e.g. for the
+            // currently unsupported vectored-node port syntax `inode[0]`. Abandon the
+            // (empty) port node, report an error and recover instead of asserting
+            // inside `port_decl` or producing a childless MODULE_PORT.
+            m.abandon(p);
+            let err = p.unexpected_tokens_msg(vec![IDENT, INPUT_KW, OUTPUT_KW, INOUT_KW]);
+            p.err_recover(err, MODULE_PORTS_RECOVERY.union(TokenSet::unique(T![,])));
         }
-        m.complete(p, MODULE_PORT);
         if !p.at(T![')']) {
             p.expect_with(T![,], &[T![,], T![')']]);
         }
@@ -83,6 +106,17 @@ fn port_decl<const MODULE_HEAD: bool>(p: &mut Parser, m: Marker) {
     }
     p.eat(NET_TYPE);
 
+    // Optional vectored/bus range, e.g. `input [0:3] in;` / `output [0:bits-1] out;`.
+    if p.at(T!['[']) {
+        let dim = p.start();
+        p.bump(T!['[']);
+        expr(p);
+        p.expect(T![:]);
+        expr(p);
+        p.expect(T![']']);
+        dim.complete(p, DIMENSION);
+    }
+
     if MODULE_HEAD {
         decl_list(p, T![')'], module_port, MODULE_PORT_RECOVERY);
     } else {
@@ -116,6 +150,13 @@ fn module_items(p: &mut Parser) {
                 stmt_with_attrs(p);
                 m.complete(p, ANALOG_BEHAVIOUR);
             }
+            // Standalone (non-analog) procedural blocks: `initial <stmt>` / `final <stmt>`.
+            // These are imperative blocks executed by the standalone VerilogA runner.
+            INITIAL_KW | FINAL_KW => {
+                p.bump_any();
+                stmt_with_attrs(p);
+                m.complete(p, PROCEDURAL_BLOCK);
+            }
             NET_TYPE => {
                 net_decl::<true>(p, m);
             }
@@ -132,6 +173,7 @@ fn module_items(p: &mut Parser) {
                 branch_decl(p, m);
             }
             INTEGER_KW | REAL_KW | STRING_KW => var_decl(p, m),
+            GENVAR_KW => genvar_decl(p, m),
             INPUT_KW | OUTPUT_KW | INOUT_KW => port_decl::<false>(p, m),
             _ => {
                 error_range = if let Some(error_range) = error_range {
@@ -147,6 +189,7 @@ fn module_items(p: &mut Parser) {
                         PORT_DECL,
                         NET_DECL,
                         ANALOG_BEHAVIOUR,
+                        PROCEDURAL_BLOCK,
                     ]);
                     p.error(err);
                     p.bump_any();
@@ -160,6 +203,13 @@ fn module_items(p: &mut Parser) {
     }
 }
 
+fn genvar_decl(p: &mut Parser, m: Marker) {
+    p.bump(GENVAR_KW);
+    decl_list(p, T![;], decl_name, MODULE_ITEM_OR_ATTR_RECOVERY);
+    p.eat(T![;]);
+    m.complete(p, GENVAR_DECL);
+}
+
 fn net_decl<const NET_TYPE_FIRST: bool>(p: &mut Parser, m: Marker) {
     //direction and type ar both optional since only one is required
     if NET_TYPE_FIRST {
@@ -169,6 +219,17 @@ fn net_decl<const NET_TYPE_FIRST: bool>(p: &mut Parser, m: Marker) {
         }
     } else {
         name_ref_r(p, MODULE_ITEM_OR_ATTR_RECOVERY.union(TokenSet::unique(T![;])))
+    }
+
+    // Optional vectored/bus range, e.g. `electrical [0:n] inode;`.
+    if p.at(T!['[']) {
+        let dim = p.start();
+        p.bump(T!['[']);
+        expr(p);
+        p.expect(T![:]);
+        expr(p);
+        p.expect(T![']']);
+        dim.complete(p, DIMENSION);
     }
 
     net_dec_list(p);

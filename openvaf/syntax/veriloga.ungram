@@ -108,10 +108,14 @@ Expr =
 | BinExpr
 | ParenExpr
 | ArrayExpr
+| IndexExpr
 | Call
 | SelectExpr
 | PathExpr
 | PortFlow
+
+IndexExpr =
+  Expr '[' Expr ']'
 
 
 PathExpr = Path // Required to allow
@@ -190,24 +194,38 @@ ModuleItem =
   BodyPortDecl
 | NetDecl
 | AnalogBehaviour
+| ProceduralBlock
 | Function
 | BranchDecl
 | VarDecl
 | ParamDecl
 | AliasParam
+| GenvarDecl
 
 ModulePorts = '('ports: (ModulePort (',' ModulePort)*)? ')'
 ModulePort = kind: ModulePortKind
-ModulePortKind = PortDecl| Name
+ModulePortKind = PortDecl| Name | PortRef
+
+PortRef =
+  Name '[' Expr ']'
+
+GenvarDecl =
+  AttrList* 'genvar' (Name (',' Name)*) ';'
 
 AnalogBehaviour =
   AttrList* 'analog' 'initial'? Stmt
+
+ProceduralBlock =
+  AttrList* ('initial' | 'final') Stmt
 
 VarDecl =
   AttrList* Type (Var (',' Var)*) ';'
 
 Var =
-  Name ('=' default:Expr)?
+  Name Dimension? ('=' default:Expr)?
+
+Dimension =
+  '[' Expr ':' Expr ']'
 
 
 
@@ -230,13 +248,13 @@ Range =
 
 
 NetDecl =
-  AttrList*  discipline:NameRef?  'net_type'? (Name (',' Name)*)';'
+  AttrList*  discipline:NameRef?  'net_type'? Dimension? (Name (',' Name)*)';'
 
 BodyPortDecl =
   PortDecl ';'
 
 PortDecl =
-  AttrList* Direction discipline:NameRef?  'net_type'? (Name (',' Name)*)
+  AttrList* Direction discipline:NameRef?  'net_type'? Dimension? (Name (',' Name)*)
 
 Direction =
   'inout' | 'input' | 'output'

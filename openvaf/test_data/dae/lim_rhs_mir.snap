@@ -1,6 +1,6 @@
 function %(v16, v17, v18, v19, v20, v36, v46) {
     inst0 = const fn %$limit[Spur(1)](2) -> 1
-    inst1 = const fn %$store[lim_state0](1) -> 1
+    inst1 = fn %$store[lim_state0](1) -> 1
 
                                 block5:
 @0009                               br v20, block2, block4

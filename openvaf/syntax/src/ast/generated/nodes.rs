@@ -251,6 +251,15 @@ impl ArrayExpr {
     pub fn r_curly_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['}']) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IndexExpr {
+    pub(crate) syntax: SyntaxNode,
+}
+impl IndexExpr {
+    pub fn expr(&self) -> Option<Expr> { support::child(&self.syntax) }
+    pub fn l_brack_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['[']) }
+    pub fn r_brack_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![']']) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Call {
     pub(crate) syntax: SyntaxNode,
 }
@@ -402,6 +411,7 @@ impl NetDecl {
     pub fn net_type_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, T![net_type])
     }
+    pub fn dimension(&self) -> Option<Dimension> { support::child(&self.syntax) }
     pub fn names(&self) -> AstChildren<Name> { support::children(&self.syntax) }
     pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
 }
@@ -413,6 +423,16 @@ impl ast::AttrsOwner for AnalogBehaviour {}
 impl AnalogBehaviour {
     pub fn analog_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![analog]) }
     pub fn initial_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![initial]) }
+    pub fn stmt(&self) -> Option<Stmt> { support::child(&self.syntax) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ProceduralBlock {
+    pub(crate) syntax: SyntaxNode,
+}
+impl ast::AttrsOwner for ProceduralBlock {}
+impl ProceduralBlock {
+    pub fn initial_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![initial]) }
+    pub fn final_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![final]) }
     pub fn stmt(&self) -> Option<Stmt> { support::child(&self.syntax) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -459,6 +479,16 @@ impl AliasParam {
     pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GenvarDecl {
+    pub(crate) syntax: SyntaxNode,
+}
+impl ast::AttrsOwner for GenvarDecl {}
+impl GenvarDecl {
+    pub fn genvar_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![genvar]) }
+    pub fn names(&self) -> AstChildren<Name> { support::children(&self.syntax) }
+    pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModulePort {
     pub(crate) syntax: SyntaxNode,
 }
@@ -474,7 +504,18 @@ impl PortDecl {
     pub fn net_type_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, T![net_type])
     }
+    pub fn dimension(&self) -> Option<Dimension> { support::child(&self.syntax) }
     pub fn names(&self) -> AstChildren<Name> { support::children(&self.syntax) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PortRef {
+    pub(crate) syntax: SyntaxNode,
+}
+impl PortRef {
+    pub fn name(&self) -> Option<Name> { support::child(&self.syntax) }
+    pub fn l_brack_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['[']) }
+    pub fn expr(&self) -> Option<Expr> { support::child(&self.syntax) }
+    pub fn r_brack_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![']']) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Var {
@@ -482,8 +523,19 @@ pub struct Var {
 }
 impl Var {
     pub fn name(&self) -> Option<Name> { support::child(&self.syntax) }
+    pub fn dimension(&self) -> Option<Dimension> { support::child(&self.syntax) }
     pub fn eq_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![=]) }
     pub fn default(&self) -> Option<Expr> { support::child(&self.syntax) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Dimension {
+    pub(crate) syntax: SyntaxNode,
+}
+impl Dimension {
+    pub fn l_brack_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['[']) }
+    pub fn expr(&self) -> Option<Expr> { support::child(&self.syntax) }
+    pub fn colon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![:]) }
+    pub fn r_brack_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![']']) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Param {
@@ -541,6 +593,7 @@ pub enum Expr {
     BinExpr(BinExpr),
     ParenExpr(ParenExpr),
     ArrayExpr(ArrayExpr),
+    IndexExpr(IndexExpr),
     Call(Call),
     SelectExpr(SelectExpr),
     PathExpr(PathExpr),
@@ -584,16 +637,19 @@ pub enum ModuleItem {
     BodyPortDecl(BodyPortDecl),
     NetDecl(NetDecl),
     AnalogBehaviour(AnalogBehaviour),
+    ProceduralBlock(ProceduralBlock),
     Function(Function),
     BranchDecl(BranchDecl),
     VarDecl(VarDecl),
     ParamDecl(ParamDecl),
     AliasParam(AliasParam),
+    GenvarDecl(GenvarDecl),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ModulePortKind {
     PortDecl(PortDecl),
     Name(Name),
+    PortRef(PortRef),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ParamRef {
@@ -883,6 +939,17 @@ impl AstNode for ArrayExpr {
     }
     fn syntax(&self) -> &SyntaxNode { &self.syntax }
 }
+impl AstNode for IndexExpr {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == INDEX_EXPR }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
 impl AstNode for Call {
     fn can_cast(kind: SyntaxKind) -> bool { kind == CALL }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -1059,6 +1126,17 @@ impl AstNode for AnalogBehaviour {
     }
     fn syntax(&self) -> &SyntaxNode { &self.syntax }
 }
+impl AstNode for ProceduralBlock {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == PROCEDURAL_BLOCK }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
 impl AstNode for Function {
     fn can_cast(kind: SyntaxKind) -> bool { kind == FUNCTION }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -1092,6 +1170,17 @@ impl AstNode for AliasParam {
     }
     fn syntax(&self) -> &SyntaxNode { &self.syntax }
 }
+impl AstNode for GenvarDecl {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == GENVAR_DECL }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
 impl AstNode for ModulePort {
     fn can_cast(kind: SyntaxKind) -> bool { kind == MODULE_PORT }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -1114,8 +1203,30 @@ impl AstNode for PortDecl {
     }
     fn syntax(&self) -> &SyntaxNode { &self.syntax }
 }
+impl AstNode for PortRef {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == PORT_REF }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
 impl AstNode for Var {
     fn can_cast(kind: SyntaxKind) -> bool { kind == VAR }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
+impl AstNode for Dimension {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == DIMENSION }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
         if Self::can_cast(syntax.kind()) {
             Some(Self { syntax })
@@ -1192,6 +1303,9 @@ impl From<ParenExpr> for Expr {
 impl From<ArrayExpr> for Expr {
     fn from(node: ArrayExpr) -> Expr { Expr::ArrayExpr(node) }
 }
+impl From<IndexExpr> for Expr {
+    fn from(node: IndexExpr) -> Expr { Expr::IndexExpr(node) }
+}
 impl From<Call> for Expr {
     fn from(node: Call) -> Expr { Expr::Call(node) }
 }
@@ -1210,8 +1324,8 @@ impl From<Literal> for Expr {
 impl AstNode for Expr {
     fn can_cast(kind: SyntaxKind) -> bool {
         match kind {
-            PREFIX_EXPR | BIN_EXPR | PAREN_EXPR | ARRAY_EXPR | CALL | SELECT_EXPR | PATH_EXPR
-            | PORT_FLOW => true,
+            PREFIX_EXPR | BIN_EXPR | PAREN_EXPR | ARRAY_EXPR | INDEX_EXPR | CALL | SELECT_EXPR
+            | PATH_EXPR | PORT_FLOW => true,
             _ => Literal::can_cast(kind),
         }
     }
@@ -1221,6 +1335,7 @@ impl AstNode for Expr {
             BIN_EXPR => Expr::BinExpr(BinExpr { syntax }),
             PAREN_EXPR => Expr::ParenExpr(ParenExpr { syntax }),
             ARRAY_EXPR => Expr::ArrayExpr(ArrayExpr { syntax }),
+            INDEX_EXPR => Expr::IndexExpr(IndexExpr { syntax }),
             CALL => Expr::Call(Call { syntax }),
             SELECT_EXPR => Expr::SelectExpr(SelectExpr { syntax }),
             PATH_EXPR => Expr::PathExpr(PathExpr { syntax }),
@@ -1235,6 +1350,7 @@ impl AstNode for Expr {
             Expr::BinExpr(it) => &it.syntax,
             Expr::ParenExpr(it) => &it.syntax,
             Expr::ArrayExpr(it) => &it.syntax,
+            Expr::IndexExpr(it) => &it.syntax,
             Expr::Call(it) => &it.syntax,
             Expr::SelectExpr(it) => &it.syntax,
             Expr::PathExpr(it) => &it.syntax,
@@ -1409,6 +1525,9 @@ impl From<NetDecl> for ModuleItem {
 impl From<AnalogBehaviour> for ModuleItem {
     fn from(node: AnalogBehaviour) -> ModuleItem { ModuleItem::AnalogBehaviour(node) }
 }
+impl From<ProceduralBlock> for ModuleItem {
+    fn from(node: ProceduralBlock) -> ModuleItem { ModuleItem::ProceduralBlock(node) }
+}
 impl From<Function> for ModuleItem {
     fn from(node: Function) -> ModuleItem { ModuleItem::Function(node) }
 }
@@ -1424,11 +1543,14 @@ impl From<ParamDecl> for ModuleItem {
 impl From<AliasParam> for ModuleItem {
     fn from(node: AliasParam) -> ModuleItem { ModuleItem::AliasParam(node) }
 }
+impl From<GenvarDecl> for ModuleItem {
+    fn from(node: GenvarDecl) -> ModuleItem { ModuleItem::GenvarDecl(node) }
+}
 impl AstNode for ModuleItem {
     fn can_cast(kind: SyntaxKind) -> bool {
         match kind {
-            BODY_PORT_DECL | NET_DECL | ANALOG_BEHAVIOUR | FUNCTION | BRANCH_DECL | VAR_DECL
-            | PARAM_DECL | ALIAS_PARAM => true,
+            BODY_PORT_DECL | NET_DECL | ANALOG_BEHAVIOUR | PROCEDURAL_BLOCK | FUNCTION
+            | BRANCH_DECL | VAR_DECL | PARAM_DECL | ALIAS_PARAM | GENVAR_DECL => true,
             _ => false,
         }
     }
@@ -1437,11 +1559,13 @@ impl AstNode for ModuleItem {
             BODY_PORT_DECL => ModuleItem::BodyPortDecl(BodyPortDecl { syntax }),
             NET_DECL => ModuleItem::NetDecl(NetDecl { syntax }),
             ANALOG_BEHAVIOUR => ModuleItem::AnalogBehaviour(AnalogBehaviour { syntax }),
+            PROCEDURAL_BLOCK => ModuleItem::ProceduralBlock(ProceduralBlock { syntax }),
             FUNCTION => ModuleItem::Function(Function { syntax }),
             BRANCH_DECL => ModuleItem::BranchDecl(BranchDecl { syntax }),
             VAR_DECL => ModuleItem::VarDecl(VarDecl { syntax }),
             PARAM_DECL => ModuleItem::ParamDecl(ParamDecl { syntax }),
             ALIAS_PARAM => ModuleItem::AliasParam(AliasParam { syntax }),
+            GENVAR_DECL => ModuleItem::GenvarDecl(GenvarDecl { syntax }),
             _ => return None,
         };
         Some(res)
@@ -1451,11 +1575,13 @@ impl AstNode for ModuleItem {
             ModuleItem::BodyPortDecl(it) => &it.syntax,
             ModuleItem::NetDecl(it) => &it.syntax,
             ModuleItem::AnalogBehaviour(it) => &it.syntax,
+            ModuleItem::ProceduralBlock(it) => &it.syntax,
             ModuleItem::Function(it) => &it.syntax,
             ModuleItem::BranchDecl(it) => &it.syntax,
             ModuleItem::VarDecl(it) => &it.syntax,
             ModuleItem::ParamDecl(it) => &it.syntax,
             ModuleItem::AliasParam(it) => &it.syntax,
+            ModuleItem::GenvarDecl(it) => &it.syntax,
         }
     }
 }
@@ -1465,10 +1591,13 @@ impl From<PortDecl> for ModulePortKind {
 impl From<Name> for ModulePortKind {
     fn from(node: Name) -> ModulePortKind { ModulePortKind::Name(node) }
 }
+impl From<PortRef> for ModulePortKind {
+    fn from(node: PortRef) -> ModulePortKind { ModulePortKind::PortRef(node) }
+}
 impl AstNode for ModulePortKind {
     fn can_cast(kind: SyntaxKind) -> bool {
         match kind {
-            PORT_DECL | NAME => true,
+            PORT_DECL | NAME | PORT_REF => true,
             _ => false,
         }
     }
@@ -1476,6 +1605,7 @@ impl AstNode for ModulePortKind {
         let res = match syntax.kind() {
             PORT_DECL => ModulePortKind::PortDecl(PortDecl { syntax }),
             NAME => ModulePortKind::Name(Name { syntax }),
+            PORT_REF => ModulePortKind::PortRef(PortRef { syntax }),
             _ => return None,
         };
         Some(res)
@@ -1484,6 +1614,7 @@ impl AstNode for ModulePortKind {
         match self {
             ModulePortKind::PortDecl(it) => &it.syntax,
             ModulePortKind::Name(it) => &it.syntax,
+            ModulePortKind::PortRef(it) => &it.syntax,
         }
     }
 }
@@ -1722,6 +1853,11 @@ impl std::fmt::Display for ArrayExpr {
         std::fmt::Display::fmt(self.syntax(), f)
     }
 }
+impl std::fmt::Display for IndexExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
 impl std::fmt::Display for Call {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
@@ -1802,6 +1938,11 @@ impl std::fmt::Display for AnalogBehaviour {
         std::fmt::Display::fmt(self.syntax(), f)
     }
 }
+impl std::fmt::Display for ProceduralBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
 impl std::fmt::Display for Function {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
@@ -1817,6 +1958,11 @@ impl std::fmt::Display for AliasParam {
         std::fmt::Display::fmt(self.syntax(), f)
     }
 }
+impl std::fmt::Display for GenvarDecl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
 impl std::fmt::Display for ModulePort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
@@ -1827,7 +1973,17 @@ impl std::fmt::Display for PortDecl {
         std::fmt::Display::fmt(self.syntax(), f)
     }
 }
+impl std::fmt::Display for PortRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
 impl std::fmt::Display for Var {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
+impl std::fmt::Display for Dimension {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
     }

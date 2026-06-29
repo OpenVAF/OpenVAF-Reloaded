@@ -1,0 +1,18 @@
+`include "disciplines.vams"
+
+// Regression: `laplace_nd` with anonymous *integer* coefficient literals. The
+// Verilog-AMS LRM's own examples write coefficients as bare integers (e.g.
+// `'{-1,0,1}`), which lower to integer MIR values. The state-space realization
+// does real arithmetic on them, so the coefficients must be widened to real --
+// otherwise the optimizer hits `fsub Float, Int` and the compiler panics.
+//
+// Here H(s) = 1 / (1 + s): a stable first-order low-pass with integer
+// coefficients, exercising exactly that widening path.
+module laplace_nd_int(in, out);
+    inout in, out;
+    electrical in, out;
+
+    analog begin
+        V(out) <+ laplace_nd(V(in), '{1}, '{1, 1});
+    end
+endmodule

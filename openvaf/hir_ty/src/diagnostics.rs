@@ -86,6 +86,11 @@ impl Diagnostic for InferenceDiagnosticWrapped<'_> {
                     AssignOp::Assign => res
                         .with_message("invalid destination for assignment")
                         .with_notes(vec!["help: expected a variable".to_owned()]),
+                    AssignOp::Indirect => res
+                        .with_message("invalid destination for indirect branch assignment")
+                        .with_notes(vec![
+                            "help: expected nature access such as V(foo) or I(foo)".to_owned()
+                        ]),
                 };
 
                 match maybe_different_operand {
@@ -97,7 +102,7 @@ impl Diagnostic for InferenceDiagnosticWrapped<'_> {
                         "help: found a variable\nperhaps you meant to assign (=) a value"
                             .to_owned(),
                     ]),
-                    None => res,
+                    Some(ast::AssignOp::Indirect) | None => res,
                 }
             }
             InferenceDiagnostic::PathResolveError { ref err, expr } => {

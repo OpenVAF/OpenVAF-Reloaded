@@ -4,7 +4,7 @@ use ahash::{HashMap, HashSet};
 use hir_def::body::Body;
 use hir_def::{
     BranchId, BuiltIn, DefWithBodyId, DisciplineId, Expr, ExprId, FunctionArgLoc, Literal, Lookup,
-    NatureId, NodeId, ParamId, Path, Stmt, StmtId, VarId,
+    ModuleBodyKind, NatureId, NodeId, ParamId, Path, Stmt, StmtId, VarId,
 };
 use stdx::impl_display;
 use syntax::ast::AssignOp;
@@ -104,8 +104,13 @@ impl BodyValidationDiagnostic {
         let infere = db.inference_result(def);
 
         let ctx = match def {
-            DefWithBodyId::ModuleId { initial: false, .. } => BodyCtx::AnalogBlock,
-            DefWithBodyId::ModuleId { initial: true, .. } => BodyCtx::AnalogInitialBlock,
+            DefWithBodyId::ModuleId { kind: ModuleBodyKind::Analog, .. } => BodyCtx::AnalogBlock,
+            DefWithBodyId::ModuleId { kind: ModuleBodyKind::AnalogInitial, .. } => {
+                BodyCtx::AnalogInitialBlock
+            }
+            DefWithBodyId::ModuleId { kind: ModuleBodyKind::Procedural, .. } => {
+                BodyCtx::ProceduralBlock
+            }
             DefWithBodyId::FunctionId(_) => BodyCtx::Function,
             _ => BodyCtx::Const,
         };
@@ -144,6 +149,7 @@ impl BodyValidationDiagnostic {
 pub enum BodyCtx {
     AnalogBlock,
     AnalogInitialBlock,
+    ProceduralBlock,
     Conditional,
     EventControl,
     Function,
@@ -177,6 +183,7 @@ impl_display! {
     match BodyCtx{
        BodyCtx::AnalogBlock => "analog block";
        BodyCtx::AnalogInitialBlock => "analog initial block";
+       BodyCtx::ProceduralBlock => "procedural block";
        BodyCtx::Conditional => "conditions";
        BodyCtx::EventControl => "events";
        BodyCtx::Function => "analog functions";
@@ -203,7 +210,9 @@ impl BodyValidator<'_> {
             Stmt::Assignment { dst, val, assignment_kind } => {
                 self.validate_expr(val, stmt);
 
-                if assignment_kind == AssignOp::Contribute && !self.ctx.allow_contribute() {
+                if matches!(assignment_kind, AssignOp::Contribute | AssignOp::Indirect)
+                    && !self.ctx.allow_contribute()
+                {
                     self.diagnostics
                         .push(BodyValidationDiagnostic::IllegalContribute { stmt, ctx: self.ctx })
                 }
@@ -727,8 +736,9 @@ impl ExprValidator<'_, '_> {
             }
 
             (
-                BuiltIn::laplace_nd
-                | BuiltIn::laplace_np
+                // laplace_nd accepts runtime-computed coefficient arrays (realized as
+                // a state-space filter), so its coefficient args are not const-checked.
+                BuiltIn::laplace_np
                 | BuiltIn::laplace_zp
                 | BuiltIn::laplace_zd
                 | BuiltIn::zi_nd

@@ -7,7 +7,7 @@ use stdx::impl_debug;
 
 use super::{
     AnalogBehaviour, ArgListOwner, Assign, AstChildTokens, AstChildren, Constraint, EventStmt,
-    Expr, ForStmt, Function, ModulePortKind, Path, PortFlow, Range, Stmt, StrLit,
+    Expr, ForStmt, Function, ModulePortKind, Path, PortFlow, ProceduralBlock, Range, Stmt, StrLit,
 };
 use crate::ast::{self, support, AstNode};
 use crate::SyntaxKind::{IDENT, ROOT_KW};
@@ -163,6 +163,21 @@ impl ast::ModuleDecl {
     pub fn body_ports(&self) -> AstChildren<ast::BodyPortDecl> {
         support::children(self.syntax())
     }
+
+    /// Statements of standalone `initial` procedural blocks (the imperative runner
+    /// lane), in source order. Distinct from `analog initial` blocks.
+    pub fn initial_behaviour(&self) -> impl Iterator<Item = Stmt> {
+        support::children::<ProceduralBlock>(self.syntax())
+            .filter(|it| it.initial_token().is_some())
+            .filter_map(|it| it.stmt())
+    }
+
+    /// Statements of standalone `final` procedural blocks, in source order.
+    pub fn final_behaviour(&self) -> impl Iterator<Item = Stmt> {
+        support::children::<ProceduralBlock>(self.syntax())
+            .filter(|it| it.final_token().is_some())
+            .filter_map(|it| it.stmt())
+    }
 }
 
 impl ast::ModulePort {
@@ -185,12 +200,15 @@ impl ast::ModulePorts {
 pub enum AssignOp {
     Contribute,
     Assign,
+    /// Indirect branch assignment `V(out) : constraint == 0;` (Verilog-AMS LRM).
+    Indirect,
 }
 
 impl_debug! {
     match AssignOp{
         AssignOp::Contribute => "<+";
         AssignOp::Assign => "=";
+        AssignOp::Indirect => ":";
     }
 }
 
@@ -200,6 +218,8 @@ impl Assign {
             Some(AssignOp::Assign)
         } else if support::token(self.syntax(), T![<+]).is_some() {
             Some(AssignOp::Contribute)
+        } else if support::token(self.syntax(), T![:]).is_some() {
+            Some(AssignOp::Indirect)
         } else {
             None
         }

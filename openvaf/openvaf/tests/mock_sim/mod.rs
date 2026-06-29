@@ -13,6 +13,10 @@ use crate::load::{
     osdi_str, EvalFlags, EvalRetFlags, OsdiInstance, OsdiModel, OsdiSimInfo, OsdiSimParas,
 };
 
+fn unsupported_query_past_state(_: *mut c_void, _: u32, _: f64, _: f64) -> f64 {
+    panic!("mock simulator does not implement absdelay history")
+}
+
 #[derive(Debug, Default)]
 pub struct MockSimulation {
     pub nodes: IndexSet<&'static str>,
@@ -126,6 +130,10 @@ impl OsdiInstance {
         connected_terminals: u32,
         temp: f64,
     ) -> Result<MockSimulation> {
+        assert_eq!(
+            self.descriptor.num_delay, 0,
+            "mock simulator does not implement absdelay history"
+        );
         let mut internal_nodes = self.process_params(model, connected_terminals, temp)?;
         let mut sim = MockSimulation::new();
         // create internal nodes
@@ -178,6 +186,18 @@ impl OsdiInstance {
         sim.state_1.resize(self.descriptor.num_states as usize, 0.0);
         sim.state_2.resize(self.descriptor.num_states as usize, 0.0);
         sim.noise_dense.resize(self.descriptor.num_noise_src as usize, 0.0);
+
+        // Initialize the per-instance state_idx map (logical limit-state -> physical
+        // slot in prev_state/next_state). A real simulator assigns these; with a
+        // single state the default 0 happens to work, but with several they would all
+        // alias slot 0. Use the identity mapping.
+        unsafe {
+            let data = self.data as *mut u8;
+            let state_idx = data.add(self.descriptor.state_idx_off as usize).cast::<u32>();
+            for i in 0..self.descriptor.num_states {
+                state_idx.add(i as usize).write(i);
+            }
+        }
         Ok(sim)
     }
 
@@ -245,6 +265,8 @@ impl OsdiInstance {
             prev_state: sim.state_1.as_mut_ptr(),
             next_state: sim.state_2.as_mut_ptr(),
             flags: flags.bits(),
+            history_ctx: ptr::null_mut(),
+            query_past_state: unsupported_query_past_state,
         };
         let flags = self.descriptor.eval(
             b"foo\0".as_ptr() as *mut c_void,
