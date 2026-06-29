@@ -84,14 +84,13 @@ jobs:
         with:
           msystem: ${{ matrix.sys }}
           update: true
-          install: base-devel git ca-certificates
+          install: base-devel git ca-certificates zip
           pacboy: >-
             openssl:p
             clang:p
             llvm:p
             rust:p
             cc:p
-            zip:p
 
       - name: Configure Cargo to use CLI Git
         shell: bash
