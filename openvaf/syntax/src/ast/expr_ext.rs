@@ -376,6 +376,11 @@ impl ast::IndexExpr {
     pub fn index(&self) -> Option<ast::Expr> {
         support::children(self.syntax()).nth(1)
     }
+
+    /// The least-significant bound of a part-select (e.g. `j` in `den[i:j]`).
+    pub fn lsb(&self) -> Option<ast::Expr> {
+        support::children(self.syntax()).nth(2)
+    }
 }
 
 impl ast::Dimension {

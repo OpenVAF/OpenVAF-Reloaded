@@ -254,7 +254,16 @@ impl TypeValidationCtx<'_> {
                 }
             }
 
-            let duplicates: Vec<_> = disciplines.map(|(decl, _)| decl.ast_id(self.tree)).collect();
+            let first_discipline = discipline.clone();
+            let duplicates: Vec<_> = disciplines
+                .filter_map(|(decl, discipline)| {
+                    if *discipline != first_discipline {
+                        Some(decl.ast_id(self.tree))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             if !duplicates.is_empty() {
                 self.report(TypeValidationDiagnostic::MultipleDisciplines(DuplicateItem {
                     src: node,

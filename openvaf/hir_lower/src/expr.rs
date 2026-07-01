@@ -550,6 +550,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 let noise_table = NoiseTable::new([(0.0, 0.0)], log, name, idx);
                 self.ctx.call1(CallBackKind::NoiseTable(Box::new(noise_table)), &[])
             }
+            BuiltIn::rdist_normal => self.lower_rdist_normal(args),
 
             BuiltIn::abstime => self.ctx.use_param(ParamKind::Abstime),
 
@@ -807,6 +808,67 @@ impl BodyLoweringCtx<'_, '_, '_> {
         }
     }
 
+    fn lower_rdist_normal(&mut self, args: &[ExprId]) -> Value {
+        let seed_var = match self.body.get_expr(args[0]) {
+            Expr::Read(Ref::Variable(var)) if var.ty(self.ctx.db) == Type::Integer => Some(var),
+            _ => None,
+        };
+
+        let seed0 = match seed_var {
+            Some(var) => self.ctx.read_variable(var),
+            None => self.lower_expr(args[0]),
+        };
+        let seed1 = self.next_random_seed(seed0);
+        let seed2 = self.next_random_seed(seed1);
+        if let Some(var) = seed_var {
+            self.ctx.def_place(PlaceKind::Var(var), seed2);
+        }
+
+        let u1 = self.random_uniform(seed1);
+        let u2 = self.random_uniform(seed2);
+        let mean = self.lower_expr(args[1]);
+        let sigma = self.lower_expr(args[2]);
+
+        let minus_two = self.ctx.fconst(-2.0);
+        let two_pi = self.ctx.fconst(std::f64::consts::TAU);
+        let ln_u1 = self.ctx.ins().ln(u1);
+        let radius_arg = self.ctx.ins().fmul(minus_two, ln_u1);
+        let radius = self.ctx.ins().sqrt(radius_arg);
+        let angle = self.ctx.ins().fmul(two_pi, u2);
+        let cos_angle = self.ctx.ins().cos(angle);
+        let z = self.ctx.ins().fmul(radius, cos_angle);
+        let scaled = self.ctx.ins().fmul(sigma, z);
+        self.ctx.ins().fadd(mean, scaled)
+    }
+
+    fn next_random_seed(&mut self, seed: Value) -> Value {
+        let zero = self.ctx.iconst(0);
+        let default_seed = self.ctx.iconst(0x1357_9bdf);
+        let is_zero = self.ctx.ins().ieq(seed, zero);
+        let seed =
+            self.ctx.make_select(is_zero, |_ctx, branch| if branch { default_seed } else { seed });
+
+        let shift = self.ctx.iconst(13);
+        let shifted = self.ctx.ins().ishl(seed, shift);
+        let x = self.ctx.ins().ixor(seed, shifted);
+        let shift = self.ctx.iconst(17);
+        let shifted = self.ctx.ins().ishr(x, shift);
+        let x = self.ctx.ins().ixor(x, shifted);
+        let shift = self.ctx.iconst(5);
+        let shifted = self.ctx.ins().ishl(x, shift);
+        let x = self.ctx.ins().ixor(x, shifted);
+        let mask = self.ctx.iconst(i32::MAX);
+        let x = self.ctx.ins().iand(x, mask);
+        let is_zero = self.ctx.ins().ieq(x, zero);
+        self.ctx.make_select(is_zero, |ctx, branch| if branch { ctx.iconst(1) } else { x })
+    }
+
+    fn random_uniform(&mut self, seed: Value) -> Value {
+        let as_real = self.ctx.insert_cast(seed, &Type::Integer, &Type::Real);
+        let denom = self.ctx.fconst(i32::MAX as f64);
+        self.ctx.ins().fdiv(as_real, denom)
+    }
+
     fn lower_integral(&mut self, kind: IdtKind, args: &[ExprId]) -> Value {
         let (equation, val) = self.ctx.implicit_equation(ImplicitEquationKind::Idt(kind));
 
@@ -894,13 +956,13 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 .iter()
                 .map(|&e| {
                     let v = self.lower_expr(e);
-                    let ty = self.body.expr_type(e);
+                    let ty = self.resolved_ty(e);
                     self.coeff_to_real(v, &ty)
                 })
                 .collect(),
             _ => {
                 let v = self.lower_expr(arg);
-                let ty = self.body.expr_type(arg);
+                let ty = self.resolved_ty(arg);
                 vec![self.coeff_to_real(v, &ty)]
             }
         }

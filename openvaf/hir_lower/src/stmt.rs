@@ -1,6 +1,8 @@
-use hir::{BranchWrite, Case, CaseCond, ContributeKind, Expr, ExprId, Node, Stmt, StmtId, Type};
+use hir::{
+    BranchWrite, Case, CaseCond, ContributeKind, Event, Expr, ExprId, Node, Stmt, StmtId, Type,
+};
 use mir::builder::InstBuilder;
-use mir::{Opcode, Value, F_ZERO};
+use mir::{Opcode, Value, FALSE, F_ZERO, INFINITY, ZERO};
 use syntax::ast::BinaryOp;
 
 use crate::body::BodyLoweringCtx;
@@ -28,6 +30,8 @@ impl BodyLoweringCtx<'_, '_, '_> {
                     self.ctx.in_initial_step = true;
                     self.lower_stmt(body);
                     self.ctx.in_initial_step = prev;
+                } else if let Event::Timer { start, period } = event {
+                    self.lower_timer_event(*start, *period, body);
                 } else {
                     self.lower_stmt(body);
                 }
@@ -85,6 +89,158 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
             Stmt::WhileLoop { cond, body } => self.lower_loop(cond, |s| s.lower_stmt(body)),
             Stmt::Case { discr, case_arms } => self.lower_case(discr, case_arms),
+        }
+    }
+
+    fn lower_timer_event(&mut self, start: ExprId, period: Option<ExprId>, body: StmtId) {
+        if self.ctx.no_equations {
+            return;
+        }
+
+        let state = self.ctx.alloc_retained_state();
+        let start = self.lower_timer_arg(start);
+        let period = period.map(|period| self.lower_timer_arg(period));
+        let abstime = self.ctx.use_param(ParamKind::Abstime);
+        let prev_fire = self.ctx.retained_prev(state);
+        let uninitialized = self.ctx.ins().feq(prev_fire, F_ZERO);
+        let starts_at_or_before_zero = self.ctx.ins().fle(start, F_ZERO);
+        let next_after_zero = self.next_timer_after_zero(start, period);
+        let initial_next_fire =
+            self.ctx.make_select(starts_at_or_before_zero, |_ctx, before_zero| {
+                if before_zero {
+                    next_after_zero
+                } else {
+                    start
+                }
+            });
+        let next_fire =
+            self.ctx.make_select(
+                uninitialized,
+                |_ctx, branch| {
+                    if branch {
+                        initial_next_fire
+                    } else {
+                        prev_fire
+                    }
+                },
+            );
+        let tran = self.ctx.sconst("tran");
+        let ic = self.ctx.sconst("ic");
+        let is_tran = self.ctx.call1(CallBackKind::Analysis, &[tran]);
+        let is_ic = self.ctx.call1(CallBackKind::Analysis, &[ic]);
+        let is_tran = self.ctx.ins().ine(is_tran, ZERO);
+        let is_ic = self.ctx.ins().ine(is_ic, ZERO);
+        let not_ic = self.ctx.ins().bnot(is_ic);
+        let tran_active =
+            self.ctx.make_select(is_tran, |_ctx, tran| if tran { not_ic } else { FALSE });
+        let init_due = self.ctx.make_select(uninitialized, |ctx, first_eval| {
+            if first_eval {
+                ctx.make_select(is_ic, |_ctx, ic| if ic { starts_at_or_before_zero } else { FALSE })
+            } else {
+                FALSE
+            }
+        });
+        let reached = self.ctx.ins().fge(abstime, next_fire);
+        let tran_due =
+            self.ctx.make_select(tran_active, |_ctx, active| if active { reached } else { FALSE });
+        let should_fire =
+            self.ctx.make_select(init_due, |_ctx, init| if init { init_due } else { tran_due });
+
+        let (fire_next, wait_next) =
+            self.lower_cond_with(should_fire, |mut ctx, fire| {
+                if fire {
+                    ctx.lower_stmt(body);
+                    let next_after_tran_fire = ctx.next_timer_fire(next_fire, period);
+                    ctx.ctx.make_select(init_due, |_ctx, init| {
+                        if init {
+                            next_fire
+                        } else {
+                            next_after_tran_fire
+                        }
+                    })
+                } else {
+                    next_fire
+                }
+            });
+        let next_fire = self.ctx.ins().phi(&[fire_next, wait_next]);
+        self.ctx.store_retained(state, next_fire);
+        self.request_bound_step_to(next_fire, abstime);
+    }
+
+    fn next_timer_after_zero(&mut self, start: Value, period: Option<Value>) -> Value {
+        let Some(period) = period else {
+            return INFINITY;
+        };
+
+        let zero_minus_start = self.ctx.ins().fneg(start);
+        let elapsed = self.ctx.ins().fdiv(zero_minus_start, period);
+        let cycles = self.ctx.ins().floor(elapsed);
+        let one = self.ctx.fconst(1.0);
+        let cycles = self.ctx.ins().fadd(cycles, one);
+        let offset = self.ctx.ins().fmul(cycles, period);
+        self.ctx.ins().fadd(start, offset)
+    }
+
+    fn next_timer_fire(&mut self, next_fire: Value, period: Option<Value>) -> Value {
+        if let Some(period) = period {
+            self.ctx.ins().fadd(next_fire, period)
+        } else {
+            INFINITY
+        }
+    }
+
+    fn request_bound_step_to(&mut self, time: Value, abstime: Value) {
+        let delta = self.ctx.ins().fsub(time, abstime);
+        let rel_tol = self.ctx.fconst(1e-12);
+        let abs_tol = self.ctx.fconst(1e-30);
+        let scaled_tol = self.ctx.ins().fmul(time, rel_tol);
+        let use_scaled_tol = self.ctx.ins().fgt(scaled_tol, abs_tol);
+        let tol = self.ctx.make_select(
+            use_scaled_tol,
+            |_ctx, scaled| {
+                if scaled {
+                    scaled_tol
+                } else {
+                    abs_tol
+                }
+            },
+        );
+        let positive = self.ctx.ins().fgt(delta, tol);
+        let delta = self.ctx.make_select(
+            positive,
+            |_ctx, is_positive| {
+                if is_positive {
+                    delta
+                } else {
+                    INFINITY
+                }
+            },
+        );
+        let current = self.ctx.use_place(PlaceKind::BoundStep);
+        let smaller = self.ctx.ins().flt(delta, current);
+        let next = self.ctx.make_select(
+            smaller,
+            |_ctx, use_delta| {
+                if use_delta {
+                    delta
+                } else {
+                    current
+                }
+            },
+        );
+        self.ctx.def_place(PlaceKind::BoundStep, next);
+    }
+
+    fn lower_timer_arg(&mut self, expr: ExprId) -> Value {
+        let val = self.lower_expr(expr);
+        match self.body.expr_type(expr) {
+            Type::Real => val,
+            Type::Integer => self.ctx.insert_cast(val, &Type::Integer, &Type::Real),
+            Type::Err if self.body.as_literalint(&expr).is_some() => {
+                self.ctx.insert_cast(val, &Type::Integer, &Type::Real)
+            }
+            Type::Err => val,
+            ty => unreachable!("invalid timer argument type {ty:?}"),
         }
     }
 

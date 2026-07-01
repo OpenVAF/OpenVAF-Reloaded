@@ -1,4 +1,7 @@
-use hir::{AssignmentLhs, BodyRef, Event, ExprId, Node, Stmt, StmtId, Type, Variable};
+use hir::{
+    AssignmentLhs, BodyRef, BuiltIn, Event, Expr, ExprId, Node, Ref, ResolvedFun, Stmt, StmtId,
+    Type, Variable,
+};
 use mir::builder::InstBuilder;
 use mir::{Block, Value};
 use stdx::iter::zip;
@@ -14,14 +17,14 @@ pub struct BodyLoweringCtx<'a, 'c1, 'c2> {
 
 impl<'c1, 'c2> BodyLoweringCtx<'_, 'c1, 'c2> {
     pub fn lower_entry_stmts(&mut self) {
-        // Pre-pass: find variables assigned inside `@(cross)` handlers. Each is backed
+        // Pre-pass: find variables assigned inside event handlers. Each is backed
         // by retained limit-state slots so it holds its value across timesteps (true
         // latch/event semantics, e.g. a Schmitt trigger). The variable starts each
         // evaluation at its previous accepted value. An array variable retains every
         // element (one slot each), so e.g. an ADC's sampled bit vector survives.
         let mut retained: Vec<Variable> = Vec::new();
         for &stmnt in self.body.entry() {
-            self.collect_cross_assigned(stmnt, false, &mut retained);
+            self.collect_event_assigned(stmnt, false, &mut retained);
         }
         let mut seen = ahash::AHashSet::new();
         retained.retain(|v| seen.insert(*v));
@@ -86,39 +89,85 @@ impl<'c1, 'c2> BodyLoweringCtx<'_, 'c1, 'c2> {
         self.ctx.store_retained(state, as_real);
     }
 
-    /// Recursively collect variables assigned inside `@(cross)` event handlers.
-    fn collect_cross_assigned(&self, stmnt: StmtId, in_cross: bool, dst: &mut Vec<Variable>) {
+    /// Recursively collect variables assigned inside monitored event handlers.
+    fn collect_event_assigned(&self, stmnt: StmtId, in_event: bool, dst: &mut Vec<Variable>) {
         let stmt = match self.body.get_stmt(stmnt) {
             Some(stmt) => stmt,
             None => return,
         };
         match stmt {
-            Stmt::Assignment { lhs, .. } if in_cross => match lhs {
-                AssignmentLhs::Variable(var) => dst.push(var),
-                AssignmentLhs::ArrayElement { var, .. } => dst.push(var),
-                _ => {}
-            },
-            Stmt::Assignment { .. } | Stmt::Expr(_) | Stmt::Contribute { .. } => {}
+            Stmt::Assignment { lhs, rhs } => {
+                if in_event {
+                    match lhs {
+                        AssignmentLhs::Variable(var) => dst.push(var),
+                        AssignmentLhs::ArrayElement { var, .. } => dst.push(var),
+                        _ => {}
+                    }
+                    self.collect_event_expr_assigned(rhs, dst);
+                }
+            }
+            Stmt::Expr(expr) if in_event => self.collect_event_expr_assigned(expr, dst),
+            Stmt::Contribute { rhs, .. } if in_event => self.collect_event_expr_assigned(rhs, dst),
+            Stmt::Expr(_) | Stmt::Contribute { .. } => {}
             Stmt::EventControl { event, body } => {
-                let inner = in_cross || matches!(event, Event::Cross);
-                self.collect_cross_assigned(body, inner, dst);
+                let inner = in_event || matches!(event, Event::Cross | Event::Timer { .. });
+                self.collect_event_assigned(body, inner, dst);
             }
             Stmt::Block { body } => {
                 for &s in body {
-                    self.collect_cross_assigned(s, in_cross, dst);
+                    self.collect_event_assigned(s, in_event, dst);
                 }
             }
             Stmt::If { then_branch, else_branch, .. } => {
-                self.collect_cross_assigned(then_branch, in_cross, dst);
-                self.collect_cross_assigned(else_branch, in_cross, dst);
+                self.collect_event_assigned(then_branch, in_event, dst);
+                self.collect_event_assigned(else_branch, in_event, dst);
             }
             Stmt::ForLoop { body, .. } | Stmt::WhileLoop { body, .. } => {
-                self.collect_cross_assigned(body, in_cross, dst);
+                self.collect_event_assigned(body, in_event, dst);
             }
             Stmt::Case { case_arms, .. } => {
                 for arm in case_arms {
-                    self.collect_cross_assigned(arm.body, in_cross, dst);
+                    self.collect_event_assigned(arm.body, in_event, dst);
                 }
+            }
+        }
+    }
+
+    fn collect_event_expr_assigned(&self, expr: ExprId, dst: &mut Vec<Variable>) {
+        match self.body.get_expr(expr) {
+            Expr::Read(_) | Expr::Literal(_) => {}
+            Expr::BinaryOp { lhs, rhs, .. } => {
+                self.collect_event_expr_assigned(lhs, dst);
+                self.collect_event_expr_assigned(rhs, dst);
+            }
+            Expr::UnaryOp { expr, .. } => self.collect_event_expr_assigned(expr, dst),
+            Expr::Select { cond, then_val, else_val } => {
+                self.collect_event_expr_assigned(cond, dst);
+                self.collect_event_expr_assigned(then_val, dst);
+                self.collect_event_expr_assigned(else_val, dst);
+            }
+            Expr::Call { fun, args } => {
+                if matches!(fun, ResolvedFun::BuiltIn(BuiltIn::rdist_normal)) {
+                    if let Some(&seed) = args.first() {
+                        if let Expr::Read(Ref::Variable(var)) = self.body.get_expr(seed) {
+                            if var.ty(self.ctx.db) == Type::Integer {
+                                dst.push(var);
+                            }
+                        }
+                    }
+                }
+                for &arg in args {
+                    self.collect_event_expr_assigned(arg, dst);
+                }
+            }
+            Expr::Array(args) => {
+                for &arg in args {
+                    self.collect_event_expr_assigned(arg, dst);
+                }
+            }
+            Expr::Index { base, index } => {
+                self.collect_event_expr_assigned(base, dst);
+                self.collect_event_expr_assigned(index, dst);
             }
         }
     }

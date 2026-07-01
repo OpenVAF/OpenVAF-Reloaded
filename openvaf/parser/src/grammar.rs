@@ -19,7 +19,6 @@ mod paths;
 mod stmts;
 
 use attributes::attrs;
-use call::arg_list;
 use expressions::expr;
 use items::{parameter_decl, var_decl};
 use stmts::{stmt, stmt_with_attrs};

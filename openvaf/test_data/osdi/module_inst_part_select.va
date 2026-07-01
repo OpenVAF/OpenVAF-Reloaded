@@ -1,0 +1,20 @@
+`include "disciplines.vams"
+
+module child(a, b);
+    inout [0:1] a, b;
+    electrical [0:1] a, b;
+
+    analog begin
+        V(b[0]) <+ V(a[0]);
+        V(b[1]) <+ V(a[1]);
+    end
+endmodule
+
+module module_inst_part_select(in, out);
+    inout [0:3] in, out;
+    electrical [0:3] in, out, tmp;
+    electrical [0:1] tmp;
+
+    child c1(in[0:1], tmp[0:1]);
+    child c2(tmp, out[2:3]);
+endmodule

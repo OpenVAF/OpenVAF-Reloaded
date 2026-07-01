@@ -1,4 +1,5 @@
 use std::f64::consts;
+use std::ffi::CStr;
 use std::ffi::OsStr;
 use std::path::Path;
 
@@ -17,6 +18,12 @@ mod load;
 mod mock_sim;
 
 fn compile_and_load(root_file: &Utf8Path) -> &'static OsdiDescriptor {
+    let libs = compile_and_load_all(root_file);
+    assert_eq!(libs.len(), 1);
+    &libs[0]
+}
+
+fn compile_and_load_all(root_file: &Utf8Path) -> &'static [OsdiDescriptor] {
     let openvaf_opts = openvaf::Opts {
         defines: Vec::new(),
         codegen_opts: Vec::new(),
@@ -44,9 +51,7 @@ fn compile_and_load(root_file: &Utf8Path) -> &'static OsdiDescriptor {
             panic!("openvaf: compilation of {root_file} failed");
         }
     };
-    let libs = unsafe { load_osdi_lib(&lib_file).unwrap() };
-    assert_eq!(libs.len(), 1);
-    &libs[0]
+    unsafe { load_osdi_lib(&lib_file).unwrap() }
 }
 
 // fn integration_test(dir: &str) -> Result {
@@ -365,6 +370,50 @@ fn test_laplace_nd_int() -> Result<()> {
     Ok(())
 }
 
+/// Regression: module instances with vector formal ports and part-select actuals
+/// are flattened into the parent analog body. The duplicate `tmp` discipline
+/// declaration is intentionally same-discipline and must not be rejected.
+fn test_module_inst_part_select() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+    let descs = compile_and_load_all(
+        openvaf_test_data("osdi").join("module_inst_part_select.va").as_path().try_into().unwrap(),
+    );
+    let desc = descs
+        .iter()
+        .find(|desc| unsafe { CStr::from_ptr(desc.name).to_str().unwrap() }
+            == "module_inst_part_select")
+        .expect("parent module descriptor missing");
+    assert_eq!(desc.num_terminals, 8);
+    Ok(())
+}
+
+/// Regression: `$rdist_normal(seed, mean, sigma)` lowers into generated code and
+/// does not require an OSDI simulator callback or ABI extension.
+fn test_rdist_normal() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+    compile_and_load(
+        openvaf_test_data("osdi").join("rdist_normal.va").as_path().try_into().unwrap(),
+    );
+    Ok(())
+}
+
+/// Regression: zero-start periodic `@(timer(0, period))` lowers without a VACASK
+/// ABI extension, and `$rdist_normal(seed, ...)` side-effect state is retained
+/// when sampled inside the timer body.
+fn test_rdist_timer() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+    compile_and_load(
+        openvaf_test_data("osdi").join("rdist_timer.va").as_path().try_into().unwrap(),
+    );
+    Ok(())
+}
+
 /// Vectored/bus ports: a port declared bare in the head and ranged in the body
 /// (`input [0:3] in`) must expand to in[0]..in[3] and index correctly. The output
 /// sums the four bits with distinct weights, so the loaded residual proves each bit
@@ -514,5 +563,5 @@ harness! {
     Test::from_dir_filtered("vacask_spice", &vacask_spice_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice")),
     // VACASK simplified SPICE models
     Test::from_dir_filtered("vacask_spice_sn", &vacask_spice_sn_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice/sn")),
-    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp)]
+    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("module_inst_part_select", &test_module_inst_part_select),Test::new("rdist_normal", &test_rdist_normal),Test::new("rdist_timer", &test_rdist_timer),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp)]
 }

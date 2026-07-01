@@ -326,7 +326,7 @@ bultins! {
         fn RDIST_1_ARG_CONST_SEED_NAME(Param(Integer),Val(Real),Literal(String)) -> Real;
     }
 
-    RDIST_2_ARG = const {
+    RDIST_2_ARG = {
         fn RDIST_2_ARG_SEED(Var(Integer),Val(Real),Val(Real)) -> Real;
         fn RDIST_2_ARG_CONST_SEED(Param(Integer),Val(Real),Val(Real)) -> Real;
         fn RDIST_2_ARG_CONST_NAME(Var(Integer),Val(Real),Val(Real),Literal(String)) -> Real;

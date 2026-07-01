@@ -156,9 +156,14 @@ pub enum Event {
         kind: GlobalEvent,
         phases: Vec<String>,
     },
-    /// A monitored analog event such as `@(cross(...))` / `@(timer(...))`. Variables
-    /// assigned inside its body are given cross-timestep retention during lowering.
+    /// A monitored analog event such as `@(cross(...))`. Variables assigned inside
+    /// its body are given cross-timestep retention during lowering.
     Cross,
+    /// Periodic analog event `@(timer(start[, period]))`.
+    Timer {
+        start: ExprId,
+        period: Option<ExprId>,
+    },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

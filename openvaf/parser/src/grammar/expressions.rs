@@ -186,6 +186,9 @@ fn index_expr(p: &mut Parser, base: CompletedMarker) -> CompletedMarker {
     let m = base.precede(p);
     p.bump(T!['[']);
     expr(p);
+    if p.eat(T![:]) {
+        expr(p);
+    }
     p.expect(T![']']);
     m.complete(p, INDEX_EXPR)
 }

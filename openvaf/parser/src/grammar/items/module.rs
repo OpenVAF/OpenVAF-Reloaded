@@ -1,4 +1,6 @@
 use super::*;
+use crate::grammar::call::arg_list;
+use crate::grammar::paths::path;
 use crate::grammar::stmts::{STMT_RECOVER, STMT_TS};
 
 const MODULE_ITEM_RECOVERY: TokenSet = DIRECTION_TS.union(TokenSet::new(&[
@@ -160,9 +162,8 @@ fn module_items(p: &mut Parser) {
             NET_TYPE => {
                 net_decl::<true>(p, m);
             }
-            IDENT => {
-                net_decl::<false>(p, m);
-            }
+            IDENT if p.nth_at(1, IDENT) && p.nth_at(2, T!['(']) => module_inst(p, m),
+            IDENT => net_decl::<false>(p, m),
             PARAMETER_KW | LOCALPARAM_KW => {
                 parameter_decl(p, m);
             }
@@ -201,6 +202,23 @@ fn module_items(p: &mut Parser) {
             }
         }
     }
+}
+
+fn module_inst(p: &mut Parser, m: Marker) {
+    path(p);
+    module_inst_item(p);
+    while p.eat(T![,]) {
+        module_inst_item(p);
+    }
+    p.eat(T![;]);
+    m.complete(p, MODULE_INST);
+}
+
+fn module_inst_item(p: &mut Parser) {
+    let m = p.start();
+    name_r(p, MODULE_ITEM_OR_ATTR_RECOVERY.union(TokenSet::unique(T!['('])));
+    arg_list(p);
+    m.complete(p, MODULE_INST_ITEM);
 }
 
 fn genvar_decl(p: &mut Parser, m: Marker) {

@@ -220,7 +220,6 @@ impl BuiltIn {
             | BuiltIn::rdist_poisson
             | BuiltIn::rdist_uniform
             | BuiltIn::rdist_erlang
-            | BuiltIn::rdist_normal
             | BuiltIn::rdist_t => true,
             _ => false,
         }

@@ -88,7 +88,7 @@ Case =
 
 
 EventStmt =
-  AttrList* '@' '(' ('initial_step' | 'final_step') ('(' sim_phases: ('str_lit' (',' 'str_lit')*) ')')? ')' Stmt
+  AttrList* '@' '(' (('initial_step' | 'final_step') ('(' sim_phases: ('str_lit' (',' 'str_lit')*) ')')? | Expr) ')' Stmt
 
 
 BlockStmt =
@@ -115,7 +115,7 @@ Expr =
 | PortFlow
 
 IndexExpr =
-  Expr '[' Expr ']'
+  Expr '[' Expr (':' Expr)? ']'
 
 
 PathExpr = Path // Required to allow
@@ -193,6 +193,7 @@ ModuleDecl =
 ModuleItem =
   BodyPortDecl
 | NetDecl
+| ModuleInst
 | AnalogBehaviour
 | ProceduralBlock
 | Function
@@ -211,6 +212,12 @@ PortRef =
 
 GenvarDecl =
   AttrList* 'genvar' (Name (',' Name)*) ';'
+
+ModuleInst =
+  AttrList* module: Path instances:(ModuleInstItem (',' ModuleInstItem)*) ';'
+
+ModuleInstItem =
+  Name ArgList
 
 AnalogBehaviour =
   AttrList* 'analog' 'initial'? Stmt

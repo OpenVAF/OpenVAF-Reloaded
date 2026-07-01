@@ -305,6 +305,7 @@ impl Ctx {
                 }
                 ast::ModuleItem::BranchDecl(branch) => self.lower_branch(branch, dst),
                 ast::ModuleItem::AliasParam(alias) => self.lower_alias_param(alias, dst),
+                ast::ModuleItem::ModuleInst(_) => {}
                 // Genvars are compile-time loop variables; they carry no item-tree
                 // entity. The genvar `for` loop is unrolled during body lowering, so
                 // there is nothing to lower here.

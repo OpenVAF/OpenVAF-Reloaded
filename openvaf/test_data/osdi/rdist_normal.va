@@ -1,0 +1,14 @@
+`include "disciplines.vams"
+
+module rdist_normal(out);
+    output out;
+    electrical out;
+
+    integer seed = 52924;
+    parameter real mean = 0;
+    parameter real sigma = 1;
+
+    analog begin
+        V(out) <+ $rdist_normal(seed, mean, sigma);
+    end
+endmodule

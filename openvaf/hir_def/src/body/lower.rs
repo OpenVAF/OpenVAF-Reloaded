@@ -3,7 +3,7 @@ use std::mem;
 use basedb::lints::LintRegistry;
 use basedb::{AstIdMap, ErasedAstId, LintAttrs};
 use syntax::ast::{self, ArgListOwner, AttrIter, AttrsOwner, FunctionRef};
-use syntax::name::AsName;
+use syntax::name::{AsName, Name};
 use syntax::{AstNode, AstPtr};
 
 // use tracing::debug;
@@ -29,6 +29,8 @@ pub(super) struct LowerCtx<'a> {
     pub(super) bus_names: Vec<syntax::name::Name>,
     /// Currently-bound genvar values during compile-time loop unrolling.
     pub(super) genvars: Vec<(syntax::name::Name, i64)>,
+    /// Formal-port substitutions used while flattening module instances.
+    pub(super) substitutions: Vec<(syntax::name::Name, ExprId)>,
 }
 
 impl LowerCtx<'_> {
@@ -87,6 +89,9 @@ impl LowerCtx<'_> {
             }
 
             ast::Expr::IndexExpr(e) => {
+                if let Some(id) = self.try_substituted_index(e, &expr) {
+                    return id;
+                }
                 // Vectored/bus node element `inode[i]` with a compile-time-constant
                 // index resolves to the expanded scalar node `inode[<k>]`.
                 if let Some(id) = self.try_bus_index(e, &expr) {
@@ -100,6 +105,9 @@ impl LowerCtx<'_> {
             // TODO refactor with if let binding and default case is missing expression
             // BLOCK
             ast::Expr::PathExpr(path) => {
+                if let Some(id) = self.try_substituted_path(path) {
+                    return id;
+                }
                 // A reference to a bound genvar folds to its current constant value.
                 if let Some(id) = self.try_genvar_path(path, &expr) {
                     return id;
@@ -122,6 +130,171 @@ impl LowerCtx<'_> {
             ast::Expr::Literal(lit) => Expr::Literal(Literal::new(lit.kind())),
         };
         self.alloc_expr(e, AstPtr::new(&expr))
+    }
+
+    pub fn collect_module_inst(&mut self, inst: ast::ModuleInst) -> Vec<StmtId> {
+        let child = match self.resolve_module_inst_target(&inst) {
+            Some(child) => child,
+            None => return Vec::new(),
+        };
+        let formals = self.formal_ports(&child);
+        let mut res = Vec::new();
+        for item in inst.instances() {
+            let actuals = match item.arg_list() {
+                Some(args) => args.args().collect::<Vec<_>>(),
+                None => continue,
+            };
+            let mut formal_iter = formals.iter();
+            let mut subst = Vec::new();
+            for actual in actuals {
+                let Some(first_formal) = formal_iter.next() else { break };
+                let mut group = vec![first_formal.clone()];
+                let first_base = bus_base(first_formal).unwrap_or(first_formal.as_ref());
+                while let Some(next) = formal_iter.clone().next() {
+                    if bus_base(next).unwrap_or(next.as_ref()) == first_base {
+                        group.push(formal_iter.next().unwrap().clone());
+                    } else {
+                        break;
+                    }
+                }
+                let expanded = self.expand_actual(&actual, group.len());
+                for (formal, actual) in group.into_iter().zip(expanded) {
+                    subst.push((formal, actual));
+                }
+            }
+
+            let old_len = self.substitutions.len();
+            self.substitutions.extend(subst);
+            for child_item in child.module_items() {
+                match child_item {
+                    ast::ModuleItem::AnalogBehaviour(behaviour)
+                        if behaviour.initial_token().is_none() =>
+                    {
+                        if let Some(stmt) = behaviour.stmt() {
+                            res.push(self.collect_stmt(stmt));
+                        }
+                    }
+                    ast::ModuleItem::ModuleInst(nested) => {
+                        res.extend(self.collect_module_inst(nested));
+                    }
+                    _ => {}
+                }
+            }
+            self.substitutions.truncate(old_len);
+        }
+        res
+    }
+
+    fn resolve_module_inst_target(&self, inst: &ast::ModuleInst) -> Option<ast::ModuleDecl> {
+        let name = inst.module()?.as_raw_ident()?.text().to_string();
+        let root = self.db.parse(self.curr_scope.0.root_file).tree();
+        root.items().find_map(|item| match item {
+            ast::Item::ModuleDecl(module) if module.name().map_or(false, |n| n.text() == name) => {
+                Some(module)
+            }
+            _ => None,
+        })
+    }
+
+    fn formal_ports(&self, module: &ast::ModuleDecl) -> Vec<Name> {
+        let bus_ranges = collect_bus_ranges(module);
+        let mut res = Vec::new();
+        if let Some(ports) = module.module_ports() {
+            for port in ports.ports() {
+                match port.kind() {
+                    ast::ModulePortKind::Name(name) => {
+                        let base = name.as_name();
+                        extend_bus_names(&mut res, base.clone(), bus_ranges.get(&base));
+                    }
+                    ast::ModulePortKind::PortRef(port_ref) => {
+                        if let Some(name) = port_ref.name() {
+                            if let Some(idx) =
+                                port_ref.expr().and_then(|e| eval_const_int_in_module(&e, module))
+                            {
+                                res.push(Name::resolve(&format!("{}[{}]", name.text(), idx)));
+                            }
+                        }
+                    }
+                    ast::ModulePortKind::PortDecl(decl) => {
+                        let range = decl.dimension().and_then(|dim| {
+                            dim.msb()
+                                .and_then(|m| eval_const_int_in_module(&m, module))
+                                .zip(dim.lsb().and_then(|l| eval_const_int_in_module(&l, module)))
+                        });
+                        for name in decl.names() {
+                            extend_bus_names(&mut res, name.as_name(), range.as_ref());
+                        }
+                    }
+                }
+            }
+        }
+        res
+    }
+
+    fn expand_actual(&mut self, actual: &ast::Expr, width: usize) -> Vec<ExprId> {
+        if width == 1 {
+            return vec![self.collect_expr(actual.clone())];
+        }
+
+        if let ast::Expr::IndexExpr(idx) = actual {
+            if idx.colon_token().is_some() {
+                let expanded = idx
+                    .base()
+                    .and_then(|base| single_path_name(&base))
+                    .zip(idx.index().and_then(|msb| self.eval_genvar_const(&msb)))
+                    .zip(idx.lsb().and_then(|lsb| self.eval_genvar_const(&lsb)));
+                if let Some(((base, msb), lsb)) = expanded {
+                    return expand_index_range(msb, lsb)
+                        .into_iter()
+                        .map(|idx| self.synthetic_path(&format!("{}[{}]", base, idx), actual))
+                        .collect();
+                }
+            }
+        }
+
+        if let Some(base) = single_path_name(actual) {
+            return (0..width)
+                .map(|idx| self.synthetic_path(&format!("{}[{}]", base, idx), actual))
+                .collect();
+        }
+
+        vec![self.collect_expr(actual.clone())]
+    }
+
+    fn synthetic_path(&mut self, name: &str, src: &ast::Expr) -> ExprId {
+        self.alloc_expr(
+            Expr::Path { path: Path::new_ident(Name::resolve(name)), port: false },
+            AstPtr::new(src),
+        )
+    }
+
+    fn try_substituted_path(&self, path: &ast::PathExpr) -> Option<ExprId> {
+        let ident = path.path()?.as_raw_ident()?;
+        let name = Name::resolve(ident.text().as_ref());
+        self.substitutions.iter().rev().find_map(
+            |(formal, actual)| {
+                if formal == &name {
+                    Some(*actual)
+                } else {
+                    None
+                }
+            },
+        )
+    }
+
+    fn try_substituted_index(&mut self, e: &ast::IndexExpr, _expr: &ast::Expr) -> Option<ExprId> {
+        let base = single_path_name(&e.base()?)?;
+        let k = self.eval_genvar_const(&e.index()?)?;
+        let name = Name::resolve(&format!("{}[{}]", base, k));
+        self.substitutions.iter().rev().find_map(
+            |(formal, actual)| {
+                if formal == &name {
+                    Some(*actual)
+                } else {
+                    None
+                }
+            },
+        )
     }
 
     pub fn collect_opt_stmt(&mut self, stmt: Option<ast::Stmt>) -> StmtId {
@@ -185,9 +358,17 @@ impl LowerCtx<'_> {
             GlobalEvent::InitialStep
         } else if event_stmt.final_step_token().is_some() {
             GlobalEvent::FinalStep
+        } else if let Some(event) = self.collect_timer_event(event_stmt) {
+            let body = self.collect_opt_stmt(event_stmt.stmt());
+            let stmt = Stmt::EventControl { event, body };
+            return self.alloc_stmt(
+                stmt,
+                AstPtr::new(event_stmt).cast().unwrap(),
+                event_stmt.attrs(),
+            );
         } else {
-            // Monitored event (`@(cross(...))` / `@(timer(...))`): preserve it so MIR
-            // lowering can give the variables it assigns cross-timestep retention.
+            // Monitored event (`@(cross(...))`, etc.): preserve it so MIR lowering
+            // can give the variables it assigns cross-timestep retention.
             let body = self.collect_opt_stmt(event_stmt.stmt());
             let stmt = Stmt::EventControl { event: Event::Cross, body };
             return self.alloc_stmt(
@@ -202,6 +383,23 @@ impl LowerCtx<'_> {
         let stmt = Stmt::EventControl { event, body: self.collect_opt_stmt(event_stmt.stmt()) };
 
         self.alloc_stmt(stmt, AstPtr::new(event_stmt).cast().unwrap(), event_stmt.attrs())
+    }
+
+    fn collect_timer_event(&mut self, event_stmt: &ast::EventStmt) -> Option<Event> {
+        let ast::Expr::Call(call) = event_stmt.expr()? else { return None };
+        let fun = call.function_ref().and_then(|fun| match fun {
+            FunctionRef::Path(path) => Path::resolve(path),
+            FunctionRef::SysFun(fun) => Some(Path::new_ident(fun.as_name())),
+        })?;
+        let [name] = fun.segments.as_slice() else { return None };
+        if &**name != "timer" {
+            return None;
+        }
+
+        let mut args = call.arg_list()?.args().map(|arg| self.collect_expr(arg));
+        let start = args.next()?;
+        let period = args.next();
+        Some(Event::Timer { start, period })
     }
 
     fn collect_case_stmt(&mut self, case_stmt: &ast::CaseStmt) -> Stmt {
@@ -474,6 +672,111 @@ impl LowerCtx<'_> {
         debug_assert_eq!(id2, id3);
         self.source_map.stmt_map_back.insert(id, src);
         id
+    }
+}
+
+fn collect_bus_ranges(module: &ast::ModuleDecl) -> ahash::AHashMap<Name, (i64, i64)> {
+    let mut ranges = ahash::AHashMap::new();
+    let mut add = |dim: Option<ast::Dimension>, names: ast::AstChildren<ast::Name>| {
+        if let Some(dim) = dim {
+            if let Some(range) = dim
+                .msb()
+                .and_then(|e| eval_const_int_in_module(&e, module))
+                .zip(dim.lsb().and_then(|e| eval_const_int_in_module(&e, module)))
+            {
+                for name in names {
+                    ranges.insert(name.as_name(), range);
+                }
+            }
+        }
+    };
+
+    for item in module.module_items() {
+        match item {
+            ast::ModuleItem::BodyPortDecl(decl) => {
+                if let Some(decl) = decl.port_decl() {
+                    add(decl.dimension(), decl.names());
+                }
+            }
+            ast::ModuleItem::NetDecl(decl) => add(decl.dimension(), decl.names()),
+            _ => {}
+        }
+    }
+    ranges
+}
+
+fn extend_bus_names(dst: &mut Vec<Name>, base: Name, range: Option<&(i64, i64)>) {
+    match range {
+        Some((msb, lsb)) => {
+            for idx in expand_index_range(*msb, *lsb) {
+                dst.push(Name::resolve(&format!("{}[{}]", base, idx)));
+            }
+        }
+        None => dst.push(base),
+    }
+}
+
+fn expand_index_range(msb: i64, lsb: i64) -> Vec<i64> {
+    let (lo, hi) = if msb <= lsb { (msb, lsb) } else { (lsb, msb) };
+    (lo..=hi).collect()
+}
+
+fn bus_base(name: &Name) -> Option<&str> {
+    let name: &str = &**name;
+    name.split_once('[').map(|(base, _)| base)
+}
+
+fn single_path_name(expr: &ast::Expr) -> Option<String> {
+    match expr {
+        ast::Expr::PathExpr(pe) => {
+            let ident = pe.path()?.as_raw_ident()?;
+            Some(ident.text().to_string())
+        }
+        _ => None,
+    }
+}
+
+fn eval_const_int_in_module(expr: &ast::Expr, module: &ast::ModuleDecl) -> Option<i64> {
+    use syntax::ast::{BinaryOp, LiteralKind, UnaryOp};
+    match expr {
+        ast::Expr::Literal(lit) => match lit.kind() {
+            LiteralKind::IntNumber(i) => Some(i.value() as i64),
+            _ => None,
+        },
+        ast::Expr::PrefixExpr(p) => {
+            let v = eval_const_int_in_module(&p.expr()?, module)?;
+            match p.op_kind()? {
+                UnaryOp::Neg => Some(-v),
+                UnaryOp::Identity => Some(v),
+                _ => None,
+            }
+        }
+        ast::Expr::ParenExpr(p) => eval_const_int_in_module(&p.expr()?, module),
+        ast::Expr::BinExpr(b) => {
+            let l = eval_const_int_in_module(&b.lhs()?, module)?;
+            let r = eval_const_int_in_module(&b.rhs()?, module)?;
+            match b.op_kind()? {
+                BinaryOp::Addition => Some(l.wrapping_add(r)),
+                BinaryOp::Subtraction => Some(l.wrapping_sub(r)),
+                BinaryOp::Multiplication => Some(l.wrapping_mul(r)),
+                BinaryOp::Division if r != 0 => Some(l / r),
+                BinaryOp::Remainder if r != 0 => Some(l % r),
+                _ => None,
+            }
+        }
+        ast::Expr::PathExpr(pe) => {
+            let ident = pe.path()?.as_raw_ident()?;
+            let name = ident.text();
+            for pdecl in module.syntax().descendants().filter_map(ast::ParamDecl::cast) {
+                for para in pdecl.paras() {
+                    if para.name().map_or(false, |n| n.text() == name) {
+                        return eval_const_int_in_module(&para.default()?, module);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
     }
 }
 

@@ -132,6 +132,8 @@ pub enum SyntaxKind {
     IF_STMT,
     LITERAL,
     MODULE_DECL,
+    MODULE_INST,
+    MODULE_INST_ITEM,
     MODULE_PORT,
     MODULE_PORTS,
     PORT_REF,

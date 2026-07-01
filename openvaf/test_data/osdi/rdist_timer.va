@@ -1,0 +1,15 @@
+`include "disciplines.vams"
+
+module rdist_timer(out);
+    output out;
+    electrical out;
+
+    integer seed = 52924;
+    real sample;
+
+    analog begin
+        @(initial_step) sample = 0;
+        @(timer(0, 1n)) sample = $rdist_normal(seed, 0, 1);
+        V(out) <+ transition(sample, 0, 0.1n);
+    end
+endmodule

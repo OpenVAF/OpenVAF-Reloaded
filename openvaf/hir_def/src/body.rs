@@ -101,13 +101,30 @@ impl Body {
                         .collect(),
                     module: Some(ast.clone()),
                     genvars: Vec::new(),
+                    substitutions: Vec::new(),
                 };
                 body.entry_stmts = match kind {
                     ModuleBodyKind::AnalogInitial => {
                         ast.analog_initial_behaviour().map(|stmt| ctx.collect_stmt(stmt)).collect()
                     }
                     ModuleBodyKind::Analog => {
-                        ast.analog_behaviour().map(|stmt| ctx.collect_stmt(stmt)).collect()
+                        let mut entries = Vec::new();
+                        for item in ast.module_items() {
+                            match item {
+                                ast::ModuleItem::AnalogBehaviour(behaviour)
+                                    if behaviour.initial_token().is_none() =>
+                                {
+                                    if let Some(stmt) = behaviour.stmt() {
+                                        entries.push(ctx.collect_stmt(stmt));
+                                    }
+                                }
+                                ast::ModuleItem::ModuleInst(inst) => {
+                                    entries.extend(ctx.collect_module_inst(inst));
+                                }
+                                _ => {}
+                            }
+                        }
+                        entries.into_boxed_slice()
                     }
                     // Procedural runner lane: all `initial` blocks (source order) then
                     // all `final` blocks, as one imperative sequence.
@@ -144,6 +161,7 @@ impl Body {
                     bus_names: Vec::new(),
                     module: None,
                     genvars: Vec::new(),
+                    substitutions: Vec::new(),
                 };
                 body.entry_stmts = ast.body().map(|stmt| ctx.collect_stmt(stmt)).collect();
             }
@@ -165,6 +183,7 @@ impl Body {
                     bus_names: Vec::new(),
                     module: None,
                     genvars: Vec::new(),
+                    substitutions: Vec::new(),
                 };
 
                 let expr = if let Some(expr) = ast.default() {
@@ -204,6 +223,7 @@ impl Body {
                     bus_names: Vec::new(),
                     module: None,
                     genvars: Vec::new(),
+                    substitutions: Vec::new(),
                 };
                 let expr = ctx.collect_opt_expr(ast.val());
                 let stmt = ctx.alloc_stmt_desugared(Stmt::Expr(expr));
@@ -230,6 +250,7 @@ impl Body {
                     bus_names: Vec::new(),
                     module: None,
                     genvars: Vec::new(),
+                    substitutions: Vec::new(),
                 };
                 let expr = ctx.collect_opt_expr(ast.val());
                 let stmt = ctx.alloc_stmt_desugared(Stmt::Expr(expr));
@@ -268,6 +289,7 @@ impl Body {
             bus_names: Vec::new(),
             module: None,
             genvars: Vec::new(),
+            substitutions: Vec::new(),
         };
 
         let default = ctx.collect_opt_expr(ast.default());
