@@ -1,0 +1,17 @@
+`include "disciplines.vams"
+
+// Regression for statically elaborating integer loops that index vectored nodes.
+// The loop variable is an ordinary integer, not a genvar.
+module runtime_bus_index(vin, vout);
+    input [0:3] vin;
+    output [0:3] vout;
+    electrical [0:3] vin, vout;
+
+    integer i;
+
+    analog begin
+        for (i = 0; i <= 2; i = i + 1) begin
+            V(vout[i]) <+ V(vin[i+1]);
+        end
+    end
+endmodule

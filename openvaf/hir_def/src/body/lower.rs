@@ -29,6 +29,8 @@ pub(super) struct LowerCtx<'a> {
     pub(super) bus_names: Vec<syntax::name::Name>,
     /// Currently-bound genvar values during compile-time loop unrolling.
     pub(super) genvars: Vec<(syntax::name::Name, i64)>,
+    /// Currently-bound integer loop values during static loop unrolling.
+    pub(super) const_ints: Vec<(syntax::name::Name, i64)>,
     /// Formal-port substitutions used while flattening module instances.
     pub(super) substitutions: Vec<(syntax::name::Name, ExprId)>,
 }
@@ -335,9 +337,9 @@ impl LowerCtx<'_> {
                 Stmt::WhileLoop { cond, body }
             }
             ast::Stmt::ForStmt(stmt) => {
-                // A `for` loop over a genvar with compile-time bounds is unrolled into
-                // a flat block of body copies (one per iteration, genvar substituted).
-                if let Some(id) = self.try_unroll_genvar_for(stmt) {
+                // A `for` loop over a genvar or bus-index loop variable with
+                // compile-time bounds is unrolled into a flat block of body copies.
+                if let Some(id) = self.try_unroll_const_for(stmt) {
                     return id;
                 }
                 let cond = self.collect_opt_expr(stmt.condition());
@@ -482,7 +484,11 @@ impl LowerCtx<'_> {
             ast::Expr::PathExpr(pe) => {
                 let ident = pe.path()?.as_raw_ident()?;
                 let tname = ident.text();
-                // genvar binding takes precedence over parameters
+                // Active loop bindings take precedence over parameters.
+                if let Some((_, val)) = self.const_ints.iter().rev().find(|(gv, _)| tname == &**gv)
+                {
+                    return Some(*val);
+                }
                 if let Some((_, val)) = self.genvars.iter().rev().find(|(gv, _)| tname == &**gv) {
                     return Some(*val);
                 }
@@ -534,11 +540,17 @@ impl LowerCtx<'_> {
         }
     }
 
-    /// Fold a reference to a bound genvar into its current constant value.
+    /// Fold a reference to a bound static loop variable into its current constant value.
     fn try_genvar_path(&mut self, path: &ast::PathExpr, expr: &ast::Expr) -> Option<ExprId> {
         let ident = path.path()?.as_raw_ident()?;
         let tname = ident.text();
-        let val = self.genvars.iter().rev().find(|(gv, _)| tname == &**gv).map(|(_, v)| *v)?;
+        let val = self
+            .const_ints
+            .iter()
+            .rev()
+            .chain(self.genvars.iter().rev())
+            .find(|(gv, _)| tname == &**gv)
+            .map(|(_, v)| *v)?;
         Some(self.alloc_expr(Expr::Literal(Literal::Int(val as i32)), AstPtr::new(expr)))
     }
 
@@ -561,17 +573,19 @@ impl LowerCtx<'_> {
         Some(self.alloc_expr(Expr::Path { path, port: false }, AstPtr::new(expr)))
     }
 
-    /// Unroll a genvar `for` loop with compile-time bounds into a flat block of
-    /// body copies (genvar substituted per iteration). Returns `None` for ordinary
-    /// runtime loops, which are lowered normally.
-    fn try_unroll_genvar_for(&mut self, stmt: &ast::ForStmt) -> Option<StmtId> {
+    /// Unroll a static `for` loop into a flat block of body copies. Declared genvars
+    /// always qualify; ordinary integer loop variables qualify only when this is
+    /// needed to resolve a vectored node index such as `V(out[i])`.
+    fn try_unroll_const_for(&mut self, stmt: &ast::ForStmt) -> Option<StmtId> {
         let init = stmt.init()?;
         let init_assign = match &init {
             ast::Stmt::AssignStmt(a) => a.assign()?,
             _ => return None,
         };
         let gv = Self::single_ident(&init_assign.lval()?)?;
-        if !self.genvar_names.contains(&gv) {
+        let is_genvar = self.genvar_names.contains(&gv);
+        let body = stmt.for_body();
+        if !is_genvar && !body.as_ref().is_some_and(|body| self.body_has_bus_index_var(body, &gv)) {
             return None;
         }
         let start = self.eval_genvar_const(&init_assign.rval()?)?;
@@ -587,22 +601,26 @@ impl LowerCtx<'_> {
         let mut val = start;
         let mut guard = 0u64;
         loop {
-            self.genvars.push((gv.clone(), val));
+            if is_genvar {
+                self.genvars.push((gv.clone(), val));
+            } else {
+                self.const_ints.push((gv.clone(), val));
+            }
             match self.eval_genvar_cond(&cond) {
                 Some(true) => {}
                 Some(false) => {
-                    self.genvars.pop();
+                    self.pop_const_loop_binding(is_genvar);
                     break;
                 }
                 None => {
-                    self.genvars.pop();
+                    self.pop_const_loop_binding(is_genvar);
                     return None;
                 }
             }
             let body_id = self.collect_opt_stmt(stmt.for_body());
             bodies.push(body_id);
             let next = self.eval_genvar_const(&incr_rval);
-            self.genvars.pop();
+            self.pop_const_loop_binding(is_genvar);
             match next {
                 Some(n) => val = n,
                 None => return None,
@@ -612,7 +630,43 @@ impl LowerCtx<'_> {
                 break;
             }
         }
+        if !is_genvar {
+            let lval = self.alloc_expr(
+                Expr::Path { path: Path::new_ident(gv), port: false },
+                AstPtr::new(&init_assign.lval()?),
+            );
+            let rval = self.alloc_expr(
+                Expr::Literal(Literal::Int(val as i32)),
+                AstPtr::new(&init_assign.rval()?),
+            );
+            bodies.push(self.alloc_stmt_desugared(Stmt::Assignment {
+                dst: lval,
+                val: rval,
+                assignment_kind: ast::AssignOp::Assign,
+            }));
+        }
         Some(self.alloc_stmt_desugared(Stmt::Block { body: bodies }))
+    }
+
+    fn pop_const_loop_binding(&mut self, is_genvar: bool) {
+        if is_genvar {
+            self.genvars.pop();
+        } else {
+            self.const_ints.pop();
+        }
+    }
+
+    fn body_has_bus_index_var(&self, stmt: &ast::Stmt, var: &Name) -> bool {
+        stmt.syntax().descendants().filter_map(ast::IndexExpr::cast).any(|idx| {
+            let Some(base) = idx.base().and_then(|base| single_path_name(&base)) else {
+                return false;
+            };
+            if !self.bus_names.iter().any(|bus| base == &**bus) {
+                return false;
+            }
+            idx.index().is_some_and(|expr| expr_contains_ident(&expr, var))
+                || idx.lsb().is_some_and(|expr| expr_contains_ident(&expr, var))
+        })
     }
 
     fn alloc_expr(&mut self, expr: Expr, ptr: AstPtr<ast::Expr>) -> ExprId {
@@ -734,6 +788,14 @@ fn single_path_name(expr: &ast::Expr) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn expr_contains_ident(expr: &ast::Expr, name: &Name) -> bool {
+    expr.syntax()
+        .descendants()
+        .filter_map(ast::PathExpr::cast)
+        .filter_map(|path| path.path()?.as_raw_ident())
+        .any(|ident| ident.text() == &**name)
 }
 
 fn eval_const_int_in_module(expr: &ast::Expr, module: &ast::ModuleDecl) -> Option<i64> {

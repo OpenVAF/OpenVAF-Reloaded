@@ -554,6 +554,20 @@ fn test_adc() -> Result<()> {
     Ok(())
 }
 
+/// Regression: a statically bounded ordinary integer loop may index vectored
+/// nodes in branch contributions. This is statically elaborated before HIR name
+/// resolution so expressions such as `V(vout[i]) <+ V(vin[i+1])` resolve to the
+/// concrete scalar terminals.
+fn test_runtime_bus_index() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+    compile_and_load(
+        openvaf_test_data("osdi").join("runtime_bus_index.va").as_path().try_into().unwrap(),
+    );
+    Ok(())
+}
+
 harness! {
     // TODO: run this in CI, somehow this test is flakey tough regarding the linker invocation (and really slow)
     Test::from_dir("integration", &integration_test, &ignore_dev_tests, &project_root().join("integration_tests")),
@@ -563,5 +577,5 @@ harness! {
     Test::from_dir_filtered("vacask_spice", &vacask_spice_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice")),
     // VACASK simplified SPICE models
     Test::from_dir_filtered("vacask_spice_sn", &vacask_spice_sn_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice/sn")),
-    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("module_inst_part_select", &test_module_inst_part_select),Test::new("rdist_normal", &test_rdist_normal),Test::new("rdist_timer", &test_rdist_timer),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp)]
+    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("module_inst_part_select", &test_module_inst_part_select),Test::new("rdist_normal", &test_rdist_normal),Test::new("rdist_timer", &test_rdist_timer),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("runtime_bus_index", &test_runtime_bus_index),Test::new("indirect_opamp", &test_indirect_opamp)]
 }

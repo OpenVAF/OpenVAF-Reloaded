@@ -101,6 +101,7 @@ impl Body {
                         .collect(),
                     module: Some(ast.clone()),
                     genvars: Vec::new(),
+                    const_ints: Vec::new(),
                     substitutions: Vec::new(),
                 };
                 body.entry_stmts = match kind {
@@ -161,6 +162,7 @@ impl Body {
                     bus_names: Vec::new(),
                     module: None,
                     genvars: Vec::new(),
+                    const_ints: Vec::new(),
                     substitutions: Vec::new(),
                 };
                 body.entry_stmts = ast.body().map(|stmt| ctx.collect_stmt(stmt)).collect();
@@ -183,6 +185,7 @@ impl Body {
                     bus_names: Vec::new(),
                     module: None,
                     genvars: Vec::new(),
+                    const_ints: Vec::new(),
                     substitutions: Vec::new(),
                 };
 
@@ -223,6 +226,7 @@ impl Body {
                     bus_names: Vec::new(),
                     module: None,
                     genvars: Vec::new(),
+                    const_ints: Vec::new(),
                     substitutions: Vec::new(),
                 };
                 let expr = ctx.collect_opt_expr(ast.val());
@@ -250,6 +254,7 @@ impl Body {
                     bus_names: Vec::new(),
                     module: None,
                     genvars: Vec::new(),
+                    const_ints: Vec::new(),
                     substitutions: Vec::new(),
                 };
                 let expr = ctx.collect_opt_expr(ast.val());
@@ -289,6 +294,7 @@ impl Body {
             bus_names: Vec::new(),
             module: None,
             genvars: Vec::new(),
+            const_ints: Vec::new(),
             substitutions: Vec::new(),
         };
 
