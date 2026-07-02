@@ -22,6 +22,14 @@ fn main() {
     // Add rpath for LLVM on macOS
     #[cfg(target_os = "macos")]
     {
+        // Official LLVM release tarballs ship only static component libs (no
+        // libLLVM.dylib), so llvm-sys's `prefer-dynamic` falls back to static
+        // linking. Those archives are C++ and need libc++ for their runtime
+        // symbols (operator new, __cxa_guard_*, __cxa_pure_virtual). Homebrew's
+        // LLVM has libLLVM.dylib so it never hits this, but link libc++ here so
+        // building against a static LLVM works too.
+        println!("cargo:rustc-link-lib=dylib=c++");
+        println!("cargo:rustc-link-lib=dylib=c++abi");
         if let Ok(output) = std::process::Command::new("llvm-config").arg("--libdir").output() {
             if output.status.success() {
                 let libdir = String::from_utf8_lossy(&output.stdout).trim().to_string();
