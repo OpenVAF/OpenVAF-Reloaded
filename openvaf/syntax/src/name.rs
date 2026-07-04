@@ -436,11 +436,11 @@ pub mod sysfun {
                 #[allow(bad_style, dead_code)]
                 pub const value_plusargs:&str = "$value$plusargs";
                 #[allow(bad_style, dead_code)]
-                pub const simparam_str: &str ="$simpara$str";
+                pub const simparam_str: &str = "$simparam$str";
             }
 
             pub fn is_known(name: &str) -> bool{
-                matches!(name,$(concat!("$",stringify!($ident)) |)* "$test$plusargs" | "$value$plusargs" | "$simpara$str")
+                matches!(name,$(concat!("$",stringify!($ident)) |)* "$test$plusargs" | "$value$plusargs" | "$simparam$str")
             }
         };
     }
