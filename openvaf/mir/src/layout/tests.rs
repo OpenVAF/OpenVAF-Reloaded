@@ -474,3 +474,27 @@ fn merge_block() {
     "#]]
     .assert_eq(&func.to_debug_string());
 }
+
+#[test]
+fn move_block_to_end() {
+    let mut layout = Layout::new();
+    let e0 = layout.append_new_block();
+    let e1 = layout.append_new_block();
+    let e2 = layout.append_new_block();
+    assert_eq!(layout.last_block(), Some(e2));
+
+    // Moving the block that already is last is a no-op.
+    layout.move_block_to_end(e2);
+    verify(&mut layout, &[(e0, &[]), (e1, &[]), (e2, &[])]);
+
+    // Move a middle block to the end.
+    layout.move_block_to_end(e1);
+    verify(&mut layout, &[(e0, &[]), (e2, &[]), (e1, &[])]);
+    assert_eq!(layout.last_block(), Some(e1));
+
+    // Move the first block to the end.
+    layout.move_block_to_end(e0);
+    verify(&mut layout, &[(e2, &[]), (e1, &[]), (e0, &[])]);
+    assert_eq!(layout.last_block(), Some(e0));
+    assert_eq!(layout.entry_block(), Some(e2));
+}

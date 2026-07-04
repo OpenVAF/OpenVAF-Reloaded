@@ -238,3 +238,37 @@ pub fn duplicate_phis_set() {
     "#]];
     expect.assert_eq(&func.to_debug_string())
 }
+
+/// An unreachable block whose instruction results still have outstanding uses
+/// (in real compilations e.g. from a not-yet-inserted derivative instruction
+/// created by `mir_autodiff`) must not be zapped: that would leave the user
+/// with a permanently dangling reference. It may only be removed once its
+/// results are dead.
+#[test]
+pub fn keep_unreachable_block_with_live_results() {
+    let raw = r##"
+        function %foo(v10) {
+        block0:
+            v11 = iadd v10, v10
+            jmp block2
+        block1:
+            v12 = imul v10, v10
+            jmp block2
+        block2:
+            v13 = iadd v11, v12
+        }
+    "##;
+
+    let (mut func, _) = parse_function(raw).unwrap();
+    let mut cfg = ControlFlowGraph::new();
+    cfg.compute(&func);
+    simplify_cfg(&mut func, &mut cfg);
+
+    // block1 is unreachable, but its result v12 still has a live use in
+    // block2; removing the block would leave that use dangling.
+    let printed = func.to_debug_string();
+    assert!(
+        printed.contains("imul"),
+        "unreachable block was removed despite live uses:\n{printed}"
+    );
+}

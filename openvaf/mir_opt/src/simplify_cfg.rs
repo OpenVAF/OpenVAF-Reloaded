@@ -262,6 +262,7 @@ impl<'a> SimplifyCfg<'a> {
         {
             return false;
         }
+        let bb_was_last = self.func.layout.last_block() == Some(bb);
 
         // in case the terminator is an unoptimized br _, bb, bb
         if let Some(terminator) = self.func.layout.last_inst(pred) {
@@ -281,6 +282,17 @@ impl<'a> SimplifyCfg<'a> {
         }
 
         self.func.layout.merge_blocks(pred, bb);
+        // `merge_blocks` keeps `pred` at its own original layout position and
+        // discards `bb` entirely. If `bb` used to be the function's last
+        // block, `pred` (which now holds `bb`'s merged-in contents, including
+        // its terminator) must take over that position, or `last_block()`
+        // would silently start pointing at some earlier, unrelated block --
+        // this broke `mir::cursor::goto_exit`, which several `sim_back`
+        // passes (e.g. `dae/builder.rs`'s `ensure_optbarriers`) rely on to
+        // find the true function exit.
+        if bb_was_last {
+            self.func.layout.move_block_to_end(pred);
+        }
         self.local_changed = true;
 
         // update sucessors/predecessors
@@ -632,9 +644,26 @@ impl<'a> SimplifyCfg<'a> {
         // Remove basic blocks that have no predecessors (except the entry block)...
         // or that just have themself as a predecessor.  These are unreachable.
         // Do not remove last block in layout
+        //
+        // A block can look CFG-unreachable from this pass's point of view while one of
+        // its instructions' results is still genuinely referenced by an instruction that
+        // hasn't been spliced into the layout yet (e.g. a not-yet-inserted derivative/
+        // Jacobian instruction created by `mir_autodiff`, which references existing
+        // values as raw operands before its own instructions are placed into a block).
+        // Blindly `zap_inst`-ing every instruction in such a block -- unlike this file's
+        // other phi-removal helpers (`simplify_trivial_phis`, `simplify_duplicates_phis_naive`),
+        // which call `replace_uses` before zapping -- would leave that later instruction
+        // with a permanently dangling reference to a removed instruction, since there is
+        // no live/reachable use at this point to redirect it to. So: only actually treat
+        // the block as removable once none of its instructions' results still have any
+        // outstanding uses.
+        let has_live_results = self.func.layout.block_insts(bb).any(|inst| {
+            self.func.dfg.inst_results(inst).iter().any(|&val| !self.func.dfg.value_dead(val))
+        });
         if (self.cfg[bb].predecessors.is_empty() || self.cfg.self_loop(bb))
             && Some(bb) != self.func.layout.entry_block()
             && self.func.layout.last_block() != Some(bb)
+            && !has_live_results
         {
             // remove phi phi_edges
             for succ in self.cfg.succ_iter(bb) {
