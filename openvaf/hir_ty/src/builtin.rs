@@ -303,7 +303,7 @@ bultins! {
         fn SIMPARAM_DEFAULT(Literal(String),Val(Real)) -> Real;
     }
 
-    const fn SIMPARAM_STR(Literal(String)) -> Real;
+    const fn SIMPARAM_STR(Literal(String)) -> String;
 
     RANDOM = const {
         fn RANDOM_NO_SEED() -> Integer;
