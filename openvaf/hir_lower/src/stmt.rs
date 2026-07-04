@@ -48,6 +48,14 @@ impl BodyLoweringCtx<'_, '_, '_> {
                         return;
                     }
                 }
+                // Whole-array assignment (`g = '{1.0, 2.0};` or `g = h;`) writes the
+                // element places directly: an array is not a single MIR value.
+                if let hir::AssignmentLhs::Variable(var) = lhs {
+                    if matches!(var.ty(self.ctx.db), Type::Array { .. }) {
+                        self.assign_whole_array(var, rhs);
+                        return;
+                    }
+                }
                 let val_ = self.lower_expr(rhs);
                 match lhs {
                     hir::AssignmentLhs::ArrayElement { var, index } => {
@@ -151,6 +159,42 @@ impl BodyLoweringCtx<'_, '_, '_> {
 
         self.ctx.seal_block(end);
         self.ctx.switch_to_block(end);
+    }
+
+    /// Lower `arr = rhs` where `arr` is an array variable. The right-hand side can
+    /// only be an array literal or another array variable (the type checker rejects
+    /// everything else); both are written element by element.
+    fn assign_whole_array(&mut self, var: hir::Variable, rhs: ExprId) {
+        let len = self.array_len(var);
+        // A cast recorded on the whole array expression (e.g. `'{0, 1}` assigned to
+        // a real array) applies to every element.
+        let elem_cast = self.body.needs_cast(rhs).and_then(|(src, dst)| {
+            match (src, dst.clone()) {
+                (Type::Array { ty: src, .. }, Type::Array { ty: dst, .. }) => Some((*src, *dst)),
+                _ => None,
+            }
+        });
+        match self.body.get_expr(rhs) {
+            Expr::Array(vals) => {
+                for (i, val) in vals.iter().enumerate().take(len as usize) {
+                    let mut elem = self.lower_expr(*val);
+                    if let Some((src, dst)) = &elem_cast {
+                        elem = self.ctx.insert_cast(elem, src, dst);
+                    }
+                    self.ctx.def_place(PlaceKind::VarElement(var, i as u32), elem);
+                }
+            }
+            Expr::Read(hir::Ref::Variable(src_var)) => {
+                for i in 0..len.min(self.array_len(src_var)) {
+                    let mut elem = self.ctx.use_place(PlaceKind::VarElement(src_var, i));
+                    if let Some((src, dst)) = &elem_cast {
+                        elem = self.ctx.insert_cast(elem, src, dst);
+                    }
+                    self.ctx.def_place(PlaceKind::VarElement(var, i), elem);
+                }
+            }
+            _ => unreachable!("unsupported whole-array assignment source"),
+        }
     }
 
     /// Lower `arr[index] = val`. A constant index writes the element place directly;
