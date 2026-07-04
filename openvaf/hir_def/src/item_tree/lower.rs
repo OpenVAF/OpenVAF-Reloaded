@@ -854,16 +854,16 @@ impl Ctx {
 
             let Some(width) = width.clone() else {
                 // ordinary (non-array) variable declaration
-                let ty = match (var.dimension(), decl.syntax().ancestors().find_map(ast::ModuleDecl::cast)) {
+                let (ty, array_lo) = match (var.dimension(), decl.syntax().ancestors().find_map(ast::ModuleDecl::cast)) {
                     (Some(dim), Some(module)) => {
-                        let len = dim.msb().and_then(|e| eval_const_int(&e, &module))
-                            .zip(dim.lsb().and_then(|e| eval_const_int(&e, &module)))
-                            .map(|(msb, lsb)| (msb - lsb).unsigned_abs() as u32 + 1).unwrap_or(0);
-                        Type::Array { ty: Box::new(ty.clone()), len }
+                        let bounds = dim.msb().and_then(|e| eval_const_int(&e, &module))
+                            .zip(dim.lsb().and_then(|e| eval_const_int(&e, &module)));
+                        let len = bounds.map(|(msb, lsb)| (msb - lsb).unsigned_abs() as u32 + 1).unwrap_or(0);
+                        (Type::Array { ty: Box::new(ty.clone()), len }, bounds.map(|(a,b)| a.min(b) as i32).unwrap_or(0))
                     }
-                    _ => ty.clone(),
+                    _ => (ty.clone(), 0),
                 };
-                let var = Var { name: base_name, ast_id, ty };
+                let var = Var { name: base_name, ast_id, ty, array_lo };
                 let id = self.tree.data.variables.push_and_get_key(var);
                 dst.push(id.into());
                 continue;
@@ -874,7 +874,7 @@ impl Ctx {
                 self.tree
                     .diagnostics
                     .push(ItemTreeDiagnostic::ArrayVarUnsupportedScope { ast_id: ast_id.into() });
-                let var = Var { name: base_name, ast_id, ty: ty.clone() };
+                let var = Var { name: base_name, ast_id, ty: ty.clone(), array_lo: 0 };
                 let id = self.tree.data.variables.push_and_get_key(var);
                 dst.push(id.into());
                 continue;
@@ -896,6 +896,7 @@ impl Ctx {
                             name: super::bus_bit_name(&base_name, bit),
                             ast_id,
                             ty: ty.clone(),
+                            array_lo: 0,
                         };
                         let id = self.tree.data.variables.push_and_get_key(var);
                         dst.push(id.into());
@@ -909,7 +910,7 @@ impl Ctx {
                         .diagnostics
                         .push(ItemTreeDiagnostic::NonConstantBusWidth { ast_id: ast_id.into() });
                     // fall back to a scalar declaration so compilation proceeds
-                    let var = Var { name: base_name, ast_id, ty: ty.clone() };
+                    let var = Var { name: base_name, ast_id, ty: ty.clone(), array_lo: 0 };
                     let id = self.tree.data.variables.push_and_get_key(var);
                     dst.push(id.into());
                 }
