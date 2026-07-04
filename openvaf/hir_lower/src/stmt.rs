@@ -168,11 +168,9 @@ impl BodyLoweringCtx<'_, '_, '_> {
         let len = self.array_len(var);
         // A cast recorded on the whole array expression (e.g. `'{0, 1}` assigned to
         // a real array) applies to every element.
-        let elem_cast = self.body.needs_cast(rhs).and_then(|(src, dst)| {
-            match (src, dst.clone()) {
-                (Type::Array { ty: src, .. }, Type::Array { ty: dst, .. }) => Some((*src, *dst)),
-                _ => None,
-            }
+        let elem_cast = self.body.needs_cast(rhs).and_then(|(src, dst)| match (src, dst.clone()) {
+            (Type::Array { ty: src, .. }, Type::Array { ty: dst, .. }) => Some((*src, *dst)),
+            _ => None,
         });
         match self.body.get_expr(rhs) {
             Expr::Array(vals) => {

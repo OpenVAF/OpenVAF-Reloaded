@@ -1,5 +1,6 @@
 use hir::builtin::{
-    FLICKER_NOISE_NAME, NOISE_TABLE_FILE_NAME, NOISE_TABLE_INLINE_NAME, WHITE_NOISE_NAME,
+    FLICKER_NOISE_NAME, NOISE_TABLE_FILE, NOISE_TABLE_FILE_NAME, NOISE_TABLE_INLINE,
+    NOISE_TABLE_INLINE_NAME, WHITE_NOISE_NAME,
 };
 use hir::signatures::{
     ABSDELAY_MAX, ABS_INT, ABS_REAL, BOOL_EQ, DDX_POT, IDTMOD_IC, IDTMOD_IC_MODULUS,
@@ -308,6 +309,77 @@ impl BodyLoweringCtx<'_, '_, '_> {
         res
     }
 
+    /// Evaluate a compile-time-constant real expression (literal, possibly
+    /// with a leading unary `+`/`-`). Used to read the `noise_table` inline
+    /// data array, whose elements must all be constants per the LRM.
+    fn eval_const_real(&self, expr: ExprId) -> Option<f64> {
+        if let Some(lit) = self.body.as_literal(expr) {
+            return match lit {
+                Literal::Float(f) => Some((*f).into()),
+                Literal::Int(i) => Some(*i as f64),
+                _ => None,
+            };
+        }
+        match self.body.get_expr(expr) {
+            Expr::UnaryOp { expr: inner, op } => match op {
+                UnaryOp::Neg => Some(-self.eval_const_real(inner)?),
+                UnaryOp::Identity => self.eval_const_real(inner),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Read a whitespace-separated two-column `<freq> <power>` noise table
+    /// file, resolved relative to the directory of the compilation root file.
+    /// Blank lines and `#`/`//`/`*`-prefixed comment lines are skipped.
+    fn read_noise_table_file(&self, fname: &str) -> Vec<(f64, f64)> {
+        let Some(dir) = self.ctx.db.root_file_dir() else { return Vec::new() };
+        let Some(path) = dir.join(fname) else { return Vec::new() };
+        let Some(abs) = path.as_path() else { return Vec::new() };
+        let Ok(content) = std::fs::read_to_string(abs) else { return Vec::new() };
+        let mut out = Vec::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty()
+                || line.starts_with('#')
+                || line.starts_with("//")
+                || line.starts_with('*')
+            {
+                continue;
+            }
+            let mut it = line.split_whitespace();
+            if let (Some(a), Some(b)) = (it.next(), it.next()) {
+                if let (Ok(f), Ok(p)) = (a.parse::<f64>(), b.parse::<f64>()) {
+                    out.push((f, p));
+                }
+            }
+        }
+        out
+    }
+
+    /// Gather the `(frequency, power)` pairs backing a `noise_table` /
+    /// `noise_table_log` call, either from an inline real array
+    /// `{f0, p0, f1, p1, ...}` or from a two-column data file.
+    fn noise_table_data(&self, signature: hir::Signature, args: &[ExprId]) -> Vec<(f64, f64)> {
+        match signature {
+            NOISE_TABLE_INLINE | NOISE_TABLE_INLINE_NAME => {
+                let elems = match self.body.get_expr(args[0]) {
+                    Expr::Array(vals) => vals,
+                    _ => return Vec::new(),
+                };
+                let nums: Vec<f64> =
+                    elems.iter().map(|&e| self.eval_const_real(e).unwrap_or(0.0)).collect();
+                nums.chunks_exact(2).map(|c| (c[0], c[1])).collect()
+            }
+            NOISE_TABLE_FILE | NOISE_TABLE_FILE_NAME => {
+                let fname = self.body.as_literal(args[0]).unwrap().unwrap_str();
+                self.read_noise_table_file(fname)
+            }
+            _ => Vec::new(),
+        }
+    }
+
     fn lower_builtin(&mut self, expr: ExprId, builtin: BuiltIn, args: &[ExprId]) -> Value {
         let signature = self.body.get_call_signature(expr);
         match builtin {
@@ -565,7 +637,8 @@ impl BodyLoweringCtx<'_, '_, '_> {
                     self.ctx.func.interner.get_or_intern(name)
                 };
                 let log = builtin == BuiltIn::noise_table_log;
-                let noise_table = NoiseTable::new([(0.0, 0.0)], log, name, idx);
+                let table_vals = self.noise_table_data(signature, args);
+                let noise_table = NoiseTable::new(table_vals, log, name, idx);
                 self.ctx.call1(CallBackKind::NoiseTable(Box::new(noise_table)), &[])
             }
 
@@ -993,11 +1066,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
         //   y = Σ_{k<n} (num[k] - d·den[k]) x_k + d·input.
         // Previously num[n] was silently dropped, so any exactly-proper transfer
         // function (e.g. a high-pass or all-pass section) lost its feedthrough term.
-        let d = if num.len() == n + 1 {
-            Some(self.ctx.ins().fdiv(num[n], den[n]))
-        } else {
-            None
-        };
+        let d = if num.len() == n + 1 { Some(self.ctx.ins().fdiv(num[n], den[n])) } else { None };
 
         let mut out = F_ZERO;
         for (k, &nk) in num.iter().enumerate() {
