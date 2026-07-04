@@ -288,6 +288,9 @@ pub struct Net {
 pub struct Var {
     pub name: Name,
     pub ty: Type,
+    /// Lowest declared index of an array variable (`real g[2:5]` -> 2).
+    /// 0 for scalars and zero-based arrays.
+    pub array_lo: i32,
     pub ast_id: AstId<ast::Var>,
 }
 

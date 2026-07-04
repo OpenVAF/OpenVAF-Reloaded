@@ -444,6 +444,11 @@ impl Variable {
         db.var_data(self.id).ty.clone()
     }
 
+    /// Lowest declared index of an array variable (`real g[2:5]` -> 2).
+    pub fn array_lo(self, db: &CompilationDB) -> i32 {
+        db.var_data(self.id).array_lo
+    }
+
     pub fn init(self, db: &CompilationDB) -> Body {
         Body::new(self.id.into(), db)
     }

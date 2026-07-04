@@ -445,6 +445,22 @@ impl Ctx<'_> {
                 self.infere_expr(stmt, index);
                 // The result is the element type of the indexed array.
                 let base_ty = self.infere_expr(stmt, base)?;
+                if let Ty::Var(Type::Array { len, .. }, var) = &base_ty {
+                    if let Some(idx) = self.const_int_value(index) {
+                        let lo = self.db.var_data(*var).array_lo as i64;
+                        let hi = lo + *len as i64 - 1;
+                        if idx < lo || idx > hi {
+                            self.result.diagnostics.push(
+                                InferenceDiagnostic::ArrayIndexOutOfBounds {
+                                    e: index,
+                                    index: idx,
+                                    lo,
+                                    hi,
+                                },
+                            );
+                        }
+                    }
+                }
                 match base_ty.to_value() {
                     Some(Type::Array { ty, .. }) => Ty::Val(*ty),
                     _ => Ty::Val(Type::Err),
@@ -1255,6 +1271,21 @@ impl Ctx<'_> {
         }
     }
 
+    /// Value of an expression if it is a plain (possibly negated) integer literal.
+    fn const_int_value(&self, e: ExprId) -> Option<i64> {
+        match self.body.exprs[e] {
+            Expr::Literal(Literal::Int(val)) => Some(val as i64),
+            Expr::UnaryOp { expr, op: UnaryOp::Neg } => {
+                if let Expr::Literal(Literal::Int(val)) = self.body.exprs[expr] {
+                    Some(-(val as i64))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     // fn collect_fmt_literal(&mut self, stmt: StmtId, args: &[ExprId]){
     //     self.body
     // }
@@ -1280,6 +1311,13 @@ pub enum InferenceDiagnostic {
 
     ExpectedProbe {
         e: ExprId,
+    },
+
+    ArrayIndexOutOfBounds {
+        e: ExprId,
+        index: i64,
+        lo: i64,
+        hi: i64,
     },
 
     InvalidLimitFunction {

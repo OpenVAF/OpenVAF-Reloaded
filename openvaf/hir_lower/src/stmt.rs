@@ -161,15 +161,22 @@ impl BodyLoweringCtx<'_, '_, '_> {
         if len == 0 {
             return;
         }
+        // Element positions are offset by the declared lower bound (see
+        // `lower_index`): `real g[2:5]` stores g[2] in element 0.
+        let lo = var.array_lo(self.ctx.db);
         if let Some(c) = self.body.as_literalint(&index) {
-            let c = (c.max(0) as u32).min(len - 1);
-            self.ctx.def_place(PlaceKind::VarElement(var, c), val);
+            let pos = c as i64 - lo as i64;
+            if !(0..len as i64).contains(&pos) {
+                // Out of the declared range: diagnosed during type checking.
+                return;
+            }
+            self.ctx.def_place(PlaceKind::VarElement(var, pos as u32), val);
             return;
         }
         let idx_val = self.lower_expr(index);
         for i in 0..len {
             let current = self.ctx.use_place(PlaceKind::VarElement(var, i));
-            let i_const = self.ctx.iconst(i as i32);
+            let i_const = self.ctx.iconst(lo + i as i32);
             let cond = self.ctx.ins().ieq(idx_val, i_const);
             let new = self.ctx.make_select(cond, |_s, branch| if branch { val } else { current });
             self.ctx.def_place(PlaceKind::VarElement(var, i), new);

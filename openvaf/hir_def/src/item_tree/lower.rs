@@ -700,20 +700,28 @@ impl Ctx {
                 // `real den[msb:lsb];` -> a fixed-size array. The bounds are
                 // compile-time integer constants (literals, arithmetic, or parameter
                 // references resolved against the enclosing module).
-                let ty = match (var.dimension(), module.as_ref()) {
+                let (ty, array_lo) = match (var.dimension(), module.as_ref()) {
                     (Some(dim), Some(module)) => {
-                        let len = dim
+                        let bounds = dim
                             .msb()
                             .and_then(|m| eval_const_int(&m, module))
-                            .zip(dim.lsb().and_then(|l| eval_const_int(&l, module)))
+                            .zip(dim.lsb().and_then(|l| eval_const_int(&l, module)));
+                        let len = bounds
                             .map(|(msb, lsb)| (msb - lsb).unsigned_abs() as u32 + 1)
                             .unwrap_or(0);
-                        Type::Array { ty: Box::new(base_ty.clone()), len }
+                        // The declared range may run either way (`[2:5]` or `[5:2]`);
+                        // element positions are offset by the lower bound.
+                        let lo = bounds.map(|(msb, lsb)| msb.min(lsb) as i32).unwrap_or(0);
+                        (Type::Array { ty: Box::new(base_ty.clone()), len }, lo)
                     }
-                    _ => base_ty.clone(),
+                    _ => (base_ty.clone(), 0),
                 };
-                let var =
-                    Var { name: name.as_name(), ast_id: self.source_ast_id_map.ast_id(&var), ty };
+                let var = Var {
+                    name: name.as_name(),
+                    ast_id: self.source_ast_id_map.ast_id(&var),
+                    ty,
+                    array_lo,
+                };
                 let id = self.tree.data.variables.push_and_get_key(var);
                 dst.push(id.into())
             }

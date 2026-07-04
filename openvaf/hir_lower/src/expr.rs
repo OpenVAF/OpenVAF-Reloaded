@@ -282,15 +282,25 @@ impl BodyLoweringCtx<'_, '_, '_> {
         if len == 0 {
             return F_ZERO;
         }
+        // Element positions are offset by the declared lower bound: `real g[2:5]`
+        // stores g[2] in element 0. Previously the raw index was used as the
+        // position (g[3] read the wrong element) and constant out-of-range
+        // indices were silently clamped instead of diagnosed.
+        let lo = var.array_lo(self.ctx.db);
         if let Some(c) = self.body.as_literalint(&index) {
-            let c = (c.max(0) as u32).min(len - 1);
-            return self.ctx.use_place(PlaceKind::VarElement(var, c));
+            let pos = c as i64 - lo as i64;
+            if !(0..len as i64).contains(&pos) {
+                // Out of the declared range: diagnosed during type checking;
+                // lower to 0 so compilation can continue.
+                return F_ZERO;
+            }
+            return self.ctx.use_place(PlaceKind::VarElement(var, pos as u32));
         }
         let idx_val = self.lower_expr(index);
         let mut res = self.ctx.use_place(PlaceKind::VarElement(var, 0));
         for i in 1..len {
             let elem = self.ctx.use_place(PlaceKind::VarElement(var, i));
-            let i_const = self.ctx.iconst(i as i32);
+            let i_const = self.ctx.iconst(lo + i as i32);
             let cond = self.ctx.ins().ieq(idx_val, i_const);
             let prev = res;
             res = self.ctx.make_select(cond, |_s, branch| if branch { elem } else { prev });

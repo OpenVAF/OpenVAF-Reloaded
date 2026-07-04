@@ -297,6 +297,21 @@ impl Diagnostic for InferenceDiagnosticWrapped<'_> {
                         "help: expected one of the following\nbranch current access: I(branch), I(a,b)\nnode voltage: V(x)".to_owned(),
                     ])
             }
+            InferenceDiagnostic::ArrayIndexOutOfBounds { e, index, lo, hi } => {
+                let src = self
+                    .parse
+                    .to_file_span(self.body_sm.expr_map_back[e].as_ref().unwrap().range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("index {index} is out of bounds"),
+                    }])
+                    .with_message("array index out of bounds")
+                    .with_notes(vec![format!("help: the declared range is [{lo}:{hi}]")])
+            }
             InferenceDiagnostic::ExpectedProbe { e } => {
                 let src = self
                     .parse
