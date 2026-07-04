@@ -314,8 +314,11 @@ impl DominatorTree {
         // virtual super-exit node feeding into every real exit would produce, without needing to
         // allocate one. Blocks with a single real exit (the overwhelmingly common case) have an
         // empty `reverse_roots` other than `entry_block` itself, so this is a no-op then.
-        let other_roots: Vec<Block> =
-            if REVERSE { self.reverse_roots.iter().copied().filter(|&b| b != entry_block).collect() } else { Vec::new() };
+        let other_roots: Vec<Block> = if REVERSE {
+            self.reverse_roots.iter().copied().filter(|&b| b != entry_block).collect()
+        } else {
+            Vec::new()
+        };
 
         // Do a first pass where we assign RPO numbers to all reachable nodes.
         let nodes = if REVERSE { &mut self.reverse_nodes } else { &mut self.nodes };
