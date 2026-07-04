@@ -910,13 +910,17 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 .iter()
                 .map(|&e| {
                     let v = self.lower_expr(e);
-                    let ty = self.body.expr_type(e);
+                    // `lower_expr` already applies any inference-inserted cast
+                    // (`needs_cast`), so consult the *resolved* type here — using the
+                    // pre-cast type would insert a second `ifcast` on an already-real
+                    // value, which the constant folder rejects.
+                    let ty = self.resolved_ty(e);
                     self.coeff_to_real(v, &ty)
                 })
                 .collect(),
             _ => {
                 let v = self.lower_expr(arg);
-                let ty = self.body.expr_type(arg);
+                let ty = self.resolved_ty(arg);
                 vec![self.coeff_to_real(v, &ty)]
             }
         }
@@ -974,13 +978,34 @@ impl BodyLoweringCtx<'_, '_, '_> {
         self.ctx.def_resist_residual(neg, eq_last);
         self.ctx.def_react_residual(x_last, eq_last);
 
-        // y = Σ_k num[k] x_k.
+        // Direct feedthrough d = num[n]/den[n], present only when deg(num) == deg(den).
+        // Since s^n w = (input - Σ_{i<n} den[i] x_i)/den[n], the exact output is
+        //   y = Σ_{k<n} (num[k] - d·den[k]) x_k + d·input.
+        // Previously num[n] was silently dropped, so any exactly-proper transfer
+        // function (e.g. a high-pass or all-pass section) lost its feedthrough term.
+        let d = if num.len() == n + 1 {
+            Some(self.ctx.ins().fdiv(num[n], den[n]))
+        } else {
+            None
+        };
+
         let mut out = F_ZERO;
         for (k, &nk) in num.iter().enumerate() {
             if k < n {
-                let term = self.ctx.ins().fmul(nk, states[k].1);
+                let ck = match d {
+                    Some(d) => {
+                        let d_ak = self.ctx.ins().fmul(d, den[k]);
+                        self.ctx.ins().fsub(nk, d_ak)
+                    }
+                    None => nk,
+                };
+                let term = self.ctx.ins().fmul(ck, states[k].1);
                 out = self.ctx.ins().fadd(out, term);
             }
+        }
+        if let Some(d) = d {
+            let du = self.ctx.ins().fmul(d, input);
+            out = self.ctx.ins().fadd(out, du);
         }
         out
     }
