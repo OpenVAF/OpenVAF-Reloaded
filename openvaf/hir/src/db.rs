@@ -76,6 +76,13 @@ impl CompilationDB {
         self.root_file = root_file;
     }
 
+    /// Filesystem directory containing the compilation root file, if the root
+    /// lives on disk (as opposed to a virtual/in-memory file). Used to resolve
+    /// relative paths referenced from source, e.g. a `noise_table` data file.
+    pub fn root_file_dir(&self) -> Option<VfsPath> {
+        self.file_path(self.root_file).parent()
+    }
+
     pub fn new<'a>(
         root_file: VfsPath,
         contents: Result<Vec<u8>, io::Error>,

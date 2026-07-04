@@ -2,10 +2,11 @@ use core::ffi::c_uint;
 use std::ptr::NonNull;
 
 use llvm_sys::core::{
-    LLVMAppendBasicBlockInContext, LLVMBuildCall2, LLVMBuildFAdd, LLVMBuildFDiv, LLVMBuildFMul,
-    LLVMBuildFSub, LLVMBuildGEP2, LLVMBuildRetVoid, LLVMBuildStore, LLVMCreateBuilderInContext,
-    LLVMDisposeBuilder, LLVMGetParam, LLVMPositionBuilderAtEnd,
+    LLVMAppendBasicBlockInContext, LLVMBuildCall2, LLVMBuildFAdd, LLVMBuildFCmp, LLVMBuildFDiv,
+    LLVMBuildFMul, LLVMBuildFSub, LLVMBuildGEP2, LLVMBuildRetVoid, LLVMBuildSelect, LLVMBuildStore,
+    LLVMCreateBuilderInContext, LLVMDisposeBuilder, LLVMGetParam, LLVMPositionBuilderAtEnd,
 };
+use llvm_sys::LLVMRealPredicate;
 use mir_llvm::UNNAMED;
 use sim_back::dae::NoiseSourceKind;
 use stdx::iter::zip;
@@ -42,6 +43,99 @@ impl JacobianLoadType {
 }
 
 impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
+    /// Emit the LLVM IR that evaluates a `noise_table`/`noise_table_log` power
+    /// spectral density at run time for a given `freq`.
+    ///
+    /// `vals` are the sorted `(x, power)` pairs produced by
+    /// `hir_lower::NoiseTable::new`, where `x` is already in `log10(frequency)`
+    /// space (linear-input tables are `log10`-ed at build time; `_log` tables
+    /// are stored as-is). The lookup key is therefore `log10(freq)`, and the
+    /// power is obtained by piecewise-linear interpolation over `x`, clamped to
+    /// the table's endpoints outside `[x[0], x[n-1]]`.
+    ///
+    /// The interpolation is fully unrolled into `select`s: every segment's
+    /// slope/intercept is a compile-time constant, so each segment costs one
+    /// `fmul`, one `fadd`, one `fcmp` and one `select`.
+    unsafe fn build_noise_table_interp(
+        &self,
+        llbuilder: llvm_sys::prelude::LLVMBuilderRef,
+        freq: llvm_sys::prelude::LLVMValueRef,
+        vals: &[(stdx::Ieee64, stdx::Ieee64)],
+    ) -> &'ll llvm_sys::LLVMValue {
+        let cx = self.cx;
+        let n = vals.len();
+        if n == 0 {
+            return cx.const_real(0.0);
+        }
+        let x: Vec<f64> = vals.iter().map(|v| f64::from(v.0)).collect();
+        let y: Vec<f64> = vals.iter().map(|v| f64::from(v.1)).collect();
+        if n == 1 {
+            return cx.const_real(y[0]);
+        }
+
+        // lx = log10(freq)
+        let (log_ty, log_fn) = self
+            .cx
+            .intrinsic("llvm.log10.f64")
+            .unwrap_or_else(|| unreachable!("intrinsic llvm.log10.f64 not found"));
+        let mut log_args: [llvm_sys::prelude::LLVMValueRef; 1] = [freq];
+        let lx = LLVMBuildCall2(
+            llbuilder,
+            NonNull::from(log_ty).as_ptr(),
+            NonNull::from(log_fn).as_ptr(),
+            log_args.as_mut_ptr(),
+            1,
+            UNNAMED,
+        );
+
+        // Default (lx >= x[n-1]): clamp to the last point.
+        let mut result = NonNull::from(cx.const_real(y[n - 1])).as_ptr();
+
+        // Walk the segments from the top down. After the loop, the surviving
+        // `select` is the one for the lowest segment whose upper bound exceeds
+        // `lx`, i.e. exactly the bracketing segment.
+        for i in (0..n - 1).rev() {
+            let slope = (y[i + 1] - y[i]) / (x[i + 1] - x[i]);
+            let intercept = y[i] - slope * x[i];
+            // seg = slope * lx + intercept
+            let seg =
+                LLVMBuildFMul(llbuilder, NonNull::from(cx.const_real(slope)).as_ptr(), lx, UNNAMED);
+            let seg = LLVMBuildFAdd(
+                llbuilder,
+                seg,
+                NonNull::from(cx.const_real(intercept)).as_ptr(),
+                UNNAMED,
+            );
+            let cond = LLVMBuildFCmp(
+                llbuilder,
+                LLVMRealPredicate::LLVMRealOLT,
+                lx,
+                NonNull::from(cx.const_real(x[i + 1])).as_ptr(),
+                UNNAMED,
+            );
+            result = LLVMBuildSelect(llbuilder, cond, seg, result, UNNAMED);
+        }
+
+        // Clamp below x[0] to the first point (otherwise segment 0 would
+        // extrapolate below the table).
+        let cond0 = LLVMBuildFCmp(
+            llbuilder,
+            LLVMRealPredicate::LLVMRealOLT,
+            lx,
+            NonNull::from(cx.const_real(x[0])).as_ptr(),
+            UNNAMED,
+        );
+        result = LLVMBuildSelect(
+            llbuilder,
+            cond0,
+            NonNull::from(cx.const_real(y[0])).as_ptr(),
+            result,
+            UNNAMED,
+        );
+
+        &*result
+    }
+
     pub fn load_noise(&self) -> &'ll llvm_sys::LLVMValue {
         let OsdiCompilationUnit { cx, module, .. } = self;
         let void_ptr = cx.ty_ptr();
@@ -120,7 +214,10 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
 
                         pwr
                     }
-                    NoiseSourceKind::NoiseTable { .. } => unimplemented!("noise tables"),
+                    NoiseSourceKind::NoiseTable { ref vals, .. } => {
+                        let freq_ptr = freq as *const llvm_sys::LLVMValue as *mut _;
+                        self.build_noise_table_interp(llbuilder, freq_ptr, vals)
+                    }
                 };
 
                 // Multiply with squared factor because factor is in terms of signal, but
@@ -197,7 +294,10 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                     NoiseSourceKind::FlickerNoise { .. } => {
                         self.load_eval_output(eval_outputs.args[0], &*inst, &*model, &*llbuilder)
                     }
-                    NoiseSourceKind::NoiseTable { .. } => unimplemented!("noise tables"),
+                    // A frequency-dependent table has no single scalar power; the
+                    // per-frequency `load_noise` entry point is the real evaluator
+                    // (this ABI slot is unused by ngspice's OSDI noise path).
+                    NoiseSourceKind::NoiseTable { .. } => cx.const_real(0.0),
                 };
 
                 // Multiply with squared factor because factor is in terms of signal, but
@@ -224,7 +324,7 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                     NoiseSourceKind::FlickerNoise { .. } => {
                         self.load_eval_output(eval_outputs.args[1], &*inst, &*model, &*llbuilder)
                     }
-                    NoiseSourceKind::NoiseTable { .. } => unimplemented!("noise tables"),
+                    NoiseSourceKind::NoiseTable { .. } => cx.const_real(0.0),
                 };
 
                 // Store power

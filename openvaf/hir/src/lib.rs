@@ -29,6 +29,7 @@ pub use hir_def::{BuiltIn, Case, Literal, ParamSysFun, Path, Type};
 pub use hir_ty::builtin;
 use hir_ty::db::HirTyDB as HirDatabase;
 use hir_ty::inference;
+pub use hir_ty::types::Signature;
 pub use rec_declarations::RecDeclarations;
 use salsa::InternKey;
 use smol_str::SmolStr;
