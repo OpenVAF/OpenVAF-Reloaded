@@ -463,6 +463,11 @@ impl Parameter {
         db.param_data(self.id).name.to_string()
     }
 
+    /// Whether this parameter is a `localparam` (never externally overridable).
+    pub fn is_local(self, db: &CompilationDB) -> bool {
+        db.param_data(self.id).is_local
+    }
+
     pub fn default(self, db: &CompilationDB) -> ExprId {
         db.param_exprs(self.id).default
     }
