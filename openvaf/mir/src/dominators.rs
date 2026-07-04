@@ -47,6 +47,11 @@ pub struct DominatorTree {
     /// CFG post-order of all reachable blocks.
     postorder: Vec<Block>,
     stack: Vec<(Block, Successors)>,
+    /// Real exit blocks (no successors) seeded as independent roots by
+    /// `compute_reverse_postorder` when there is more than one -- see its doc comment.
+    /// Empty whenever the function has a single exit (the overwhelmingly common case), in
+    /// which case `compute_domtree::<true>` behaves exactly as before.
+    reverse_roots: Vec<Block>,
 }
 
 impl DominatorTree {
@@ -84,6 +89,7 @@ impl DominatorTree {
         self.nodes.clear();
         self.reverse_nodes.clear();
         self.postorder.clear();
+        self.reverse_roots.clear();
         debug_assert!(self.stack.is_empty());
         // self.valid = false;
     }
@@ -186,12 +192,36 @@ impl DominatorTree {
         // self.compute_reverse_cfg_postorder(func, cfg);
         self.reverse_nodes
             .resize(func.layout.num_blocks(), DomTreeNode { rpo_number: UNDEF, idom: None.into() });
-        match func.layout.last_block() {
-            Some(block) => {
+
+        // Post-dominance requires a single root to walk predecessors from. A function can have
+        // more than one real exit block (multiple `Exit`/terminating blocks with no successors,
+        // e.g. from independent `if`/event-control regions each ending their own control-flow
+        // path) -- seeding the traversal from only `func.layout.last_block()` (as this used to
+        // do) silently leaves every block that can't reach *that specific* block as
+        // `rpo_number == UNDEF`, making `ipdom()` return `None` for branches whose two arms
+        // don't both funnel through the layout's last block, even though they have a perfectly
+        // well-defined nearer common post-dominator. Seed from *every* real exit block (no
+        // successors) at once instead, as if they all fed into one virtual super-exit -- this
+        // matches the standard multi-exit post-dominator tree construction and leaves
+        // single-exit functions (the common case) unaffected.
+        for block in func.layout.blocks() {
+            if cfg.successors(block) == Successors(None.into(), None.into()) {
                 self.stack.push((block, Successors(None.into(), None.into())));
                 self.reverse_nodes[block].rpo_number = SEEN;
+                self.reverse_roots.push(block);
             }
-            None => return,
+        }
+        // Fall back to the previous behaviour if the function has no real exit block at all
+        // (e.g. every block loops forever) so at least something is seeded.
+        if self.reverse_roots.is_empty() {
+            match func.layout.last_block() {
+                Some(block) => {
+                    self.stack.push((block, Successors(None.into(), None.into())));
+                    self.reverse_nodes[block].rpo_number = SEEN;
+                    self.reverse_roots.push(block);
+                }
+                None => return,
+            }
         }
 
         while let Some((block, _)) = self.stack.pop() {
@@ -217,8 +247,6 @@ impl DominatorTree {
                 _ => unreachable!(),
             }
         }
-
-        debug_assert_eq!(self.postorder.last().copied(), func.layout.last_block());
     }
 
     /// Reset all internal data structures and compute a post-order of the control flow graph.
@@ -276,6 +304,19 @@ impl DominatorTree {
             None => return,
         };
 
+        // For `REVERSE` (post-dominance), a function can have more than one real exit block --
+        // `compute_reverse_postorder` seeds a walk from every one of them (see its doc comment),
+        // so `postorder` can contain several such "root" blocks besides `entry_block` (the one
+        // `split_last` happened to pick), each with zero reachable (reverse-)predecessors.
+        // `compute_idom_` would panic on those (`"block node must have one reachable
+        // predecessor"`, since it genuinely has none). Instead of computing an idom for them,
+        // give each one an explicit idom of `entry_block` directly -- equivalent to what a real
+        // virtual super-exit node feeding into every real exit would produce, without needing to
+        // allocate one. Blocks with a single real exit (the overwhelmingly common case) have an
+        // empty `reverse_roots` other than `entry_block` itself, so this is a no-op then.
+        let other_roots: Vec<Block> =
+            if REVERSE { self.reverse_roots.iter().copied().filter(|&b| b != entry_block).collect() } else { Vec::new() };
+
         // Do a first pass where we assign RPO numbers to all reachable nodes.
         let nodes = if REVERSE { &mut self.reverse_nodes } else { &mut self.nodes };
         nodes[entry_block].rpo_number = 2;
@@ -287,11 +328,14 @@ impl DominatorTree {
             // function will never see an uninitialized predecessor.
             //
             // Due to the nature of the post-order traversal, every node we visit will have at
-            // least one predecessor that has previously been visited during this RPO.
-            let node = DomTreeNode {
-                rpo_number: rpo_idx as u32 + 3,
-                idom: self.compute_idom::<REVERSE>(block, cfg).into(),
+            // least one predecessor that has previously been visited during this RPO -- except
+            // the other real-exit roots handled above, which have none by construction.
+            let idom = if other_roots.contains(&block) {
+                entry_block
+            } else {
+                self.compute_idom::<REVERSE>(block, cfg)
             };
+            let node = DomTreeNode { rpo_number: rpo_idx as u32 + 3, idom: idom.into() };
 
             let nodes = if REVERSE { &mut self.reverse_nodes } else { &mut self.nodes };
             nodes[block] = node;
@@ -304,7 +348,12 @@ impl DominatorTree {
         while changed {
             changed = false;
             for &block in postorder.iter().rev() {
-                let idom = self.compute_idom::<REVERSE>(block, cfg).into();
+                let idom = if other_roots.contains(&block) {
+                    entry_block
+                } else {
+                    self.compute_idom::<REVERSE>(block, cfg)
+                }
+                .into();
                 let nodes = if REVERSE { &mut self.reverse_nodes } else { &mut self.nodes };
                 if nodes[block].idom != idom {
                     nodes[block].idom = idom;
@@ -414,5 +463,54 @@ impl<'a> dot::GraphWalk<'a, Block, (Block, Block)> for DomTreeRender<'a> {
 
     fn target(&'a self, edge: &(Block, Block)) -> Block {
         edge.1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::builder::InstBuilder;
+    use crate::cursor::{Cursor, FuncCursor};
+    use crate::{ControlFlowGraph, DominatorTree, Function};
+
+    /// A branch whose arms rejoin and exit through a block that is *not* the
+    /// layout's last block used to get no post-dominator information at all:
+    /// the reverse walk was seeded only from `layout.last_block()`, so every
+    /// block that could not reach that specific exit stayed unvisited and
+    /// `ipdom()` returned `None` despite a well-defined common post-dominator.
+    #[test]
+    fn multi_exit_postdominators() {
+        let mut func = Function::new();
+        let cond = func.dfg.make_param(0u32.into());
+
+        let entry = func.layout.append_new_block();
+        let branching = func.layout.append_new_block();
+        let then_arm = func.layout.append_new_block();
+        let else_arm = func.layout.append_new_block();
+        let rejoin_exit = func.layout.append_new_block();
+        // A second real exit; deliberately the *last* block in the layout.
+        let other_exit = func.layout.append_new_block();
+
+        let mut cur = FuncCursor::new(&mut func).at_bottom(entry);
+        cur.ins().branch(cond, branching, other_exit, false);
+        cur = cur.at_bottom(branching);
+        cur.ins().branch(cond, then_arm, else_arm, false);
+        cur = cur.at_bottom(then_arm);
+        cur.ins().jump(rejoin_exit);
+        cur = cur.at_bottom(else_arm);
+        cur.ins().jump(rejoin_exit);
+        cur = cur.at_bottom(rejoin_exit);
+        cur.ins().exit();
+        cur = cur.at_bottom(other_exit);
+        cur.ins().exit();
+
+        let mut cfg = ControlFlowGraph::new();
+        cfg.compute(&func);
+        let mut domtree = DominatorTree::default();
+        domtree.compute(&func, &cfg, false, true, false);
+
+        assert_eq!(domtree.ipdom(then_arm), Some(rejoin_exit));
+        assert_eq!(domtree.ipdom(else_arm), Some(rejoin_exit));
+        assert_eq!(domtree.ipdom(branching), Some(rejoin_exit));
+        assert!(domtree.post_dominates(branching, rejoin_exit));
     }
 }
