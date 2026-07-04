@@ -811,6 +811,13 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
             BuiltIn::slew | BuiltIn::limit => self.lower_expr(args[0]),
 
+            // `ac_stim` is an AC small-signal stimulus: it is defined to be zero in the
+            // large-signal (DC/transient) domain, which is what a contribution lowers.
+            // Previously only the `no_equations` guard above matched, so a contributing
+            // use (`V(a,b) <+ ac_stim(...)`) fell through to `unreachable!()` and
+            // crashed the compiler. Actual AC-analysis injection is not implemented yet.
+            BuiltIn::ac_stim => F_ZERO,
+
             _ => unreachable!(),
         }
     }
@@ -832,44 +839,40 @@ impl BodyLoweringCtx<'_, '_, '_> {
 
         let residual = self.lower_multi_select(enable_integral, |mut ctx, branch| {
             if branch {
-                if kind.has_modulus() {
-                    let modulus = ctx.lower_expr(args[2]);
-                    let (min, max) = if kind.has_offset() {
-                        let offset = ctx.lower_expr(args[3]);
-                        (offset, ctx.ctx.ins().fadd(offset, modulus))
-                    } else {
-                        (F_ZERO, modulus)
-                    };
-                    let too_large = ctx.ctx.ins().fgt(val, max);
-                    ctx.lower_multi_select(too_large, |mut ctx, too_large| {
-                        if too_large {
-                            [ctx.ctx.ins().fsub(val, min), F_ZERO]
-                        } else {
-                            let too_small = ctx.ctx.ins().flt(val, min);
-                            ctx.lower_multi_select(too_small, |mut ctx, too_small| {
-                                if too_small {
-                                    [ctx.ctx.ins().fsub(val, min), F_ZERO]
-                                } else {
-                                    let arg = ctx.lower_expr(args[0]);
-                                    [ctx.ctx.ins().fneg(arg), val]
-                                }
-                            })
-                        }
-                    })
-                } else {
-                    let arg = ctx.lower_expr(args[0]);
-                    [ctx.ctx.ins().fneg(arg), val]
-                }
+                // Always integrate the DAE state unbounded; for `idtmod` the modulo
+                // wrap is applied to the returned value, not the state. Wrapping
+                // the charge makes it discontinuous at each modulus boundary.
+                let arg = ctx.lower_expr(args[0]);
+                [ctx.ctx.ins().fneg(arg), val]
             } else {
+                // Preserve the DC/IC equation for both forms of the operator. The
+                // charge must start at the initial value too, so transient
+                // integration does not discard a nonzero initial condition.
                 let ic = if kind.has_ic() { ctx.lower_expr(args[1]) } else { F_ZERO };
-                [ctx.ctx.ins().fsub(val, ic), F_ZERO]
+                [ctx.ctx.ins().fsub(val, ic), ic]
             }
         });
 
         self.ctx.def_resist_residual(residual[0], equation);
         self.ctx.def_react_residual(residual[1], equation);
 
-        val
+        // `idtmod` returns the (unbounded) integral wrapped into `[offset, offset+modulus)`:
+        // offset + floor_mod(val - offset, modulus), where floor_mod(x, m) = x - m*floor(x/m)
+        // stays in `[0, m)` even for negative x. Only the returned value wraps; the DAE state
+        // keeps integrating smoothly (above). This also fixes the offset argument, which
+        // previously read `args[2]` (the modulus) instead of `args[3]`.
+        if kind.has_modulus() {
+            let modulus = self.lower_expr(args[2]);
+            let offset = if kind.has_offset() { self.lower_expr(args[3]) } else { F_ZERO };
+            let shifted = self.ctx.ins().fsub(val, offset);
+            let quot = self.ctx.ins().fdiv(shifted, modulus);
+            let whole = self.ctx.ins().floor(quot);
+            let whole_mod = self.ctx.ins().fmul(whole, modulus);
+            let rem = self.ctx.ins().fsub(shifted, whole_mod);
+            self.ctx.ins().fadd(rem, offset)
+        } else {
+            val
+        }
     }
 
     /// Read the coefficient values of an array-valued argument (an array variable's
