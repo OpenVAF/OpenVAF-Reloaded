@@ -339,6 +339,9 @@ pub fn insert_builtin_scope(dst: &mut IndexMap<Name, ScopeDefItem, BuildHasherDe
     dst.insert(sysfun::asinh, BuiltIn::asinh.into());
     dst.insert(sysfun::acosh, BuiltIn::acosh.into());
     dst.insert(sysfun::atanh, BuiltIn::atanh.into());
+    dst.insert(sysfun::min, BuiltIn::min.into());
+    dst.insert(sysfun::max, BuiltIn::max.into());
+    dst.insert(sysfun::abs, BuiltIn::abs.into());
     dst.insert(sysfun::temperature, BuiltIn::temperature.into());
     dst.insert(sysfun::vt, BuiltIn::vt.into());
     dst.insert(sysfun::simparam, BuiltIn::simparam.into());

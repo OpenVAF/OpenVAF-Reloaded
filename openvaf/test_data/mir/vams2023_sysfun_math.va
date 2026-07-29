@@ -1,0 +1,20 @@
+// VAMS-2023 (Mantis 7795) added the alternative Verilog `$` spelling for
+// min/max/abs. These resolve to the same builtins as the bare names, so both
+// the real and the integer overload have to keep working.
+module test;
+    parameter real rx = 0.5;
+    parameter real ry = 1.5;
+    parameter integer ix = 2;
+    parameter integer iy = 3;
+    real a, b, c;
+    integer d, e, f;
+    analog begin
+        a = $min(rx, ry);
+        b = $max(rx, ry);
+        c = $abs(rx);
+
+        d = $min(ix, iy);
+        e = $max(ix, iy);
+        f = $abs(ix);
+    end
+endmodule
