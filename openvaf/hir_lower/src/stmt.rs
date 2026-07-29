@@ -48,6 +48,14 @@ impl BodyLoweringCtx<'_, '_, '_> {
                         return;
                     }
                 }
+                // Whole-array assignment (`g = '{1.0, 2.0};` or `g = h;`) writes the
+                // element places directly: an array is not a single MIR value.
+                if let hir::AssignmentLhs::Variable(var) = lhs {
+                    if matches!(var.ty(self.ctx.db), Type::Array { .. }) {
+                        self.assign_whole_array(var, rhs);
+                        return;
+                    }
+                }
                 let val_ = self.lower_expr(rhs);
                 match lhs {
                     hir::AssignmentLhs::ArrayElement { var, index } => {
@@ -153,6 +161,40 @@ impl BodyLoweringCtx<'_, '_, '_> {
         self.ctx.switch_to_block(end);
     }
 
+    /// Lower `arr = rhs` where `arr` is an array variable. The right-hand side can
+    /// only be an array literal or another array variable (the type checker rejects
+    /// everything else); both are written element by element.
+    fn assign_whole_array(&mut self, var: hir::Variable, rhs: ExprId) {
+        let len = self.array_len(var);
+        // A cast recorded on the whole array expression (e.g. `'{0, 1}` assigned to
+        // a real array) applies to every element.
+        let elem_cast = self.body.needs_cast(rhs).and_then(|(src, dst)| match (src, dst.clone()) {
+            (Type::Array { ty: src, .. }, Type::Array { ty: dst, .. }) => Some((*src, *dst)),
+            _ => None,
+        });
+        match self.body.get_expr(rhs) {
+            Expr::Array(vals) => {
+                for (i, val) in vals.iter().enumerate().take(len as usize) {
+                    let mut elem = self.lower_expr(*val);
+                    if let Some((src, dst)) = &elem_cast {
+                        elem = self.ctx.insert_cast(elem, src, dst);
+                    }
+                    self.ctx.def_place(PlaceKind::VarElement(var, i as u32), elem);
+                }
+            }
+            Expr::Read(hir::Ref::Variable(src_var)) => {
+                for i in 0..len.min(self.array_len(src_var)) {
+                    let mut elem = self.ctx.use_place(PlaceKind::VarElement(src_var, i));
+                    if let Some((src, dst)) = &elem_cast {
+                        elem = self.ctx.insert_cast(elem, src, dst);
+                    }
+                    self.ctx.def_place(PlaceKind::VarElement(var, i), elem);
+                }
+            }
+            _ => unreachable!("unsupported whole-array assignment source"),
+        }
+    }
+
     /// Lower `arr[index] = val`. A constant index writes the element place directly;
     /// a runtime index conditionally rewrites every element (`elem_i = (index==i) ?
     /// val : elem_i`), keeping the array in pure SSA.
@@ -161,15 +203,22 @@ impl BodyLoweringCtx<'_, '_, '_> {
         if len == 0 {
             return;
         }
+        // Element positions are offset by the declared lower bound (see
+        // `lower_index`): `real g[2:5]` stores g[2] in element 0.
+        let lo = var.array_lo(self.ctx.db);
         if let Some(c) = self.body.as_literalint(&index) {
-            let c = (c.max(0) as u32).min(len - 1);
-            self.ctx.def_place(PlaceKind::VarElement(var, c), val);
+            let pos = c as i64 - lo as i64;
+            if !(0..len as i64).contains(&pos) {
+                // Out of the declared range: diagnosed during type checking.
+                return;
+            }
+            self.ctx.def_place(PlaceKind::VarElement(var, pos as u32), val);
             return;
         }
         let idx_val = self.lower_expr(index);
         for i in 0..len {
             let current = self.ctx.use_place(PlaceKind::VarElement(var, i));
-            let i_const = self.ctx.iconst(i as i32);
+            let i_const = self.ctx.iconst(lo + i as i32);
             let cond = self.ctx.ins().ieq(idx_val, i_const);
             let new = self.ctx.make_select(cond, |_s, branch| if branch { val } else { current });
             self.ctx.def_place(PlaceKind::VarElement(var, i), new);

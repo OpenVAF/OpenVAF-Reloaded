@@ -20,10 +20,6 @@ use crate::veriloga::osdi_0_4::{
     PARA_KIND_INST, PARA_TY_INT, PARA_TY_MASK, PARA_TY_REAL, PARA_TY_STR,
 };
 
-fn unsupported_query_past_state(_: *mut c_void, _: u32, _: f64, _: f64) -> f64 {
-    std::process::abort()
-}
-
 impl OsdiDescriptor {
     fn nodes(&self) -> &[OsdiNode] {
         // # SAFETY: OsdiDescriptor can only be constructed from FFI and is assumed to contain
@@ -200,7 +196,7 @@ impl Drop for OsdiModel {
 
 impl ModelImpl for OsdiModel {
     fn process_params(&self) -> Result<()> {
-        if self.descriptor.num_delay != 0 {
+        if self.descriptor.absdelay_count != 0 {
             bail!(
                 "OSDI model uses absdelay, but Melange does not implement transient delay history"
             )
@@ -368,7 +364,7 @@ impl InstanceImpl for OsdiInstance {
         sim_builder: &mut SimBuilder,
         terminals: &[Node],
     ) -> Result<()> {
-        if self.descriptor.num_delay != 0 {
+        if self.descriptor.absdelay_count != 0 {
             bail!(
                 "OSDI model uses absdelay, but Melange does not implement transient delay history"
             )
@@ -489,8 +485,6 @@ impl InstanceImpl for OsdiInstance {
             prev_state: ptr::null_mut(),
             next_state: ptr::null_mut(),
             flags: sim_info.flags.bits(),
-            history_ctx: ptr::null_mut(),
-            query_past_state: unsupported_query_past_state,
         };
 
         let ret_flags = self.descriptor.eval(

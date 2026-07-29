@@ -1,5 +1,6 @@
 use hir::builtin::{
-    FLICKER_NOISE_NAME, NOISE_TABLE_FILE_NAME, NOISE_TABLE_INLINE_NAME, WHITE_NOISE_NAME,
+    FLICKER_NOISE_NAME, NOISE_TABLE_FILE, NOISE_TABLE_FILE_NAME, NOISE_TABLE_INLINE,
+    NOISE_TABLE_INLINE_NAME, WHITE_NOISE_NAME,
 };
 use hir::signatures::{
     ABSDELAY_MAX, ABS_INT, ABS_REAL, BOOL_EQ, DDX_POT, IDTMOD_IC, IDTMOD_IC_MODULUS,
@@ -282,20 +283,101 @@ impl BodyLoweringCtx<'_, '_, '_> {
         if len == 0 {
             return F_ZERO;
         }
+        // Element positions are offset by the declared lower bound: `real g[2:5]`
+        // stores g[2] in element 0. Previously the raw index was used as the
+        // position (g[3] read the wrong element) and constant out-of-range
+        // indices were silently clamped instead of diagnosed.
+        let lo = var.array_lo(self.ctx.db);
         if let Some(c) = self.body.as_literalint(&index) {
-            let c = (c.max(0) as u32).min(len - 1);
-            return self.ctx.use_place(PlaceKind::VarElement(var, c));
+            let pos = c as i64 - lo as i64;
+            if !(0..len as i64).contains(&pos) {
+                // Out of the declared range: diagnosed during type checking;
+                // lower to 0 so compilation can continue.
+                return F_ZERO;
+            }
+            return self.ctx.use_place(PlaceKind::VarElement(var, pos as u32));
         }
         let idx_val = self.lower_expr(index);
         let mut res = self.ctx.use_place(PlaceKind::VarElement(var, 0));
         for i in 1..len {
             let elem = self.ctx.use_place(PlaceKind::VarElement(var, i));
-            let i_const = self.ctx.iconst(i as i32);
+            let i_const = self.ctx.iconst(lo + i as i32);
             let cond = self.ctx.ins().ieq(idx_val, i_const);
             let prev = res;
             res = self.ctx.make_select(cond, |_s, branch| if branch { elem } else { prev });
         }
         res
+    }
+
+    /// Evaluate a compile-time-constant real expression (literal, possibly
+    /// with a leading unary `+`/`-`). Used to read the `noise_table` inline
+    /// data array, whose elements must all be constants per the LRM.
+    fn eval_const_real(&self, expr: ExprId) -> Option<f64> {
+        if let Some(lit) = self.body.as_literal(expr) {
+            return match lit {
+                Literal::Float(f) => Some((*f).into()),
+                Literal::Int(i) => Some(*i as f64),
+                _ => None,
+            };
+        }
+        match self.body.get_expr(expr) {
+            Expr::UnaryOp { expr: inner, op } => match op {
+                UnaryOp::Neg => Some(-self.eval_const_real(inner)?),
+                UnaryOp::Identity => self.eval_const_real(inner),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Read a whitespace-separated two-column `<freq> <power>` noise table
+    /// file, resolved relative to the directory of the compilation root file.
+    /// Blank lines and `#`/`//`/`*`-prefixed comment lines are skipped.
+    fn read_noise_table_file(&self, fname: &str) -> Vec<(f64, f64)> {
+        let Some(dir) = self.ctx.db.root_file_dir() else { return Vec::new() };
+        let Some(path) = dir.join(fname) else { return Vec::new() };
+        let Some(abs) = path.as_path() else { return Vec::new() };
+        let Ok(content) = std::fs::read_to_string(abs) else { return Vec::new() };
+        let mut out = Vec::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty()
+                || line.starts_with('#')
+                || line.starts_with("//")
+                || line.starts_with('*')
+            {
+                continue;
+            }
+            let mut it = line.split_whitespace();
+            if let (Some(a), Some(b)) = (it.next(), it.next()) {
+                if let (Ok(f), Ok(p)) = (a.parse::<f64>(), b.parse::<f64>()) {
+                    out.push((f, p));
+                }
+            }
+        }
+        out
+    }
+
+    /// Gather the `(frequency, power)` pairs backing a `noise_table` /
+    /// `noise_table_log` call, either from an inline real array
+    /// `{f0, p0, f1, p1, ...}` or from a two-column data file.
+    fn noise_table_data(&self, signature: hir::Signature, args: &[ExprId]) -> Vec<(f64, f64)> {
+        match signature {
+            NOISE_TABLE_INLINE | NOISE_TABLE_INLINE_NAME => {
+                let elems = match self.body.get_expr(args[0]) {
+                    Expr::Array(vals) => vals,
+                    _ => return Vec::new(),
+                };
+                let nums: Vec<f64> =
+                    elems.iter().map(|&e| self.eval_const_real(e).unwrap_or(0.0)).collect();
+                nums.chunks_exact(2).map(|c| (c[0], c[1])).collect()
+            }
+            NOISE_TABLE_FILE | NOISE_TABLE_FILE_NAME => {
+                let fname = self.body.as_literal(args[0]).unwrap().unwrap_str();
+                self.read_noise_table_file(fname)
+            }
+            _ => Vec::new(),
+        }
     }
 
     fn lower_builtin(&mut self, expr: ExprId, builtin: BuiltIn, args: &[ExprId]) -> Value {
@@ -555,7 +637,8 @@ impl BodyLoweringCtx<'_, '_, '_> {
                     self.ctx.func.interner.get_or_intern(name)
                 };
                 let log = builtin == BuiltIn::noise_table_log;
-                let noise_table = NoiseTable::new([(0.0, 0.0)], log, name, idx);
+                let table_vals = self.noise_table_data(signature, args);
+                let noise_table = NoiseTable::new(table_vals, log, name, idx);
                 self.ctx.call1(CallBackKind::NoiseTable(Box::new(noise_table)), &[])
             }
 
@@ -811,6 +894,13 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
             BuiltIn::slew | BuiltIn::limit => self.lower_expr(args[0]),
 
+            // `ac_stim` is an AC small-signal stimulus: it is defined to be zero in the
+            // large-signal (DC/transient) domain, which is what a contribution lowers.
+            // Previously only the `no_equations` guard above matched, so a contributing
+            // use (`V(a,b) <+ ac_stim(...)`) fell through to `unreachable!()` and
+            // crashed the compiler. Actual AC-analysis injection is not implemented yet.
+            BuiltIn::ac_stim => F_ZERO,
+
             _ => unreachable!(),
         }
     }
@@ -833,37 +923,22 @@ impl BodyLoweringCtx<'_, '_, '_> {
 
             self.lower_multi_select(enable_integral, |mut ctx, branch| {
                 if branch {
-                    if kind.has_modulus() {
-                        let modulus = ctx.lower_expr(args[2]);
-                        let (min, max) = if kind.has_offset() {
-                            let offset = ctx.lower_expr(args[2]);
-                            (offset, ctx.ctx.ins().fadd(offset, modulus))
-                        } else {
-                            (F_ZERO, modulus)
-                        };
-                        let too_large = ctx.ctx.ins().fgt(val, max);
-                        ctx.lower_multi_select(too_large, |mut ctx, too_large| {
-                            if too_large {
-                                [ctx.ctx.ins().fsub(val, min), F_ZERO]
-                            } else {
-                                let too_small = ctx.ctx.ins().flt(val, min);
-                                ctx.lower_multi_select(too_small, |mut ctx, too_small| {
-                                    if too_small {
-                                        [ctx.ctx.ins().fsub(val, min), F_ZERO]
-                                    } else {
-                                        let arg = ctx.lower_expr(args[0]);
-                                        [ctx.ctx.ins().fneg(arg), val]
-                                    }
-                                })
-                            }
-                        })
-                    } else {
-                        let arg = ctx.lower_expr(args[0]);
-                        [ctx.ctx.ins().fneg(arg), val]
-                    }
+                    // Always integrate the DAE state unbounded; for `idtmod` the modulo
+                    // wrap is applied to the *returned value* (below), not the state.
+                    // Wrapping the state inside the residual makes the reactive residual
+                    // jump by `modulus` at each wrap, so the transient integrator's d/dt
+                    // term (based on the previous charge, ~modulus) diverges at the wrap.
+                    let arg = ctx.lower_expr(args[0]);
+                    [ctx.ctx.ins().fneg(arg), val]
                 } else {
+                    // During the IC/DC phase the stored charge (reactive residual) must
+                    // be `ic`, not zero: `val - ic` pins `val = ic` at DC, but a zero
+                    // charge makes the integrator restart from 0 once transient
+                    // integration turns on, silently dropping the initial condition.
+                    // Storing charge = `ic` lets the transient continue from `ic` (and
+                    // an `assert` reset likewise restores the integrator to `ic`).
                     let ic = ctx.lower_expr(args[1]);
-                    [ctx.ctx.ins().fsub(val, ic), F_ZERO]
+                    [ctx.ctx.ins().fsub(val, ic), ic]
                 }
             })
         } else {
@@ -874,7 +949,23 @@ impl BodyLoweringCtx<'_, '_, '_> {
         self.ctx.def_resist_residual(residual[0], equation);
         self.ctx.def_react_residual(residual[1], equation);
 
-        val
+        // `idtmod` returns the (unbounded) integral wrapped into `[offset, offset+modulus)`:
+        // offset + floor_mod(val - offset, modulus), where floor_mod(x, m) = x - m*floor(x/m)
+        // stays in `[0, m)` even for negative x. Only the returned value wraps; the DAE state
+        // keeps integrating smoothly (above). This also fixes the offset argument, which
+        // previously read `args[2]` (the modulus) instead of `args[3]`.
+        if kind.has_modulus() {
+            let modulus = self.lower_expr(args[2]);
+            let offset = if kind.has_offset() { self.lower_expr(args[3]) } else { F_ZERO };
+            let shifted = self.ctx.ins().fsub(val, offset);
+            let quot = self.ctx.ins().fdiv(shifted, modulus);
+            let whole = self.ctx.ins().floor(quot);
+            let whole_mod = self.ctx.ins().fmul(whole, modulus);
+            let rem = self.ctx.ins().fsub(shifted, whole_mod);
+            self.ctx.ins().fadd(rem, offset)
+        } else {
+            val
+        }
     }
 
     /// Read the coefficient values of an array-valued argument (an array variable's
@@ -902,13 +993,17 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 .iter()
                 .map(|&e| {
                     let v = self.lower_expr(e);
-                    let ty = self.body.expr_type(e);
+                    // `lower_expr` already applies any inference-inserted cast
+                    // (`needs_cast`), so consult the *resolved* type here — using the
+                    // pre-cast type would insert a second `ifcast` on an already-real
+                    // value, which the constant folder rejects.
+                    let ty = self.resolved_ty(e);
                     self.coeff_to_real(v, &ty)
                 })
                 .collect(),
             _ => {
                 let v = self.lower_expr(arg);
-                let ty = self.body.expr_type(arg);
+                let ty = self.resolved_ty(arg);
                 vec![self.coeff_to_real(v, &ty)]
             }
         }
@@ -966,13 +1061,30 @@ impl BodyLoweringCtx<'_, '_, '_> {
         self.ctx.def_resist_residual(neg, eq_last);
         self.ctx.def_react_residual(x_last, eq_last);
 
-        // y = Σ_k num[k] x_k.
+        // Direct feedthrough d = num[n]/den[n], present only when deg(num) == deg(den).
+        // Since s^n w = (input - Σ_{i<n} den[i] x_i)/den[n], the exact output is
+        //   y = Σ_{k<n} (num[k] - d·den[k]) x_k + d·input.
+        // Previously num[n] was silently dropped, so any exactly-proper transfer
+        // function (e.g. a high-pass or all-pass section) lost its feedthrough term.
+        let d = if num.len() == n + 1 { Some(self.ctx.ins().fdiv(num[n], den[n])) } else { None };
+
         let mut out = F_ZERO;
         for (k, &nk) in num.iter().enumerate() {
             if k < n {
-                let term = self.ctx.ins().fmul(nk, states[k].1);
+                let ck = match d {
+                    Some(d) => {
+                        let d_ak = self.ctx.ins().fmul(d, den[k]);
+                        self.ctx.ins().fsub(nk, d_ak)
+                    }
+                    None => nk,
+                };
+                let term = self.ctx.ins().fmul(ck, states[k].1);
                 out = self.ctx.ins().fadd(out, term);
             }
+        }
+        if let Some(d) = d {
+            let du = self.ctx.ins().fmul(d, input);
+            out = self.ctx.ins().fadd(out, du);
         }
         out
     }

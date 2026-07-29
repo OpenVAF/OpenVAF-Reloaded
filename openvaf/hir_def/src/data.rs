@@ -122,13 +122,15 @@ impl NatureData {
 pub struct VarData {
     pub name: Name,
     pub ty: Type,
+    /// Lowest declared index of an array variable (`real g[2:5]` -> 2).
+    pub array_lo: i32,
 }
 
 impl VarData {
     pub fn var_data_query(db: &dyn HirDefDB, id: VarId) -> Arc<VarData> {
         let loc = id.lookup(db);
         let var = &loc.item_tree(db)[loc.id];
-        Arc::new(VarData { name: var.name.clone(), ty: var.ty.clone() })
+        Arc::new(VarData { name: var.name.clone(), ty: var.ty.clone(), array_lo: var.array_lo })
     }
 }
 
@@ -136,13 +138,19 @@ impl VarData {
 pub struct ParamData {
     pub name: Name,
     pub ty: Option<Type>,
+    /// `localparam` declarations are never externally overridable (LRM).
+    pub is_local: bool,
 }
 
 impl ParamData {
     pub fn param_data_query(db: &dyn HirDefDB, id: ParamId) -> Arc<ParamData> {
         let loc = id.lookup(db);
         let param = &loc.item_tree(db)[loc.id];
-        Arc::new(ParamData { name: param.name.clone(), ty: param.ty.clone() })
+        Arc::new(ParamData {
+            name: param.name.clone(),
+            ty: param.ty.clone(),
+            is_local: param.is_local,
+        })
     }
 }
 

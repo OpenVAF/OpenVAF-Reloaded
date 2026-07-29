@@ -29,6 +29,7 @@ pub use hir_def::{BuiltIn, Case, Literal, ParamSysFun, Path, Type};
 pub use hir_ty::builtin;
 use hir_ty::db::HirTyDB as HirDatabase;
 use hir_ty::inference;
+pub use hir_ty::types::Signature;
 pub use rec_declarations::RecDeclarations;
 use salsa::InternKey;
 use smol_str::SmolStr;
@@ -444,6 +445,11 @@ impl Variable {
         db.var_data(self.id).ty.clone()
     }
 
+    /// Lowest declared index of an array variable (`real g[2:5]` -> 2).
+    pub fn array_lo(self, db: &CompilationDB) -> i32 {
+        db.var_data(self.id).array_lo
+    }
+
     pub fn init(self, db: &CompilationDB) -> Body {
         Body::new(self.id.into(), db)
     }
@@ -461,6 +467,11 @@ pub struct Parameter {
 impl Parameter {
     pub fn name(self, db: &CompilationDB) -> String {
         db.param_data(self.id).name.to_string()
+    }
+
+    /// Whether this parameter is a `localparam` (never externally overridable).
+    pub fn is_local(self, db: &CompilationDB) -> bool {
+        db.param_data(self.id).is_local
     }
 
     pub fn default(self, db: &CompilationDB) -> ExprId {

@@ -162,8 +162,15 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
             builder.params[dst] = BuilderVal::Load(Box::new(loc));
 
             let dst = intern.params.unwrap_index(&ParamKind::ParamGiven { param });
-            let is_given =
-                unsafe { model_data.is_nth_param_given(cx, i, &*model, builder.llbuilder) };
+            // A `localparam` is never externally overridable (Verilog-AMS LRM):
+            // force its "given" flag to a constant false so the parameter-init
+            // code always stores the declared default expression, unconditionally
+            // overwriting any value the simulator wrote into the parameter slot.
+            let is_given = if param.is_local(self.db) {
+                cx.const_bool(false)
+            } else {
+                unsafe { model_data.is_nth_param_given(cx, i, &*model, builder.llbuilder) }
+            };
             builder.params[dst] = BuilderVal::Eager(is_given);
         }
 
@@ -200,6 +207,9 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                     // Debug: Destination index for user param: dst
                     builder.params[dst] = BuilderVal::Eager(val);
                     let dst = intern.params.unwrap_index(&ParamKind::ParamGiven { param });
+                    // localparams are never externally overridable (see above)
+                    let is_given =
+                        if param.is_local(self.db) { cx.const_bool(false) } else { is_given };
                     builder.params[dst] = BuilderVal::Eager(is_given);
                 }
             }
@@ -427,6 +437,9 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                         inst_data.store_nth_param(i, instance, val, builder.llbuilder);
                     }
                     let dst = intern.params.unwrap_index(&ParamKind::ParamGiven { param });
+                    // localparams are never externally overridable
+                    let is_given =
+                        if param.is_local(self.db) { cx.const_bool(false) } else { is_given };
                     builder.params[dst] = BuilderVal::Eager(is_given);
                 }
             }
@@ -441,8 +454,12 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
             }
 
             if let Some(dst) = intern.params.index(&ParamKind::ParamGiven { param }) {
-                let is_given =
-                    unsafe { model_data.is_nth_param_given(cx, i, model, builder.llbuilder) };
+                // localparams are never externally overridable
+                let is_given = if param.is_local(self.db) {
+                    cx.const_bool(false)
+                } else {
+                    unsafe { model_data.is_nth_param_given(cx, i, model, builder.llbuilder) }
+                };
                 builder.params[dst] = BuilderVal::Eager(is_given);
             }
         }

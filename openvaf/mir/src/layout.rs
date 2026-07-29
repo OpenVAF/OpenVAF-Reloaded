@@ -237,6 +237,42 @@ impl Layout {
         self.last_block
     }
 
+    /// Unlink `block` from its current layout position and re-insert it as the
+    /// last block. Used when a block is merged away and it was the layout's
+    /// last block, so its surviving predecessor must take over that position
+    /// -- otherwise `last_block()` would silently start pointing at whatever
+    /// block happened to be physically last, which is not necessarily the
+    /// function's true logical exit anymore.
+    pub fn move_block_to_end(&mut self, block: Block) {
+        if self.last_block == Some(block) {
+            return;
+        }
+        debug_assert!(self.is_block_inserted(block), "block not in the layout");
+        let prev = self.blocks[block].prev;
+        let next = self.blocks[block].next;
+        match prev.expand() {
+            None => self.first_block = next.expand(),
+            Some(p) => self.blocks[p].next = next,
+        }
+        match next.expand() {
+            None => self.last_block = prev.expand(),
+            Some(n) => self.blocks[n].prev = prev,
+        }
+
+        let last = self.last_block;
+        {
+            let node = &mut self.blocks[block];
+            node.prev = last.into();
+            node.next = None.into();
+        }
+        if let Some(last) = last {
+            self.blocks[last].next = block.into();
+        } else {
+            self.first_block = Some(block);
+        }
+        self.last_block = Some(block);
+    }
+
     /// Get the block preceding `block` in the layout order.
     pub fn prev_block(&self, block: Block) -> Option<Block> {
         self.blocks[block].prev.expand()

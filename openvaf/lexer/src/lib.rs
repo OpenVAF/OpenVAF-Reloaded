@@ -117,10 +117,12 @@ impl Cursor<'_> {
             // Three Symbol tokens
             '<' if self.first() == '<' && self.second() == '<' => {
                 self.bump();
+                self.bump();
                 ShlA
             }
 
             '>' if self.first() == '>' && self.second() == '>' => {
+                self.bump();
                 self.bump();
                 ShrA
             }
