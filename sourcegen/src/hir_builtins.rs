@@ -114,7 +114,7 @@ const BUILTINS: [&str; 28] = [
 
 const PARAM_SYSFUNS: [&str; 6] = ["mfactor", "xposition", "yposition", "angle", "hflip", "vflip"];
 
-const SYSFUNS: [&str; 83] = [
+const SYSFUNS: [&str; 86] = [
     "$display",
     "$strobe",
     "$write",
@@ -185,6 +185,9 @@ const SYSFUNS: [&str; 83] = [
     "$asinh",
     "$acosh",
     "$atanh",
+    "$min",
+    "$max",
+    "$abs",
     "$temperature",
     "$vt",
     "$simparam",
