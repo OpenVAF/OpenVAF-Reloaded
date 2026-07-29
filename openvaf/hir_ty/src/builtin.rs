@@ -428,8 +428,10 @@ copied_builtins! {
     COS = REAL_MATH_1
     COSH = REAL_MATH_1
     EXP = REAL_MATH_1
+    EXPM1 = REAL_MATH_1
     FLOOR = REAL_MATH_1
     LN = REAL_MATH_1
+    LN1P = REAL_MATH_1
     LOG = REAL_MATH_1
     CLOG2 = INT_MATH_2
     LOG10 = REAL_MATH_1

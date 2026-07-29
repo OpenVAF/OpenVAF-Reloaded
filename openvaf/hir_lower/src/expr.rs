@@ -361,6 +361,10 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 let arg0 = self.lower_expr(args[0]);
                 self.ctx.ins().exp(arg0)
             }
+            BuiltIn::expm1 => {
+                let arg0 = self.lower_expr(args[0]);
+                self.ctx.ins().expm1(arg0)
+            }
 
             BuiltIn::limexp => {
                 let arg0 = self.lower_expr(args[0]);
@@ -392,6 +396,10 @@ impl BodyLoweringCtx<'_, '_, '_> {
             BuiltIn::ln => {
                 let arg0 = self.lower_expr(args[0]);
                 self.ctx.ins().ln(arg0)
+            }
+            BuiltIn::ln1p => {
+                let arg0 = self.lower_expr(args[0]);
+                self.ctx.ins().ln1p(arg0)
             }
             BuiltIn::sin => {
                 let arg0 = self.lower_expr(args[0]);

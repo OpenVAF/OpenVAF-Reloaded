@@ -1,0 +1,26 @@
+// A user-defined analog function must keep shadowing the expm1/ln1p builtins
+// added for VAMS-2023. Several in-tree compact models (for example HiSIMSOTB)
+// declare their own `expm1`, so this must not become an error or silently
+// resolve to the builtin.
+module test;
+    parameter real p = 0.5;
+    real a;
+    real b;
+
+    analog function real expm1;
+        input x;
+        real x;
+        expm1 = exp(x) - 1.0;
+    endfunction
+
+    analog function real ln1p;
+        input x;
+        real x;
+        ln1p = ln(1.0 + x);
+    endfunction
+
+    analog begin
+        a = expm1(p);
+        b = ln1p(p);
+    end
+endmodule

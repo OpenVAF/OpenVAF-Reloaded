@@ -120,6 +120,8 @@ impl<'a, FP: Arithmetic, M: Fn(Value, &Function) -> Value> SimplifyCtx<'a, FP, M
             }
             Opcode::Exp => Opcode::Ln,
             Opcode::Ln => Opcode::Exp,
+            Opcode::Expm1 => Opcode::Ln1p,
+            Opcode::Ln1p => Opcode::Expm1,
             Opcode::Log => {
                 if let Some([x, y]) = self.as_binary(arg, Opcode::Pow) {
                     if x == F_TEN {

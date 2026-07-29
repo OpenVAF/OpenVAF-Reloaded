@@ -557,12 +557,18 @@ impl<'a, 'u> DerivativeBuilder<'a, 'u> {
             // exp(x) -> exp(x)
             //            Opcode::Exp => res,
             Opcode::Exp => self.ins().exp(arg0),
+            // expm1(x) -> exp(x)
+            // NOT res + 1: for x << 0 expm1(x) rounds to -1 and the sum cancels to zero,
+            // whereas exp(x) stays accurate.
+            Opcode::Expm1 => self.ins().exp(arg0),
 
             // hypot(x,y) -> (x' + y')/2hypot(x,y)
             // sqrt(x) -> 1/2sqrt(x)
             Opcode::Hypot | Opcode::Sqrt => self.ins().fmul(F_TWO, res),
             // ln(x) -> 1/x
             Opcode::Ln => arg0,
+            // ln1p(x) -> 1/(1+x)
+            Opcode::Ln1p => self.ins().fadd(arg0, F_ONE),
             // log(x) -> log(e)/x
             Opcode::Log => self.ins().fdiv(F_LOG10_E, arg0),
             // sin(x) -> cos(x)
@@ -843,6 +849,7 @@ impl<'a, 'u> DerivativeBuilder<'a, 'u> {
             Opcode::Fdiv => gen_div_derivative(self, arg0, arg1, false),
 
             Opcode::Exp
+            | Opcode::Expm1
             | Opcode::Log
             | Opcode::Sin
             | Opcode::Cos
@@ -859,6 +866,7 @@ impl<'a, 'u> DerivativeBuilder<'a, 'u> {
             }
 
             Opcode::Ln
+            | Opcode::Ln1p
             |Opcode::Sqrt
             | Opcode::Asin
             | Opcode::Acos

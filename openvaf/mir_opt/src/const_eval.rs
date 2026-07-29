@@ -68,7 +68,9 @@ pub fn eval_unary(func: &mut Function, op: Opcode, val: Const) -> Option<Value> 
             match op {
                 Opcode::Sqrt => func.dfg.f64const(val.sqrt()),
                 Opcode::Exp => func.dfg.f64const(val.exp()),
+                Opcode::Expm1 => func.dfg.f64const(val.exp_m1()),
                 Opcode::Ln => func.dfg.f64const(val.ln()),
+                Opcode::Ln1p => func.dfg.f64const(val.ln_1p()),
                 Opcode::Log => func.dfg.f64const(val.log10()),
                 Opcode::Floor => func.dfg.f64const(val.floor()),
                 Opcode::Ceil => func.dfg.f64const(val.ceil()),

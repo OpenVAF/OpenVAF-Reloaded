@@ -53,6 +53,61 @@ pub fn const_phi() {
     check(raw, expect)
 }
 
+/// `expm1`/`ln1p` must be const folded rather than hitting the `unreachable!` arm
+/// in `eval_unary`.
+#[test]
+pub fn const_expm1_ln1p() {
+    let raw = r##"
+        function %bar(v20) {
+            v30 = fconst 0x1.0000000000000p0
+        block0:
+            v21 = expm1 v30
+            v22 = ln1p v30
+            v23 = fadd v21, v22
+            v24 = fmul v23, v20
+        }
+    "##;
+
+    let expect = expect![[r#"
+        function %bar(v20) {
+            v32 = fconst 0x1.34a9b4ad2e5e5p1
+        block0:
+            v24 = fmul v32, v20
+        }
+    "#]];
+
+    check(raw, expect)
+}
+
+/// `ln1p` exists precisely because `ln(1+x)` loses all precision for small `x`.
+/// Const folding must keep that property: with x = 1e-16 the `ln1p` result stays
+/// 1e-16 while the naive `ln(1+x)` in the same function folds to 0.
+#[test]
+pub fn const_ln1p_precision() {
+    let raw = r##"
+        function %bar(v20) {
+            v30 = fconst 0x1.cd2b297d889bcp-54
+            v31 = fconst 0x1.0000000000000p0
+        block0:
+            v21 = ln1p v30
+            v32 = fadd v31, v30
+            v33 = ln v32
+            v22 = fmul v21, v20
+            v23 = fmul v33, v20
+        }
+    "##;
+
+    let expect = expect![[r#"
+        function %bar(v20) {
+            v30 = fconst 0x1.cd2b297d889bcp-54
+        block0:
+            v22 = fmul v30, v20
+        }
+    "#]];
+
+    check(raw, expect)
+}
+
 #[test]
 pub fn no_const_backward_edge() {
     let raw = r##"

@@ -81,7 +81,7 @@ const ANALOG_OPERATORS_SYSFUN: [&str; 1] = ["$limit"];
 const ANALYSIS_FUNS: [&str; 6] =
     ["analysis", "ac_stim", "noise_table", "noise_table_log", "white_noise", "flicker_noise"];
 
-const BUILTINS: [&str; 26] = [
+const BUILTINS: [&str; 28] = [
     "abs",
     "acos",
     "acosh",
@@ -94,11 +94,13 @@ const BUILTINS: [&str; 26] = [
     "cos",
     "cosh",
     "exp",
+    "expm1",
     "floor",
     "flow",
     "potential",
     "hypot",
     "ln",
+    "ln1p",
     "log",
     "max",
     "min",
@@ -112,7 +114,7 @@ const BUILTINS: [&str; 26] = [
 
 const PARAM_SYSFUNS: [&str; 6] = ["mfactor", "xposition", "yposition", "angle", "hflip", "vflip"];
 
-const SYSFUNS: [&str; 81] = [
+const SYSFUNS: [&str; 83] = [
     "$display",
     "$strobe",
     "$write",
@@ -161,8 +163,10 @@ const SYSFUNS: [&str; 81] = [
     "$rdist_t",
     "$clog2",
     "$ln",
+    "$ln1p",
     "$log10",
     "$exp",
+    "$expm1",
     "$sqrt",
     "$pow",
     "$floor",
