@@ -166,6 +166,14 @@ pub mod kw {
     pub const use_: super::Name = super::Name::new_inline("use");
     #[allow(bad_style, dead_code)]
     pub const root: super::Name = super::Name::new_inline("$root");
+    // VAMS-2023 reserves expm1/ln1p, but compact models written against older
+    // revisions define their own functions with these names (e.g. HiSIMSOTB).
+    // Declared outside `keywords!` so they are not reported as reserved and a
+    // user-defined function keeps shadowing the builtin.
+    #[allow(bad_style, dead_code)]
+    pub const expm1: super::Name = super::Name::new_inline("expm1");
+    #[allow(bad_style, dead_code)]
+    pub const ln1p: super::Name = super::Name::new_inline("ln1p");
     keywords! {
         above,
         abs,
@@ -504,8 +512,10 @@ pub mod sysfun {
         abs,
         clog2,
         ln,
+        ln1p,
         log10,
         exp,
+        expm1,
         sqrt,
         pow,
         floor,

@@ -904,7 +904,10 @@ impl<'ll> Builder<'_, '_, 'll> {
             Opcode::Sne => NonNull::from(self.strcmp(args, true)).as_ptr(),
             Opcode::Sqrt => NonNull::from(self.intrinsic(args, "llvm.sqrt.f64")).as_ptr(),
             Opcode::Exp => NonNull::from(self.intrinsic(args, "llvm.exp.f64")).as_ptr(),
+            // no LLVM intrinsics exist for these two; call libm directly
+            Opcode::Expm1 => NonNull::from(self.intrinsic(args, "expm1")).as_ptr(),
             Opcode::Ln => NonNull::from(self.intrinsic(args, "llvm.log.f64")).as_ptr(),
+            Opcode::Ln1p => NonNull::from(self.intrinsic(args, "log1p")).as_ptr(),
             Opcode::Log => NonNull::from(self.intrinsic(args, "llvm.log10.f64")).as_ptr(),
             Opcode::Clog2 => {
                 let leading_zeros =
@@ -955,7 +958,9 @@ impl<'ll> Builder<'_, '_, 'll> {
                 | Opcode::Fge
                 | Opcode::Sqrt
                 | Opcode::Exp
+                | Opcode::Expm1
                 | Opcode::Ln
+                | Opcode::Ln1p
                 | Opcode::Log
                 | Opcode::Clog2
                 | Opcode::Floor

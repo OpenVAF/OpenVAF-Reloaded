@@ -1,0 +1,18 @@
+param "$mfactor"
+units = "", desc = "Multiplier (Verilog-A $mfactor)", flags = ParameterFlags(PARA_KIND_INST)
+param "is"
+units = "A", desc = "Saturation current", flags = ParameterFlags(0x0)
+param "n"
+units = "", desc = "Emission coefficient", flags = ParameterFlags(0x0)
+param "gleak"
+units = "S", desc = "Leakage conductance", flags = ParameterFlags(0x0)
+
+2 terminals
+node "A" units = "V", runits = "A"
+node "C" units = "V", runits = "A"
+jacobian (A, A) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (A, C) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (C, A) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (C, C) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+0 states
+has bound_step false

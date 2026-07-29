@@ -142,8 +142,16 @@ pub trait InstBuilder<'f>: InstBuilderBase<'f> {
         let (inst, dfg) = self.unary(Opcode::Exp, arg0);
         dfg.first_result(inst)
     }
+    fn expm1(self, arg0: Value) -> Value {
+        let (inst, dfg) = self.unary(Opcode::Expm1, arg0);
+        dfg.first_result(inst)
+    }
     fn ln(self, arg0: Value) -> Value {
         let (inst, dfg) = self.unary(Opcode::Ln, arg0);
+        dfg.first_result(inst)
+    }
+    fn ln1p(self, arg0: Value) -> Value {
+        let (inst, dfg) = self.unary(Opcode::Ln1p, arg0);
         dfg.first_result(inst)
     }
     fn log(self, arg0: Value) -> Value {

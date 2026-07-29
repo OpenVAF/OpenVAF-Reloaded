@@ -1,0 +1,13 @@
+function %(v16, v19, v22) {
+    v6 = fconst 0x1.0000000000000p0
+                                block0:
+@0003                               v17 = exp v16
+@0005                               v18 = fsub v17, v6
+@0004                               v20 = fadd v6, v16
+@0005                               v21 = ln v20
+                                    v23 = optbarrier v18
+                                    v24 = optbarrier v21
+                                    jmp block1
+
+                                block1:
+}

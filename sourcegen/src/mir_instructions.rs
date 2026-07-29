@@ -77,7 +77,9 @@ opcodes! {
 
         Sqrt
         Exp
+        Expm1
         Ln
+        Ln1p
         Log
         Clog2
         Floor
