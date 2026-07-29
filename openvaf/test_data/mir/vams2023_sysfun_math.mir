@@ -1,0 +1,82 @@
+function %(v16, v17, v20, v23, v27, v28, v29, v32, v35, v39) {
+    v3 = fconst 0.0
+    v4 = iconst 0
+                                block0:
+@0004                               v18 = flt v16, v17
+@0004                               br v18, block2, block3
+
+                                block2:
+@0004                               jmp block4
+
+                                block3:
+@0004                               jmp block4
+
+                                block4:
+@0004                               v19 = phi [v16, block2], [v17, block3]
+@0008                               v21 = fgt v16, v17
+@0008                               br v21, block5, block6
+
+                                block5:
+@0008                               jmp block7
+
+                                block6:
+@0008                               jmp block7
+
+                                block7:
+@0008                               v22 = phi [v16, block5], [v17, block6]
+@000b                               v24 = flt v16, v3
+@000b                               br v24, block8, block9
+
+                                block8:
+@000b                               v25 = fneg v16
+@000b                               jmp block10
+
+                                block9:
+@000b                               jmp block10
+
+                                block10:
+@000b                               v26 = phi [v25, block8], [v16, block9]
+@000f                               v30 = ilt v28, v29
+@000f                               br v30, block11, block12
+
+                                block11:
+@000f                               jmp block13
+
+                                block12:
+@000f                               jmp block13
+
+                                block13:
+@000f                               v31 = phi [v28, block11], [v29, block12]
+@0013                               v33 = igt v28, v29
+@0013                               br v33, block14, block15
+
+                                block14:
+@0013                               jmp block16
+
+                                block15:
+@0013                               jmp block16
+
+                                block16:
+@0013                               v34 = phi [v28, block14], [v29, block15]
+@0016                               v36 = ilt v28, v4
+@0016                               br v36, block17, block18
+
+                                block17:
+@0016                               v37 = ineg v28
+@0016                               jmp block19
+
+                                block18:
+@0016                               jmp block19
+
+                                block19:
+@0016                               v38 = phi [v37, block17], [v28, block18]
+                                    v55 = optbarrier v19
+                                    v68 = optbarrier v22
+                                    v78 = optbarrier v26
+                                    v85 = optbarrier v31
+                                    v89 = optbarrier v34
+                                    v90 = optbarrier v38
+                                    jmp block1
+
+                                block1:
+}
