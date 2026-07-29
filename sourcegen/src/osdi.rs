@@ -188,7 +188,13 @@ impl<'a> HeaderParser<'a> {
     }
 
     fn parse_ty(&mut self) -> Ty<'a> {
-        let base_ty = match self.eat_ident().unwrap() {
+        let mut ident = self.eat_ident().unwrap();
+        let is_const = ident == "const";
+        if is_const {
+            ident = self.eat_ident().unwrap();
+        }
+
+        let base_ty = match ident {
             "double" => BaseTy::F64,
             "int" | "int32_t" => BaseTy::I32,
             "uint32_t" => BaseTy::U32,
@@ -210,7 +216,7 @@ impl<'a> HeaderParser<'a> {
         while self.eat("*") {
             indirection += 1;
         }
-        Ty { indirection, base: base_ty, func_args: None }
+        Ty { indirection, base: base_ty, func_args: None, is_const }
     }
 
     fn parse_struct(&mut self, is_union: bool) {
@@ -293,6 +299,7 @@ struct Ty<'a> {
     base: BaseTy<'a>,
     indirection: u32,
     func_args: Option<Vec<(&'a str, Ty<'a>)>>,
+    is_const: bool,
 }
 
 struct BaseTyInterpolater<'b, 'a> {
@@ -658,6 +665,7 @@ impl ToTokens for RustStruct<'_> {
                     ret_ty: RustReturnTy(RustBasicTy {
                         base: ty.base,
                         indirection: ty.indirection,
+                        is_const: ty.is_const,
                     }),
                     args: ty.func_args.as_ref()?,
                 })
@@ -677,11 +685,12 @@ impl ToTokens for RustStruct<'_> {
 struct RustBasicTy<'a> {
     base: BaseTy<'a>,
     indirection: u32,
+    is_const: bool,
 }
 
 impl ToTokens for RustBasicTy<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let RustBasicTy { base, indirection } = *self;
+        let RustBasicTy { base, indirection, is_const } = *self;
         let ident = match base {
             BaseTy::F64 => "f64",
             BaseTy::I32 => "i32",
@@ -695,8 +704,15 @@ impl ToTokens for RustBasicTy<'_> {
         };
 
         let base = Ident::new(ident, Span::call_site());
-        let ptr = (0..indirection).map(|_| quote!(*mut));
-        quote!(#(#ptr)* #base).to_tokens(tokens)
+        let ptr = (1..indirection).map(|_| quote!(*mut));
+        let inner_ptr = if indirection == 0 {
+            quote!()
+        } else if is_const {
+            quote!(*const)
+        } else {
+            quote!(*mut)
+        };
+        quote!(#(#ptr)* #inner_ptr #base).to_tokens(tokens)
     }
 }
 
@@ -714,8 +730,8 @@ struct RustTy<'a>(&'a Ty<'a>);
 
 impl ToTokens for RustTy<'_> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        let Ty { base, indirection, ref func_args } = *self.0;
-        let base = RustBasicTy { base, indirection };
+        let Ty { base, indirection, ref func_args, is_const } = *self.0;
+        let base = RustBasicTy { base, indirection, is_const };
         match func_args {
             Some(args) => {
                 let base = RustReturnTy(base);
