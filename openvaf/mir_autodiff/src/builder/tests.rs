@@ -908,6 +908,161 @@ fn third_order_log10() {
 }
 
 #[test]
+fn third_order_expm1() {
+    let src = r##"
+        function %bar(v10) {
+            fn0 = const fn %ddx_v10(1) -> 1
+
+        block0:
+            v12 = expm1 v10
+            v14 = call fn0 (v12)
+            v15 = call fn0 (v14)
+            v18 = call fn0 (v15)
+            v100 = optbarrier v18
+        }"##;
+    let expect = expect![[r#"
+        function %bar(v10) {
+            inst0 = const fn %ddx_v10(1) -> 1
+
+        block0:
+            v12 = expm1 v10
+            v101 = exp v10
+            v102 = exp v10
+            v103 = exp v10
+            v100 = optbarrier v103
+        }
+    "#]];
+
+    let v10 = 0.5f64;
+    // expm1(x) = e^x - 1, so every derivative is e^x
+    let res = v10.exp();
+    check_num(src, expect, &[v10], res);
+}
+
+#[test]
+fn second_order_expm1_chain() {
+    let src = r##"
+        function %bar(v10, v11) {
+            fn0 = const fn %ddx_v10(1) -> 1
+
+        block0:
+            v12 = fmul v10, v11
+            v13 = expm1 v12
+            v14 = call fn0 (v13)
+            v15 = call fn0 (v14)
+            v100 = optbarrier v15
+        }"##;
+    let expect = expect![[r#"
+        function %bar(v10, v11) {
+            inst0 = const fn %ddx_v10(1) -> 1
+
+        block0:
+            v12 = fmul v10, v11
+            v13 = expm1 v12
+            v101 = exp v12
+            v102 = fmul v11, v101
+            v103 = exp v12
+            v104 = fmul v11, v103
+            v105 = fmul v104, v11
+            v100 = optbarrier v105
+        }
+    "#]];
+
+    let v10 = 0.5f64;
+    let v11 = 3f64;
+    let res = v11 * v11 * (v10 * v11).exp();
+    check_num(src, expect, &[v10, v11], res);
+}
+
+#[test]
+fn third_order_ln1p() {
+    let src = r##"
+        function %bar(v10) {
+            fn0 = const fn %ddx_v10(1) -> 1
+
+        block0:
+            v12 = ln1p v10
+            v14 = call fn0 (v12)
+            v15 = call fn0 (v14)
+            v18 = call fn0 (v15)
+            v100 = optbarrier v18
+        }"##;
+    let expect = expect![[r#"
+        function %bar(v10) {
+            inst0 = const fn %ddx_v10(1) -> 1
+            v3 = fconst 0.0
+            v6 = fconst 0x1.0000000000000p0
+
+        block0:
+            v12 = ln1p v10
+            v101 = fadd v10, v6
+            v102 = fdiv v6, v101
+            v103 = fmul v101, v101
+            v104 = fadd v6, v3
+            v105 = fmul v104, v6
+            v106 = fdiv v105, v103
+            v107 = fsub v3, v106
+            v108 = fmul v103, v103
+            v109 = fmul v104, v101
+            v110 = fmul v104, v101
+            v111 = fadd v109, v110
+            v112 = fadd v3, v3
+            v113 = fmul v112, v6
+            v114 = fdiv v113, v103
+            v115 = fmul v111, v105
+            v116 = fdiv v115, v108
+            v117 = fsub v114, v116
+            v118 = fsub v3, v117
+            v100 = optbarrier v118
+        }
+    "#]];
+
+    let v10 = 0.5f64;
+    // ln1p(x) = ln(1+x), so the third derivative is 2/(1+x)^3
+    let res = 2.0 / (1.0 + v10).powi(3);
+    check_num(src, expect, &[v10], res);
+}
+
+#[test]
+fn second_order_ln1p_chain() {
+    let src = r##"
+        function %bar(v10, v11) {
+            fn0 = const fn %ddx_v10(1) -> 1
+
+        block0:
+            v12 = fmul v10, v11
+            v13 = ln1p v12
+            v14 = call fn0 (v13)
+            v15 = call fn0 (v14)
+            v100 = optbarrier v15
+        }"##;
+    let expect = expect![[r#"
+        function %bar(v10, v11) {
+            inst0 = const fn %ddx_v10(1) -> 1
+            v3 = fconst 0.0
+            v6 = fconst 0x1.0000000000000p0
+
+        block0:
+            v12 = fmul v10, v11
+            v13 = ln1p v12
+            v101 = fadd v12, v6
+            v102 = fdiv v11, v101
+            v103 = fmul v101, v101
+            v104 = fadd v11, v3
+            v105 = fmul v104, v11
+            v106 = fdiv v105, v103
+            v107 = fsub v3, v106
+            v100 = optbarrier v107
+        }
+    "#]];
+
+    let v10 = 0.5f64;
+    let v11 = 3f64;
+    let res = -(v11 * v11) / (1.0 + v10 * v11).powi(2);
+    check_num(src, expect, &[v10, v11], res);
+}
+
+#[test]
 fn subgraph() {
     let src = r##"
         function %bar(v10, v11, v12) {

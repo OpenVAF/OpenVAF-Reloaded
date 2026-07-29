@@ -1,0 +1,14 @@
+function %(v16, v18, v20, v22, v24) {
+                                block0:
+@0003                               v17 = expm1 v16
+@0006                               v19 = ln1p v16
+@0009                               v21 = expm1 v16
+@000c                               v23 = ln1p v16
+                                    v25 = optbarrier v17
+                                    v26 = optbarrier v19
+                                    v27 = optbarrier v21
+                                    v28 = optbarrier v23
+                                    jmp block1
+
+                                block1:
+}

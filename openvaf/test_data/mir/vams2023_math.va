@@ -1,0 +1,15 @@
+// expm1/ln1p from Verilog-AMS VAMS-2023 (Mantis 7780), in both the
+// Verilog-AMS spelling and the Verilog `$` spelling.
+module test;
+    parameter real x = 0.5;
+    real a;
+    real b;
+    real c;
+    real d;
+    analog begin
+        a = expm1(x);
+        b = ln1p(x);
+        c = $expm1(x);
+        d = $ln1p(x);
+    end
+endmodule
