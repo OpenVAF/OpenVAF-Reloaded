@@ -4,7 +4,7 @@ use hir_def::BuiltIn;
 
 use crate::builtin::*;
 
-const BUILTIN_INFO: [BuiltinInfo; 111usize] = [
+const BUILTIN_INFO: [BuiltinInfo; 113usize] = [
     ABS,
     ACOS,
     ACOSH,
@@ -17,12 +17,14 @@ const BUILTIN_INFO: [BuiltinInfo; 111usize] = [
     COS,
     COSH,
     EXP,
+    EXPM1,
     FLOOR,
     FLOW,
     POTENTIAL,
     HYPOT,
     LIMEXP,
     LN,
+    LN1P,
     LOG,
     MAX,
     MIN,
