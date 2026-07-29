@@ -1,0 +1,46 @@
+`include "constants.vams"
+`include "disciplines.vams"
+
+// Exercises every math builtin that `Builder::intrinsic` routes to an LLVM
+// intrinsic or a libm symbol. Most of them were called by no other model in
+// the suite, so a missing or mis-declared entry in `CodegenCx::intrinsic`
+// stayed invisible until a user hit it: `ceil` aborted codegen outright and
+// `hypot` emitted a module that failed the LLVM verifier.
+//
+// Every argument is derived from a branch voltage, otherwise constant folding
+// would evaluate the call before it ever reaches codegen and the coverage
+// would be lost.
+module math_intrinsics(A, C);
+    inout A, C;
+    electrical A, C;
+
+    branch (A, C) br;
+
+    (*desc = "Output scale", units = "A/V"*) parameter real scale = 1.0 from (0:inf);
+
+    real x, unit, upper, acc;
+    integer ix;
+
+    analog begin
+        x = V(br);
+
+        // |unit| < 1 keeps asin/acos/atanh inside their domain
+        unit = x / sqrt(1.0 + x * x);
+        // upper >= 1 keeps ln/log/acosh inside theirs
+        upper = 1.0 + x * x;
+
+        acc = sqrt(upper) + exp(-upper) + ln(upper) + log(upper);
+        acc = acc + floor(x) + ceil(x);
+        acc = acc + sin(x) + cos(x) + tan(unit);
+        acc = acc + asin(unit) + acos(unit) + atan(x);
+        acc = acc + sinh(unit) + cosh(unit) + tanh(x);
+        acc = acc + asinh(x) + acosh(upper) + atanh(unit);
+        acc = acc + hypot(x, 1.0) + atan2(x, 1.0) + pow(upper, unit);
+
+        // real -> integer cast and $clog2 also resolve through the intrinsic path
+        ix = upper * 8.0;
+        acc = acc + $clog2(ix);
+
+        I(br) <+ scale * acc;
+    end
+endmodule

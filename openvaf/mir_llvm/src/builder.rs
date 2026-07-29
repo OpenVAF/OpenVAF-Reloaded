@@ -908,7 +908,8 @@ impl<'ll> Builder<'_, '_, 'll> {
             Opcode::Log => NonNull::from(self.intrinsic(args, "llvm.log10.f64")).as_ptr(),
             Opcode::Clog2 => {
                 let leading_zeros =
-                    NonNull::from(self.intrinsic(&[args[0], true.into()], "llvm.ctlz")).as_ptr();
+                    NonNull::from(self.intrinsic(&[args[0], true.into()], "llvm.ctlz.i32"))
+                        .as_ptr();
                 let total_bits = NonNull::from(self.cx.const_int(32)).as_ptr();
                 llvm_sys::core::LLVMBuildSub(self.llbuilder, total_bits, leading_zeros, UNNAMED)
             }
