@@ -447,6 +447,7 @@ pub struct OsdiDescriptor<'ll> {
     pub residual_nature: Vec<OsdiNatureRef>,
     pub noise_source_type: Vec<u32>,
     pub load_noise_params: &'ll llvm_sys::LLVMValue,
+    pub absdelay_count: u32,
     pub absdelay_info: Vec<OsdiAbsDelayInfo>,
 }
 impl<'ll> OsdiDescriptor<'ll> {
@@ -517,7 +518,7 @@ impl<'ll> OsdiDescriptor<'ll> {
             ctx.const_arr_ptr(tys.osdi_nature_ref, &arr_47),
             ctx.const_arr_ptr(ctx.ty_int(), &arr_48),
             self.load_noise_params,
-            ctx.const_unsigned_int(self.absdelay_info.len() as u32),
+            ctx.const_unsigned_int(self.absdelay_count),
             ctx.const_arr_ptr(tys.osdi_abs_delay_info, &arr_51),
         ];
         let ty = tys.osdi_descriptor;

@@ -62,6 +62,7 @@ pub const DOMAIN_CONTINUOUS: u32 = 2;
 pub const NOISE_TYPE_WHITE: u32 = 0;
 pub const NOISE_TYPE_FLICKER: u32 = 1;
 pub const NOISE_TYPE_TABLE: u32 = 2;
+
 #[repr(C)]
 pub struct OsdiLimFunction {
     pub name: *mut c_char,

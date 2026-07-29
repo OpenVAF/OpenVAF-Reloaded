@@ -442,6 +442,7 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                     }
                 })
                 .collect();
+            let absdelay_count = absdelay_info.len() as u32;
 
             OsdiDescriptor {
                 name: module.info.module.name(db),
@@ -499,6 +500,7 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                 residual_nature: rvec,
                 noise_source_type,
                 load_noise_params: self.load_noise_params(),
+                absdelay_count,
                 absdelay_info,
             }
         }

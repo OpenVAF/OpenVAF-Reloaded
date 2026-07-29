@@ -72,8 +72,7 @@ pub fn stub_callbacks<'ll>(
                 | CallBackKind::StoreLimit(_)
                 | CallBackKind::LimDiscontinuity
                 | CallBackKind::CollapseHint(_, _)
-                | CallBackKind::SetRetFlag { .. }
-                | CallBackKind::QueryPastState(_) => return None,
+                | CallBackKind::SetRetFlag { .. } => return None,
                 CallBackKind::Analysis => {
                     CallbackFun::Prebuilt(cx.const_callback(&[cx.ty_ptr()], cx.const_int(1)))
                 }
