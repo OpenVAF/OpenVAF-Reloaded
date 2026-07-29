@@ -37,7 +37,8 @@ impl<'a, 'll> CodegenCx<'a, 'll> {
         ifn!("llvm.log10.f64", fn(t_f64) -> t_f64);
         ifn!("llvm.log2.f64", fn(t_f64) -> t_f64);
         ifn!("llvm.floor.f64", fn(t_f64) -> t_f64);
-        ifn!("llvm.ctlz", fn(t_i32, t_bool) -> t_i32);
+        ifn!("llvm.ceil.f64", fn(t_f64) -> t_f64);
+        ifn!("llvm.ctlz.i32", fn(t_i32, t_bool) -> t_i32);
 
         // not technically intrinsics but part of the C standard library
         // TODO link custom mathematical functions
@@ -56,7 +57,7 @@ impl<'a, 'll> CodegenCx<'a, 'll> {
 
         if name == "hypot" {
             let name = if self.target.options.is_like_windows { "_hypot" } else { "hypot" };
-            return Some(self.insert_intrinsic(name, &[t_f64], t_f64, false));
+            return Some(self.insert_intrinsic(name, &[t_f64, t_f64], t_f64, false));
         }
 
         ifn!("strcmp", fn(t_str, t_str) -> t_i32);
