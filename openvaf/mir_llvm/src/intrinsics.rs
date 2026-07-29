@@ -53,6 +53,8 @@ impl<'a, 'll> CodegenCx<'a, 'll> {
         ifn!("acosh", fn(t_f64) -> t_f64);
         ifn!("asinh", fn(t_f64) -> t_f64);
         ifn!("atanh", fn(t_f64) -> t_f64);
+        ifn!("expm1", fn(t_f64) -> t_f64);
+        ifn!("log1p", fn(t_f64) -> t_f64);
 
         if name == "hypot" {
             let name = if self.target.options.is_like_windows { "_hypot" } else { "hypot" };

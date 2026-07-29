@@ -1,0 +1,38 @@
+`include "constants.vams"
+`include "disciplines.vams"
+
+// Exercises the VAMS-2023 expm1()/ln1p() builtins through the whole pipeline
+// (HIR -> MIR -> autodiff -> LLVM/OSDI), including their derivatives.
+//
+// expm1 is the natural spelling for a diode current: the usual
+// is*(exp(vd/(n*vt)) - 1) cancels to zero once |vd| << n*vt, which is exactly
+// what expm1 avoids.
+module vams2023_math(A, C);
+    inout A, C;
+    electrical A, C;
+
+    branch (A, C) br_ac;
+
+    (*desc = "Saturation current", units = "A"*) parameter real is = 1e-14 from [0:inf];
+    (*desc = "Emission coefficient"*) parameter real n = 1.0 from (0:inf);
+    (*desc = "Leakage conductance", units = "S"*) parameter real gleak = 1e-12 from [0:inf];
+
+    real vt, vd, id, vleak;
+
+    (*desc = "diode admittance", units = "S"*) real gd;
+
+    analog begin
+        vt = `P_K * $temperature / `P_Q;
+        vd = V(br_ac);
+
+        id = is * expm1(vd / (n * vt));
+
+        // Independent argument so this is not simplified into the expm1 above,
+        // which keeps ln1p and its derivative in the generated code.
+        vleak = vt * ln1p(vd / vt);
+
+        I(br_ac) <+ id + gleak * vleak;
+
+        gd = ddx(id, V(A));
+    end
+endmodule
