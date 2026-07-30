@@ -1,11 +1,13 @@
 use std::io;
 use std::iter::once;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use ahash::AHashMap;
 use stdx::{impl_debug_display, impl_idx_from};
 use text_size::{TextRange, TextSize};
 use tokens::parser::SyntaxKind;
+use tokens::KeywordSet;
 use tokens::SyntaxKind::{L_PAREN, R_PAREN};
 // use tracing::{debug, debug_span, trace};
 use typed_index_collections::{TiSlice, TiVec};
@@ -14,8 +16,10 @@ use vfs::{FileId, VfsPath};
 use crate::diagnostics::PreprocessorDiagnostic::{
     self, MacroArgumentCountMismatch, MacroNotFound, UnexpectedToken,
 };
-use crate::grammar::{parse_condition, parse_define, parse_include, parse_macro_call};
-use crate::parser::{CompilerDirective, Parser, PreprocessorToken};
+use crate::grammar::{
+    parse_begin_keywords, parse_condition, parse_define, parse_include, parse_macro_call,
+};
+use crate::parser::{CompilerDirective, LexerState, Parser, PreprocessorToken};
 use crate::sourcemap::{CtxSpan, FileSpan, SourceContext, SourceMap};
 use crate::{Diagnostics, FileReadError, ScopedTextArea, SourceProvider, Token};
 
@@ -25,6 +29,13 @@ pub(crate) struct Processor<'a> {
     arena: &'a ScopedTextArea,
     macros: AHashMap<&'a str, Macro<'a>>,
     include_dirs: Arc<[VfsPath]>,
+    /// Lexer state shared with every [`Parser`] this processor creates.
+    lexer_state: Rc<LexerState>,
+    /// The `` `begin_keywords `` directives that are still open, innermost last.
+    ///
+    /// The directives nest and span file boundaries (VAMS-2023 10.6), so the
+    /// stack belongs to the processor rather than to a single parser.
+    keyword_stack: Vec<(KeywordSet, CtxSpan)>,
 }
 
 impl<'a> Processor<'a> {
@@ -51,6 +62,8 @@ impl<'a> Processor<'a> {
             arena: storage,
             sources,
             include_dirs: sources.include_dirs(root_file),
+            lexer_state: Rc::default(),
+            keyword_stack: Vec::new(),
         };
         Ok(res)
     }
@@ -60,11 +73,46 @@ impl<'a> Processor<'a> {
 
         let mut err = Diagnostics::new();
         let mut dst = Vec::new();
-        let parser =
-            Parser::new(self.arena.get(0), SourceContext::ROOT, working_dir, &mut dst, &mut err);
+        let parser = Parser::new(
+            self.arena.get(0),
+            SourceContext::ROOT,
+            working_dir,
+            &mut dst,
+            self.lexer_state.clone(),
+            &mut err,
+        );
         self.process_file(parser, &mut err);
 
+        // every `begin_keywords must be closed by the end of the compilation unit
+        for (_, span) in self.keyword_stack.drain(..) {
+            err.push(PreprocessorDiagnostic::UnterminatedKeywords { span })
+        }
+
         (dst, err)
+    }
+
+    /// Applies the innermost open `` `begin_keywords `` directive, or OpenVAF's
+    /// default keyword set if there is none.
+    fn sync_keywords(&self) {
+        let keywords =
+            self.keyword_stack.last().map_or(KeywordSet::default(), |&(keywords, _)| keywords);
+        self.lexer_state.set_keywords(keywords)
+    }
+
+    /// VAMS-2023 10.6: the keyword directives may only appear outside a design
+    /// element. Returns `true` (and reports) when that is violated.
+    fn reject_keywords_in_design_element(
+        &self,
+        name: &'static str,
+        span: CtxSpan,
+        err: &mut Diagnostics,
+    ) -> bool {
+        if self.lexer_state.in_design_element() {
+            err.push(PreprocessorDiagnostic::KeywordsInDesignElement { name, span });
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) fn is_macro_defined(&mut self, name: &'a str) -> bool {
@@ -102,7 +150,7 @@ impl<'a> Processor<'a> {
             .source_map
             .add_ctx(FileSpan { file, range: TextRange::up_to(TextSize::of(src)) }, span);
 
-        let parser = Parser::new(src, ctx, workdir, dst, errors);
+        let parser = Parser::new(src, ctx, workdir, dst, self.lexer_state.clone(), errors);
         self.process_file(parser, errors);
 
         Ok(())
@@ -133,7 +181,12 @@ impl<'a> Processor<'a> {
         errors: &mut Diagnostics,
     ) {
         match *token {
-            ParsedTokenKind::ResolvedToken(kind) => dst.push(Token { kind, span }),
+            // the token kinds of a macro body are resolved where the `define is
+            // parsed, but the expansion site decides which identifiers are
+            // reserved names there
+            ParsedTokenKind::ResolvedToken(kind) => {
+                dst.push(Token { kind, span, keywords: self.lexer_state.keywords() })
+            }
             ParsedTokenKind::ArgumentReference(arg) => {
                 dst.extend(&args[arg]);
             }
@@ -176,13 +229,14 @@ impl<'a> Processor<'a> {
                 if new_args.len() > def.arg_cnt {
                     // macro definition has no arguments, but some were parsed as part of the call
                     // so put the arguments back
-                    dst.push(Token { kind: L_PAREN, span });
+                    let keywords = self.lexer_state.keywords();
+                    dst.push(Token { kind: L_PAREN, span, keywords });
                     for arg in new_args {
                         for tok in arg {
                             dst.push(tok)
                         }
                     }
-                    dst.push(Token { kind: R_PAREN, span });
+                    dst.push(Token { kind: R_PAREN, span, keywords });
                 }
             } else {
                 errors.push(MacroArgumentCountMismatch {
@@ -267,6 +321,24 @@ impl<'a> Processor<'a> {
                         span: p.current_span(),
                     });
                     p.bump();
+                }
+                CompilerDirective::BeginKeywords => {
+                    if let Some((keywords, span)) = parse_begin_keywords(p, err) {
+                        if !self.reject_keywords_in_design_element("begin_keywords", span, err) {
+                            self.keyword_stack.push((keywords, span));
+                            self.sync_keywords();
+                        }
+                    }
+                }
+                CompilerDirective::EndKeywords => {
+                    let span = p.current_span();
+                    p.bump();
+                    if !self.reject_keywords_in_design_element("end_keywords", span, err) {
+                        if self.keyword_stack.pop().is_none() {
+                            err.push(PreprocessorDiagnostic::UnmatchedEndKeywords { span })
+                        }
+                        self.sync_keywords();
+                    }
                 }
                 CompilerDirective::Macro => {
                     let (call, range) =

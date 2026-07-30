@@ -4,6 +4,7 @@ use std::sync::Arc;
 use preprocessor::sourcemap::{CtxSpan, SourceContext, SourceMap};
 use preprocessor::{SourceProvider, Token};
 use rowan::{GreenNodeBuilder, Language};
+use tokens::KeywordSet;
 use vfs::FileId;
 
 use crate::syntax_node::{GreenNode, VerilogALanguage};
@@ -29,12 +30,39 @@ pub(crate) struct SyntaxTreeBuilder<'a> {
     sm: &'a SourceMap,
     ranges: Vec<(TextRange, SourceContext, TextSize)>,
     current_range: CtxSpan,
+    /// Runs of tree text that a `` `begin_keywords `` directive applies to,
+    /// sorted and non-overlapping. Regions using the default keyword set are not
+    /// recorded.
+    keyword_regions: Vec<(TextRange, KeywordSet)>,
 }
 
 enum State {
     PendingStart,
     Normal,
     PendingFinish,
+}
+
+pub(crate) struct Built {
+    pub tree: GreenNode,
+    pub errors: Vec<SyntaxError>,
+    pub ranges: Vec<(TextRange, SourceContext, TextSize)>,
+    pub keyword_regions: KeywordRegions,
+}
+
+/// The `` `begin_keywords `` regions of a parsed file, in tree coordinates.
+#[derive(Debug, Default)]
+pub(crate) struct KeywordRegions(Vec<(TextRange, KeywordSet)>);
+
+impl KeywordRegions {
+    /// The keyword set in effect at `pos`, which is OpenVAF's default set unless
+    /// a `` `begin_keywords `` directive covers it.
+    pub fn get(&self, pos: TextSize) -> KeywordSet {
+        let idx = self.0.partition_point(|(range, _)| range.end() <= pos);
+        match self.0.get(idx) {
+            Some(&(range, set)) if range.contains(pos) => set,
+            _ => KeywordSet::default(),
+        }
+    }
 }
 
 impl<'a> SyntaxTreeBuilder<'a> {
@@ -45,12 +73,12 @@ impl<'a> SyntaxTreeBuilder<'a> {
             State::Normal => (),
         }
         self.eat_trivia();
-        let span = self.tokens[self.token_pos].span;
+        let token = self.tokens[self.token_pos];
         self.panic &= !matches!(
             kind,
             T![;] | T![end] | T![endnature] | T![endmodule] | T![enddiscipline] | T![endfunction]
         ) || self.err_depth != u32::MAX;
-        self.do_token(kind, span);
+        self.do_token(kind, token.span, token.keywords);
     }
 
     pub(super) fn start_node(&mut self, kind: SyntaxKind) {
@@ -164,6 +192,7 @@ impl<'a> SyntaxTreeBuilder<'a> {
             db,
             sm,
             current_src,
+            keyword_regions: Vec::new(),
             ranges: Vec::with_capacity(128),
             current_range: CtxSpan {
                 ctx: SourceContext::ROOT,
@@ -176,9 +205,7 @@ impl<'a> SyntaxTreeBuilder<'a> {
         }
     }
 
-    pub(super) fn finish(
-        mut self,
-    ) -> (GreenNode, Vec<SyntaxError>, Vec<(TextRange, SourceContext, TextSize)>) {
+    pub(super) fn finish(mut self) -> Built {
         match mem::replace(&mut self.state, State::Normal) {
             State::PendingFinish => {
                 self.eat_trivia();
@@ -189,7 +216,12 @@ impl<'a> SyntaxTreeBuilder<'a> {
         let start = self.ranges.last().map_or(0.into(), |(range, _, _)| range.end());
         let range = TextRange::new(start, self.text_pos);
         self.ranges.push((range, self.current_range.ctx, self.current_range.range.start()));
-        (self.inner.finish(), self.errors, self.ranges)
+        Built {
+            tree: self.inner.finish(),
+            errors: self.errors,
+            ranges: self.ranges,
+            keyword_regions: KeywordRegions(self.keyword_regions),
+        }
     }
 
     fn eat_trivia(&mut self) {
@@ -197,11 +229,28 @@ impl<'a> SyntaxTreeBuilder<'a> {
             if !token.kind.is_trivia() {
                 break;
             }
-            self.do_token(token.kind, token.span);
+            self.do_token(token.kind, token.span, token.keywords);
         }
     }
 
-    fn do_token(&mut self, kind: SyntaxKind, span: CtxSpan) {
+    /// Extends the current `` `begin_keywords `` region, or starts a new one.
+    ///
+    /// Called for every token in tree order, so `self.text_pos` is the start of
+    /// the token that is about to be appended.
+    fn record_keywords(&mut self, keywords: KeywordSet, len: TextSize) {
+        if keywords == KeywordSet::default() {
+            return;
+        }
+        let end = self.text_pos + len;
+        match self.keyword_regions.last_mut() {
+            Some((range, set)) if *set == keywords && range.end() == self.text_pos => {
+                *range = TextRange::new(range.start(), end)
+            }
+            _ => self.keyword_regions.push((TextRange::new(self.text_pos, end), keywords)),
+        }
+    }
+
+    fn do_token(&mut self, kind: SyntaxKind, span: CtxSpan, keywords: KeywordSet) {
         let same_ctx = span.ctx == self.current_range.ctx;
         let is_continuous = same_ctx && span.range.start() == self.current_range.range.end();
         if is_continuous {
@@ -223,6 +272,7 @@ impl<'a> SyntaxTreeBuilder<'a> {
         }
 
         let range = span.to_file_span(self.sm).range;
+        self.record_keywords(keywords, range.len());
         let text = &self.current_src[range];
         self.text_pos += range.len();
         self.token_pos += 1;

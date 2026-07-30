@@ -77,4 +77,10 @@ pub trait SourceProvider {
 pub struct Token {
     pub span: CtxSpan,
     pub kind: tokens::parser::SyntaxKind,
+    /// The keyword set that was active where this token was produced.
+    ///
+    /// Reserved-identifier checking happens on the syntax tree, long after the
+    /// `` `begin_keywords `` regions have been consumed, so the active set
+    /// travels with the tokens (VAMS-2023 10.6).
+    pub keywords: tokens::KeywordSet,
 }
