@@ -1,0 +1,34 @@
+// A string-returning analog function still type-checks like any other value:
+// strings do not implicitly convert to/from the numeric types.
+module string_fun_err;
+    analog function string pick;
+        input flag;
+        integer flag;
+        pick = "high";
+    endfunction
+
+    analog function real half;
+        input x;
+        real x;
+        // a real function identifier cannot be assigned a string
+        half = "not a number";
+    endfunction
+
+    analog function string bad_arg;
+        input x;
+        real x;
+        bad_arg = x;
+    endfunction
+
+    real num;
+    string txt;
+
+    analog begin
+        // string result assigned to a real variable
+        num = pick(1);
+        // real result assigned to a string variable
+        txt = half(1.0);
+        // string argument passed where a real is expected
+        num = bad_arg(txt);
+    end
+endmodule

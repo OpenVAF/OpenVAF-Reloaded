@@ -1,0 +1,43 @@
+error: type mismatch: expected real value but found string value
+   --> /function_string_err.va:28:15
+   |
+28 |         num = pick(1);
+   |               ^^^^^^^ expected real value
+
+error: type mismatch: expected string value but found real value
+   --> /function_string_err.va:30:15
+   |
+30 |         txt = half(1.0);
+   |               ^^^^^^^^^ expected string value
+
+error: type mismatch: expected real value but found string variable reference
+   --> /function_string_err.va:32:23
+   |  
+17 | /     analog function string bad_arg;
+18 | |         input x;
+19 | |         real x;
+20 | |         bad_arg = x;
+21 | |     endfunction
+   | \---------------' info: 'bad_arg' was declared here
+   .  
+32 |           num = bad_arg(txt);
+   |                         ^^^ expected real value
+
+error: type mismatch: expected real value but found string value
+   --> /function_string_err.va:32:15
+   |
+32 |         num = bad_arg(txt);
+   |               ^^^^^^^^^^^^ expected real value
+
+error: type mismatch: expected real value but found string literal
+   --> /function_string_err.va:14:16
+   |
+14 |         half = "not a number";
+   |                ^^^^^^^^^^^^^^ expected real value
+
+error: type mismatch: expected string value but found real variable reference
+   --> /function_string_err.va:20:19
+   |
+20 |         bad_arg = x;
+   |                   ^ expected string value
+

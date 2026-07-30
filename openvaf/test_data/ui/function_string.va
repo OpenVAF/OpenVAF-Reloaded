@@ -1,0 +1,45 @@
+// VAMS-2023 (Mantis 7808, LRM 4.7.1): analog_function_type ::= integer | real | string
+module string_fun;
+    parameter real sel = 0.0;
+
+    // string-typed return value
+    analog function string pick;
+        input flag;
+        integer flag;
+        begin
+            if (flag)
+                pick = "high";
+            else
+                pick = "low";
+        end
+    endfunction
+
+    // string formal arguments (input and output)
+    analog function string decorate;
+        input core;
+        output copy;
+        string core, copy;
+        begin
+            copy = core;
+            decorate = core;
+        end
+    endfunction
+
+    // return value defaults to real when the type is omitted
+    analog function twice;
+        input x;
+        real x;
+        twice = 2.0 * x;
+    endfunction
+
+    string tag;
+    string echoed;
+    real dbl;
+
+    analog begin
+        tag = pick(sel > 0.5);
+        dbl = twice(sel);
+        echoed = decorate(tag, echoed);
+        $strobe("%s %s %g", tag, echoed, dbl);
+    end
+endmodule
