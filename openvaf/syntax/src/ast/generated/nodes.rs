@@ -148,7 +148,18 @@ impl EventStmt {
         support::token(&self.syntax, T![final_step])
     }
     pub fn r_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![')']) }
+    pub fn event(&self) -> Option<Expr> { support::child(&self.syntax) }
     pub fn stmt(&self) -> Option<Stmt> { support::child(&self.syntax) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EventTriggerStmt {
+    pub(crate) syntax: SyntaxNode,
+}
+impl ast::AttrsOwner for EventTriggerStmt {}
+impl EventTriggerStmt {
+    pub fn trigger_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![->]) }
+    pub fn expr(&self) -> Option<Expr> { support::child(&self.syntax) }
+    pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BlockStmt {
@@ -489,6 +500,16 @@ impl GenvarDecl {
     pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EventDecl {
+    pub(crate) syntax: SyntaxNode,
+}
+impl ast::AttrsOwner for EventDecl {}
+impl EventDecl {
+    pub fn event_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![event]) }
+    pub fn names(&self) -> AstChildren<Name> { support::children(&self.syntax) }
+    pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModulePort {
     pub(crate) syntax: SyntaxNode,
 }
@@ -610,6 +631,7 @@ pub enum Stmt {
     ForStmt(ForStmt),
     CaseStmt(CaseStmt),
     EventStmt(EventStmt),
+    EventTriggerStmt(EventTriggerStmt),
     BlockStmt(BlockStmt),
 }
 impl ast::AttrsOwner for Stmt {}
@@ -644,6 +666,7 @@ pub enum ModuleItem {
     ParamDecl(ParamDecl),
     AliasParam(AliasParam),
     GenvarDecl(GenvarDecl),
+    EventDecl(EventDecl),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ModulePortKind {
@@ -809,6 +832,17 @@ impl AstNode for CaseStmt {
 }
 impl AstNode for EventStmt {
     fn can_cast(kind: SyntaxKind) -> bool { kind == EVENT_STMT }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
+impl AstNode for EventTriggerStmt {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == EVENT_TRIGGER_STMT }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
         if Self::can_cast(syntax.kind()) {
             Some(Self { syntax })
@@ -1181,6 +1215,17 @@ impl AstNode for GenvarDecl {
     }
     fn syntax(&self) -> &SyntaxNode { &self.syntax }
 }
+impl AstNode for EventDecl {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == EVENT_DECL }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
 impl AstNode for ModulePort {
     fn can_cast(kind: SyntaxKind) -> bool { kind == MODULE_PORT }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -1383,6 +1428,9 @@ impl From<CaseStmt> for Stmt {
 impl From<EventStmt> for Stmt {
     fn from(node: EventStmt) -> Stmt { Stmt::EventStmt(node) }
 }
+impl From<EventTriggerStmt> for Stmt {
+    fn from(node: EventTriggerStmt) -> Stmt { Stmt::EventTriggerStmt(node) }
+}
 impl From<BlockStmt> for Stmt {
     fn from(node: BlockStmt) -> Stmt { Stmt::BlockStmt(node) }
 }
@@ -1390,7 +1438,7 @@ impl AstNode for Stmt {
     fn can_cast(kind: SyntaxKind) -> bool {
         match kind {
             EMPTY_STMT | ASSIGN_STMT | EXPR_STMT | IF_STMT | WHILE_STMT | FOR_STMT | CASE_STMT
-            | EVENT_STMT | BLOCK_STMT => true,
+            | EVENT_STMT | EVENT_TRIGGER_STMT | BLOCK_STMT => true,
             _ => false,
         }
     }
@@ -1404,6 +1452,7 @@ impl AstNode for Stmt {
             FOR_STMT => Stmt::ForStmt(ForStmt { syntax }),
             CASE_STMT => Stmt::CaseStmt(CaseStmt { syntax }),
             EVENT_STMT => Stmt::EventStmt(EventStmt { syntax }),
+            EVENT_TRIGGER_STMT => Stmt::EventTriggerStmt(EventTriggerStmt { syntax }),
             BLOCK_STMT => Stmt::BlockStmt(BlockStmt { syntax }),
             _ => return None,
         };
@@ -1419,6 +1468,7 @@ impl AstNode for Stmt {
             Stmt::ForStmt(it) => &it.syntax,
             Stmt::CaseStmt(it) => &it.syntax,
             Stmt::EventStmt(it) => &it.syntax,
+            Stmt::EventTriggerStmt(it) => &it.syntax,
             Stmt::BlockStmt(it) => &it.syntax,
         }
     }
@@ -1546,11 +1596,14 @@ impl From<AliasParam> for ModuleItem {
 impl From<GenvarDecl> for ModuleItem {
     fn from(node: GenvarDecl) -> ModuleItem { ModuleItem::GenvarDecl(node) }
 }
+impl From<EventDecl> for ModuleItem {
+    fn from(node: EventDecl) -> ModuleItem { ModuleItem::EventDecl(node) }
+}
 impl AstNode for ModuleItem {
     fn can_cast(kind: SyntaxKind) -> bool {
         match kind {
             BODY_PORT_DECL | NET_DECL | ANALOG_BEHAVIOUR | PROCEDURAL_BLOCK | FUNCTION
-            | BRANCH_DECL | VAR_DECL | PARAM_DECL | ALIAS_PARAM | GENVAR_DECL => true,
+            | BRANCH_DECL | VAR_DECL | PARAM_DECL | ALIAS_PARAM | GENVAR_DECL | EVENT_DECL => true,
             _ => false,
         }
     }
@@ -1566,6 +1619,7 @@ impl AstNode for ModuleItem {
             PARAM_DECL => ModuleItem::ParamDecl(ParamDecl { syntax }),
             ALIAS_PARAM => ModuleItem::AliasParam(AliasParam { syntax }),
             GENVAR_DECL => ModuleItem::GenvarDecl(GenvarDecl { syntax }),
+            EVENT_DECL => ModuleItem::EventDecl(EventDecl { syntax }),
             _ => return None,
         };
         Some(res)
@@ -1582,6 +1636,7 @@ impl AstNode for ModuleItem {
             ModuleItem::ParamDecl(it) => &it.syntax,
             ModuleItem::AliasParam(it) => &it.syntax,
             ModuleItem::GenvarDecl(it) => &it.syntax,
+            ModuleItem::EventDecl(it) => &it.syntax,
         }
     }
 }
@@ -1798,6 +1853,11 @@ impl std::fmt::Display for EventStmt {
         std::fmt::Display::fmt(self.syntax(), f)
     }
 }
+impl std::fmt::Display for EventTriggerStmt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
 impl std::fmt::Display for BlockStmt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
@@ -1959,6 +2019,11 @@ impl std::fmt::Display for AliasParam {
     }
 }
 impl std::fmt::Display for GenvarDecl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
+impl std::fmt::Display for EventDecl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
     }

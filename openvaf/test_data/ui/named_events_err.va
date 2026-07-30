@@ -1,0 +1,23 @@
+// Error cases for VAMS-2023 5.10.4 named events.
+module named_events_err;
+    event ana_event;
+
+    integer not_an_event;
+
+    analog begin
+        not_an_event = 0;
+
+        // `event_trigger` is an analog_event_statement: in the analog block an
+        // event may only be triggered from an event control statement
+        -> ana_event;
+
+        // the target of a trigger must be a declared event
+        @(timer(1n)) -> not_an_event;
+
+        // ... and so must the subject of a detection
+        @(not_an_event) not_an_event = 1;
+
+        // undeclared events are reported by name resolution
+        @(timer(1n)) -> missing_event;
+    end
+endmodule

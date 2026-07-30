@@ -73,6 +73,7 @@ impl ItemTree {
             ports,
             branches,
             functions,
+            events,
         } = &mut self.data;
         modules.shrink_to_fit();
         disciplines.shrink_to_fit();
@@ -85,6 +86,7 @@ impl ItemTree {
         ports.shrink_to_fit();
         branches.shrink_to_fit();
         functions.shrink_to_fit();
+        events.shrink_to_fit();
         nature_attrs.shrink_to_fit();
         discipline_attrs.shrink_to_fit();
     }
@@ -109,6 +111,7 @@ pub struct ItemTreeData {
     pub ports: Arena<Port>,
     pub branches: Arena<Branch>,
     pub functions: Arena<Function>,
+    pub events: Arena<Event>,
 }
 
 /// Trait implemented by all item nodes in the item tree.
@@ -227,6 +230,7 @@ item_tree_nodes! {
     Net in nets -> ast::NetDecl,
     Port in ports -> ast::PortDecl,
     Branch in branches -> ast::BranchDecl,
+    Event in events -> ast::EventDecl,
     Function in functions -> ast::Function,
     NatureAttr in nature_attrs -> ast::NatureAttr,
     DisciplineAttr in discipline_attrs -> ast::DisciplineAttr,
@@ -250,6 +254,7 @@ pub enum ModuleItem {
     Branch(ItemTreeId<Branch>),
     Node(LocalNodeId),
     Function(ItemTreeId<Function>),
+    Event(ItemTreeId<Event>),
 }
 
 impl_from_typed! (
@@ -259,7 +264,8 @@ impl_from_typed! (
     Variable(ItemTreeId<Var>),
     Branch(ItemTreeId<Branch>),
     Node(LocalNodeId),
-    Function(ItemTreeId<Function>) for ModuleItem
+    Function(ItemTreeId<Function>),
+    Event(ItemTreeId<Event>) for ModuleItem
 );
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -389,6 +395,14 @@ pub struct Branch {
     pub name_idx: usize,
     pub kind: BranchKind,
     pub ast_id: AstId<ast::BranchDecl>,
+}
+
+/// A named event declaration (VAMS-2023 5.10.4): `event ana_event;`
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub struct Event {
+    pub name: Name,
+    pub name_idx: usize,
+    pub ast_id: AstId<ast::EventDecl>,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]

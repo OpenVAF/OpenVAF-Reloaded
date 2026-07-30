@@ -50,6 +50,7 @@ EmptyStmt
 | ForStmt
 | CaseStmt
 | EventStmt
+| EventTriggerStmt
 | BlockStmt
 
 EmptyStmt = AttrList* ';'
@@ -88,7 +89,10 @@ Case =
 
 
 EventStmt =
-  AttrList* '@' '(' ('initial_step' | 'final_step') ('(' sim_phases: ('str_lit' (',' 'str_lit')*) ')')? ')' Stmt
+  AttrList* '@' '(' ('initial_step' | 'final_step') ('(' sim_phases: ('str_lit' (',' 'str_lit')*) ')')? event:Expr? ')' Stmt
+
+EventTriggerStmt =
+  AttrList* '->' Expr ';'
 
 
 BlockStmt =
@@ -201,6 +205,7 @@ ModuleItem =
 | ParamDecl
 | AliasParam
 | GenvarDecl
+| EventDecl
 
 ModulePorts = '('ports: (ModulePort (',' ModulePort)*)? ')'
 ModulePort = kind: ModulePortKind
@@ -211,6 +216,9 @@ PortRef =
 
 GenvarDecl =
   AttrList* 'genvar' (Name (',' Name)*) ';'
+
+EventDecl =
+  AttrList* 'event' (Name (',' Name)*) ';'
 
 AnalogBehaviour =
   AttrList* 'analog' 'initial'? Stmt

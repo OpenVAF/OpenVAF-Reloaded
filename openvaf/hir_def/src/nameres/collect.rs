@@ -270,6 +270,9 @@ impl DefCollector<'_> {
                 ModuleItem::Branch(id) => {
                     self.insert_item_decl(scope, self.tree[id].name.clone(), id)
                 }
+                ModuleItem::Event(id) => {
+                    self.insert_item_decl(scope, self.tree[id].name.clone(), id)
+                }
                 ModuleItem::Parameter(id) => {
                     self.insert_item_decl(scope, self.tree[id].name.clone(), id)
                 }

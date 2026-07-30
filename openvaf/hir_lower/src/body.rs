@@ -98,7 +98,10 @@ impl<'c1, 'c2> BodyLoweringCtx<'_, 'c1, 'c2> {
                 AssignmentLhs::ArrayElement { var, .. } => dst.push(var),
                 _ => {}
             },
-            Stmt::Assignment { .. } | Stmt::Expr(_) | Stmt::Contribute { .. } => {}
+            Stmt::Assignment { .. }
+            | Stmt::Expr(_)
+            | Stmt::Contribute { .. }
+            | Stmt::EventTrigger { .. } => {}
             Stmt::EventControl { event, body } => {
                 let inner = in_cross || matches!(event, Event::Cross);
                 self.collect_cross_assigned(body, inner, dst);

@@ -1,0 +1,16 @@
+param "$mfactor"
+units = "", desc = "Multiplier (Verilog-A $mfactor)", flags = ParameterFlags(PARA_KIND_INST)
+param "r"
+units = "", desc = "", flags = ParameterFlags(0x0)
+param "period"
+units = "", desc = "", flags = ParameterFlags(0x0)
+
+2 terminals
+node "a" units = "V", runits = "A"
+node "c" units = "V", runits = "A"
+jacobian (a, a) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (a, c) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (c, a) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (c, c) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+0 states
+has bound_step false

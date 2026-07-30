@@ -2,8 +2,8 @@ use std::borrow::Cow;
 use std::ops::Deref;
 
 use hir_def::{
-    BranchId, DisciplineId, FunctionId, LocalFunctionArgId, NatureAttrId, NatureId, NodeId,
-    ParamId, Type, VarId,
+    BranchId, DisciplineId, EventId, FunctionId, LocalFunctionArgId, NatureAttrId, NatureId,
+    NodeId, ParamId, Type, VarId,
 };
 use stdx::{impl_display, impl_idx_from, pretty};
 
@@ -20,6 +20,7 @@ pub enum TyRequirement {
     Param(Type),
     AnyParam,
     Branch,
+    Event,
     Literal(Type),
     Function,
 }
@@ -65,6 +66,7 @@ impl_display! {
         TyRequirement::Literal(ty) => "{} literal", ty;
         TyRequirement::PortFlow => "port-flow reference";
         TyRequirement::Branch => "branch reference";
+        TyRequirement::Event => "named event";
         TyRequirement::Function => "function";
     }
 
@@ -84,6 +86,7 @@ pub enum Ty {
     Literal(Type),
     InfLiteral,
     Branch(BranchId),
+    Event(EventId),
     Scope,
     BuiltInFunction,
     UserFunction(FunctionId),
@@ -104,6 +107,7 @@ impl_display! {
         Ty::Param(ty,_) => "{} parameter ref", ty;
         Ty::Literal(ty) => "{} literal", ty;
         Ty::Branch(_) => "branch reference";
+        Ty::Event(_) => "named event";
         Ty::BuiltInFunction => "(builtin) function";
         Ty::UserFunction(_) => "(user-defined) function";
         Ty::Scope => "scope";
@@ -178,7 +182,8 @@ impl Ty {
             | (Ty::Nature(_), TyRequirement::Nature)
             | (Ty::Param(_, _), TyRequirement::AnyParam)
             | (Ty::UserFunction(_), TyRequirement::Function)
-            | (Ty::Branch(_), TyRequirement::Branch) => true,
+            | (Ty::Branch(_), TyRequirement::Branch)
+            | (Ty::Event(_), TyRequirement::Event) => true,
 
             (
                 Ty::Val(ty1)

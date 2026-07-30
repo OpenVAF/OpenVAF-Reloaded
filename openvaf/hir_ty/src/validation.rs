@@ -226,6 +226,26 @@ impl Diagnostic for BodyValidationDiagnosticWrapped<'_> {
                             .to_owned(),
                     ])
             }
+            BodyValidationDiagnostic::IllegalEventTrigger { stmt, ctx } => {
+                let FileSpan { range, file } = self.parse.to_file_span(
+                    self.body_sm.stmt_map_back[stmt].as_ref().unwrap().range(),
+                    self.sm,
+                );
+
+                Report::error()
+                    .with_message(format!("event triggers are not allowed in {}", ctx))
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Secondary,
+                        file_id: file,
+                        range: range.into(),
+                        message: "not allowed here".to_owned(),
+                    }])
+                    .with_notes(vec![
+                        "help: in an analog block an event may only be triggered from an event \
+                         statement such as '@(timer(1n)) -> ev;'"
+                            .to_owned(),
+                    ])
+            }
             BodyValidationDiagnostic::WriteToInputArg { expr, arg } => {
                 let FileSpan { range, file } = self.expr_src(expr);
                 let arg_name = arg.name(self.db.upcast());

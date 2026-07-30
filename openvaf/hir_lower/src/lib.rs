@@ -185,6 +185,10 @@ pub enum PlaceKind {
     ParamMin(Parameter),
     ParamMax(Parameter),
     BoundStep,
+    /// Whether a named event (VAMS-2023 5.10.4) has been triggered during this
+    /// evaluation of the analog block. `false` at the start of the block, set by
+    /// `-> ev;` and read by `@(ev)`.
+    NamedEvent(hir::NamedEvent),
 }
 
 impl PlaceKind {
@@ -204,7 +208,9 @@ impl PlaceKind {
             PlaceKind::ParamMin(param) | PlaceKind::ParamMax(param) | PlaceKind::Param(param) => {
                 param.ty(db)
             }
-            PlaceKind::IsVoltageSrc(_) | PlaceKind::CollapseImplicitEquation(_) => Type::Bool,
+            PlaceKind::IsVoltageSrc(_)
+            | PlaceKind::CollapseImplicitEquation(_)
+            | PlaceKind::NamedEvent(_) => Type::Bool,
         }
     }
 
