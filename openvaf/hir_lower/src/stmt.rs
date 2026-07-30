@@ -28,9 +28,29 @@ impl BodyLoweringCtx<'_, '_, '_> {
                     self.ctx.in_initial_step = true;
                     self.lower_stmt(body);
                     self.ctx.in_initial_step = prev;
+                } else if let hir::Event::Named { event } = *event {
+                    // `@(ev)` runs its body only if `ev` was triggered earlier in
+                    // this evaluation of the analog block (VAMS-2023 5.10.4).
+                    match self.body.resolve_event(event) {
+                        Some(event) => {
+                            let cond = self.ctx.use_place(PlaceKind::NamedEvent(event));
+                            self.ctx.make_cond(cond, |ctx, branch| {
+                                if branch {
+                                    BodyLoweringCtx { body: self.body, path: self.path, ctx }
+                                        .lower_stmt(body)
+                                }
+                            });
+                        }
+                        // unresolved event; already diagnosed
+                        None => self.lower_stmt(body),
+                    }
                 } else {
                     self.lower_stmt(body);
                 }
+            }
+            // `-> ev;` records that the event occurred in this evaluation
+            Stmt::EventTrigger { event } => {
+                self.ctx.def_place(PlaceKind::NamedEvent(event), mir::TRUE);
             }
             Stmt::Assignment { lhs, rhs } => {
                 // A retained variable's `@(initial_step)` reset is its initial value

@@ -10,8 +10,8 @@ use hir_ty::types::{Signature, Ty};
 pub use syntax::ast::{BinaryOp, UnaryOp};
 
 use crate::{
-    Branch, BranchWrite, CompilationDB, Function, FunctionArg, NatureAttribute, Node, Parameter,
-    Variable,
+    Branch, BranchWrite, CompilationDB, Function, FunctionArg, NamedEvent, NatureAttribute, Node,
+    Parameter, Variable,
 };
 
 #[derive(Debug, Clone)]
@@ -52,6 +52,16 @@ impl<'a> BodyRef<'a> {
         let src = self.expr_type(expr);
         debug_assert_ne!(&src, dst, "cast types must be different");
         Some((src, dst))
+    }
+
+    /// Resolves the path expression naming a [`NamedEvent`] in `-> ev;` or
+    /// `@(ev)`. `None` if the name did not resolve to an event (already
+    /// diagnosed by type inference).
+    pub fn resolve_event(&self, expr: ExprId) -> Option<NamedEvent> {
+        match self.infere.expr_types[expr] {
+            Ty::Event(id) => Some(NamedEvent { id }),
+            _ => None,
+        }
     }
 
     fn resolve_path(&self, expr: ExprId) -> Ref {
@@ -188,6 +198,10 @@ impl<'a> BodyRef<'a> {
             hir_def::Stmt::EventControl { ref event, body } => {
                 Some(Stmt::EventControl { event, body })
             }
+            // an unresolved event was already diagnosed; drop the statement
+            hir_def::Stmt::EventTrigger { event } => {
+                Some(Stmt::EventTrigger { event: self.resolve_event(event)? })
+            }
             hir_def::Stmt::Assignment { val, assignment_kind, .. } => {
                 let indirect = assignment_kind == syntax::ast::AssignOp::Indirect;
                 let stmt = match self.infere.assignment_destination[&stmnt] {
@@ -269,14 +283,45 @@ pub enum ContributeKind {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Stmt<'a> {
     Expr(ExprId),
-    EventControl { event: &'a Event, body: StmtId },
-    Contribute { kind: ContributeKind, branch: BranchWrite, rhs: ExprId },
-    Assignment { lhs: AssignmentLhs, rhs: ExprId },
-    Block { body: &'a [StmtId] },
-    If { cond: ExprId, then_branch: StmtId, else_branch: StmtId },
-    ForLoop { init: StmtId, cond: ExprId, incr: StmtId, body: StmtId },
-    WhileLoop { cond: ExprId, body: StmtId },
-    Case { discr: ExprId, case_arms: &'a [Case] }, // TODO lint on unreachable
+    EventControl {
+        event: &'a Event,
+        body: StmtId,
+    },
+    /// VAMS-2023 5.10.4: `-> ev;`
+    EventTrigger {
+        event: NamedEvent,
+    },
+    Contribute {
+        kind: ContributeKind,
+        branch: BranchWrite,
+        rhs: ExprId,
+    },
+    Assignment {
+        lhs: AssignmentLhs,
+        rhs: ExprId,
+    },
+    Block {
+        body: &'a [StmtId],
+    },
+    If {
+        cond: ExprId,
+        then_branch: StmtId,
+        else_branch: StmtId,
+    },
+    ForLoop {
+        init: StmtId,
+        cond: ExprId,
+        incr: StmtId,
+        body: StmtId,
+    },
+    WhileLoop {
+        cond: ExprId,
+        body: StmtId,
+    },
+    Case {
+        discr: ExprId,
+        case_arms: &'a [Case],
+    }, // TODO lint on unreachable
 }
 impl Stmt<'_> {
     #[inline]

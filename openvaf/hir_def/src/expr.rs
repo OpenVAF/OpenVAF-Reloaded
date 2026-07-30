@@ -133,13 +133,42 @@ pub enum Stmt {
     Missing,
     Empty,
     Expr(ExprId),
-    EventControl { event: Event, body: StmtId },
-    Assignment { dst: ExprId, val: ExprId, assignment_kind: ast::AssignOp },
-    Block { /*scope: Option<BlockId>,*/ body: Vec<StmtId> },
-    If { cond: ExprId, then_branch: StmtId, else_branch: StmtId },
-    ForLoop { init: StmtId, cond: ExprId, incr: StmtId, body: StmtId },
-    WhileLoop { cond: ExprId, body: StmtId },
-    Case { discr: ExprId, case_arms: Vec<Case> }, // TODO lint on unreachable
+    EventControl {
+        event: Event,
+        body: StmtId,
+    },
+    Assignment {
+        dst: ExprId,
+        val: ExprId,
+        assignment_kind: ast::AssignOp,
+    },
+    Block {
+        /*scope: Option<BlockId>,*/ body: Vec<StmtId>,
+    },
+    If {
+        cond: ExprId,
+        then_branch: StmtId,
+        else_branch: StmtId,
+    },
+    ForLoop {
+        init: StmtId,
+        cond: ExprId,
+        incr: StmtId,
+        body: StmtId,
+    },
+    WhileLoop {
+        cond: ExprId,
+        body: StmtId,
+    },
+    Case {
+        discr: ExprId,
+        case_arms: Vec<Case>,
+    }, // TODO lint on unreachable
+    /// VAMS-2023 5.10.4: `-> event_identifier;`. `event` is the path expression
+    /// naming the event so it is resolved like any other reference.
+    EventTrigger {
+        event: ExprId,
+    },
 }
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone, Copy)]
@@ -159,6 +188,11 @@ pub enum Event {
     /// A monitored analog event such as `@(cross(...))` / `@(timer(...))`. Variables
     /// assigned inside its body are given cross-timestep retention during lowering.
     Cross,
+    /// A named event (VAMS-2023 5.10.4): `@(ana_event)`. `event` is the path
+    /// expression naming the event.
+    Named {
+        event: ExprId,
+    },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -177,7 +211,13 @@ impl Stmt {
     #[inline]
     pub fn walk_child_exprs(&self, mut f: impl FnMut(ExprId)) {
         match *self {
-            Stmt::Empty | Stmt::Missing | Stmt::Block { .. } | Stmt::EventControl { .. } => (),
+            Stmt::Empty | Stmt::Missing | Stmt::Block { .. } => (),
+            Stmt::EventControl { ref event, .. } => {
+                if let Event::Named { event } = *event {
+                    f(event)
+                }
+            }
+            Stmt::EventTrigger { event } => f(event),
             Stmt::If { cond: expr, .. }
             | Stmt::ForLoop { cond: expr, .. }
             | Stmt::WhileLoop { cond: expr, .. }
@@ -202,7 +242,11 @@ impl Stmt {
     #[inline]
     pub fn walk_child_stmts(&self, mut f: impl FnMut(StmtId)) {
         match *self {
-            Stmt::Expr(_) | Stmt::Assignment { .. } | Stmt::Missing | Stmt::Empty => (),
+            Stmt::Expr(_)
+            | Stmt::Assignment { .. }
+            | Stmt::Missing
+            | Stmt::Empty
+            | Stmt::EventTrigger { .. } => (),
             Stmt::WhileLoop { body, .. } | Stmt::EventControl { body, .. } => f(body),
             Stmt::If { then_branch: true_stmt, else_branch: false_stmt, .. } => {
                 f(true_stmt);

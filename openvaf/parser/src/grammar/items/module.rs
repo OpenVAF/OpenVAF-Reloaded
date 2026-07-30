@@ -11,6 +11,7 @@ const MODULE_ITEM_RECOVERY: TokenSet = DIRECTION_TS.union(TokenSet::new(&[
     REAL_KW,
     INTEGER_KW,
     GENVAR_KW,
+    EVENT_KW,
     PARAMETER_KW,
     LOCALPARAM_KW,
     ENDMODULE_KW,
@@ -174,6 +175,7 @@ fn module_items(p: &mut Parser) {
             }
             INTEGER_KW | REAL_KW | STRING_KW => var_decl(p, m),
             GENVAR_KW => genvar_decl(p, m),
+            EVENT_KW => event_decl(p, m),
             INPUT_KW | OUTPUT_KW | INOUT_KW => port_decl::<false>(p, m),
             _ => {
                 error_range = if let Some(error_range) = error_range {
@@ -208,6 +210,14 @@ fn genvar_decl(p: &mut Parser, m: Marker) {
     decl_list(p, T![;], decl_name, MODULE_ITEM_OR_ATTR_RECOVERY);
     p.eat(T![;]);
     m.complete(p, GENVAR_DECL);
+}
+
+/// VAMS-2023 5.10.4: `event ana_event, dig_event;`
+fn event_decl(p: &mut Parser, m: Marker) {
+    p.bump(EVENT_KW);
+    decl_list(p, T![;], decl_name, MODULE_ITEM_OR_ATTR_RECOVERY);
+    p.eat(T![;]);
+    m.complete(p, EVENT_DECL);
 }
 
 fn net_decl<const NET_TYPE_FIRST: bool>(p: &mut Parser, m: Marker) {

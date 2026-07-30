@@ -1,0 +1,40 @@
+// VAMS-2023 5.10.4 (Mantis 7809): analog named events - declared with `event`,
+// triggered with `-> name;` from an analog event statement, detected with
+// `@(name)`.
+`include "disciplines.vams"
+
+module vams2023_events(a, c);
+    inout a, c;
+    electrical a, c;
+
+    parameter real r = 1000.0 from (0.0:inf);
+    parameter real period = 1e-9 from (0.0:inf);
+
+    event sample_event;
+    event blank_event;
+
+    real gain;
+    integer samples;
+
+    analog begin
+        gain = 1.0;
+        samples = 0;
+
+        // conditional trigger from a monitored event statement
+        @(timer(period)) begin
+            if (r > 100.0)
+                -> sample_event;
+        end
+
+        // an event that is never triggered
+        @(blank_event) gain = 0.0;
+
+        // detection after the trigger
+        @(sample_event) begin
+            samples = samples + 1;
+            gain = 2.0;
+        end
+
+        I(a, c) <+ gain * V(a, c) / r;
+    end
+endmodule

@@ -186,6 +186,12 @@ impl Cursor<'_> {
                 Contribute
             }
 
+            // VAMS-2023 5.10.4: `-> event_identifier;` triggers a named event
+            '-' if self.first() == '>' => {
+                self.bump();
+                Trigger
+            }
+
             '*' if self.first() == '*' => {
                 self.bump();
                 Pow

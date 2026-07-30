@@ -102,6 +102,8 @@ impl<'a, 'c> LoweringCtx<'a, 'c> {
                 PlaceKind::ImplicitResidual { .. } | PlaceKind::Contribute { .. } => F_ZERO,
                 PlaceKind::CollapseImplicitEquation(_) => TRUE,
                 PlaceKind::IsVoltageSrc(_) => FALSE,
+                // no named event has been triggered yet when the block starts
+                PlaceKind::NamedEvent(_) => FALSE,
                 PlaceKind::BoundStep => INFINITY,
             };
             let entry = self.func.func.layout.entry_block().unwrap();

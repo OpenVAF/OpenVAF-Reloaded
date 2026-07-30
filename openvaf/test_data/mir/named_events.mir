@@ -1,0 +1,57 @@
+function %(v16, v17, v18, v19) {
+    // v1 = bconst false
+    // v2 = bconst true
+    v4 = iconst 0
+    v5 = iconst 1
+    v20 = fconst 0x1.0000000000000p-2
+                                block0:
+                                    br v1, block2, block3
+
+                                block2:
+                                    jmp block4
+
+                                block3:
+                                    jmp block4
+
+                                block4:
+                                    v55 = phi [v5, block2], [v4, block3]
+@000c                               v21 = fgt v19, v20
+                                    br v21, block5, block6
+
+                                block5:
+                                    jmp block7
+
+                                block6:
+                                    jmp block7
+
+                                block7:
+                                    v22 = phi [v2, block5], [v1, block6]
+@0013                               br v22, block8, block9
+
+                                block8:
+                                    v34 = iadd v4, v5
+                                    jmp block10
+
+                                block9:
+                                    jmp block10
+
+                                block10:
+                                    v63 = phi [v34, block8], [v4, block9]
+@0018                               br v2, block11, block12
+
+                                block11:
+                                    v48 = iadd v4, v5
+                                    jmp block13
+
+                                block12:
+                                    jmp block13
+
+                                block13:
+                                    v67 = phi [v48, block11], [v4, block12]
+                                    v60 = optbarrier v55
+                                    v66 = optbarrier v63
+                                    v69 = optbarrier v67
+                                    jmp block1
+
+                                block1:
+}

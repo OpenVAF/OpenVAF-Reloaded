@@ -1,7 +1,18 @@
 use super::*;
+use crate::grammar::paths::{path, PATH_SEGMENT_TS};
 
-pub(super) const STMT_TS: TokenSet =
-    TokenSet::new(&[IF_KW, WHILE_KW, FOR_KW, CASE_KW, BEGIN_KW, T![;], IDENT, SYSFUN, T![@]]);
+pub(super) const STMT_TS: TokenSet = TokenSet::new(&[
+    IF_KW,
+    WHILE_KW,
+    FOR_KW,
+    CASE_KW,
+    BEGIN_KW,
+    T![;],
+    IDENT,
+    SYSFUN,
+    T![@],
+    T![->],
+]);
 pub(super) const STMT_RECOVER: TokenSet = TokenSet::new(&[EOF, ENDMODULE_KW, T![;]]);
 
 pub(super) const STMT_ATTR_RECOVER: TokenSet =
@@ -21,6 +32,7 @@ pub(super) fn stmt(p: &mut Parser, m: Marker, expected: TokenSet, recover: Token
         CASE_KW => case_stmt(p, m),
         BEGIN_KW => block_stmt(p, m),
         T![@] => event_stmt(p, m),
+        T![->] => event_trigger_stmt(p, m),
         IDENT | SYSFUN => expr_or_assign_stmt::<true>(p, m),
         _ => {
             m.abandon(p);
@@ -81,13 +93,32 @@ fn event_stmt(p: &mut Parser, m: Marker) {
     } else {
         // Monitored events: `@(cross(expr, dir, tol))`, `@(timer(...))`, ... parsed as
         // a call expression. Currently the event condition is not used for scheduling
-        // (the guarded body is always evaluated, see hir_lower EventControl), so we
-        // only need to accept and consume it.
+        // (the guarded body is always evaluated, see hir_lower EventControl).
+        //
+        // A bare identifier here is a named event (VAMS-2023 5.10.4) and *is*
+        // resolved; both forms are parsed as an expression and told apart during
+        // body lowering.
         expr(p);
     }
     p.expect(T![')']);
     stmt_with_attrs(p);
     m.complete(p, EVENT_STMT);
+}
+
+/// VAMS-2023 5.10.4: `-> event_identifier;`
+fn event_trigger_stmt(p: &mut Parser, m: Marker) {
+    p.bump(T![->]);
+    if p.at_ts(PATH_SEGMENT_TS) {
+        // wrapped in a path expression so the name is resolved by the same
+        // machinery as every other reference
+        let path = path(p);
+        path.precede(p).complete(p, PATH_EXPR);
+    } else {
+        let err = p.unexpected_tokens_msg(vec![PATH]);
+        p.err_recover(err, STMT_RECOVER);
+    }
+    p.expect(T![;]);
+    m.complete(p, EVENT_TRIGGER_STMT);
 }
 
 fn if_stmt(p: &mut Parser, m: Marker) {
