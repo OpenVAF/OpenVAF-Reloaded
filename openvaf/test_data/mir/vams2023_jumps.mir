@@ -1,0 +1,86 @@
+function %(v16, v17, v19, v51) {
+    v3 = fconst 0.0
+    v4 = iconst 0
+    v5 = iconst 1
+    v23 = iconst 2
+    v28 = iconst 10
+    v44 = fconst 0x1.8000000000000p0
+                                block0:
+                                    jmp block2
+
+                                block2:
+@0018                               v35 = phi [v4, block0], [v35, block5], [v41, block11]
+@0018                               v18 = phi [v4, block0], [v22, block5], [v38, block11]
+@0007                               v20 = ilt v18, v19
+                                    br v20, block3[loop], block4
+
+                                block3:
+@000b                               v22 = iadd v18, v5
+@000e                               v24 = ieq v22, v23
+                                    br v24, block5, block6
+
+                                block5:
+                                    jmp block2
+
+                                block8:
+                                    jmp block7
+
+                                block6:
+                                    jmp block7
+
+                                block7:
+                                    v32 = phi [v35, block6], [v0, block8]
+@0011                               v25 = phi [v22, block6], [v0, block8]
+                                    v29 = igt v25, v28
+                                    br v29, block9, block10
+
+                                block9:
+                                    jmp block4
+
+                                block12:
+                                    jmp block11
+
+                                block10:
+@0015                               jmp block11
+
+                                block11:
+@0018                               v38 = phi [v25, block10], [v0, block12]
+@0003                               v30 = phi [v32, block10], [v0, block12]
+@0018                               v41 = iadd v30, v38
+@0018                               jmp block2
+
+                                block4:
+                                    v63 = phi [v35, block2], [v32, block9]
+                                    v54 = phi [v18, block2], [v25, block9]
+@0018                               v45 = flt v44, v3
+                                    br v45, block14, block15
+
+                                block14:
+                                    jmp block13
+
+                                block17:
+                                    jmp block16
+
+                                block15:
+                                    jmp block16
+
+                                block16:
+                                    v65 = phi [v63, block15], [v0, block17]
+                                    v56 = phi [v54, block15], [v0, block17]
+                                    v46 = phi [v44, block15], [v0, block17]
+                                    jmp block13
+
+                                block18:
+                                    jmp block13
+
+                                block13:
+                                    v61 = phi [v63, block14], [v65, block16], [v0, block18]
+                                    v52 = phi [v54, block14], [v56, block16], [v0, block18]
+                                    v49 = phi [v3, block14], [v46, block16], [v0, block18]
+                                    v60 = optbarrier v52
+                                    v69 = optbarrier v61
+                                    v70 = optbarrier v49
+                                    jmp block1
+
+                                block1:
+}

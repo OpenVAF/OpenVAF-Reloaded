@@ -266,6 +266,36 @@ impl BlockStmt {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BreakStmt {
+    pub(crate) syntax: SyntaxNode,
+}
+impl ast::AttrsOwner for BreakStmt {}
+impl BreakStmt {
+    pub fn break_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![break]) }
+    pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ContinueStmt {
+    pub(crate) syntax: SyntaxNode,
+}
+impl ast::AttrsOwner for ContinueStmt {}
+impl ContinueStmt {
+    pub fn continue_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![continue])
+    }
+    pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ReturnStmt {
+    pub(crate) syntax: SyntaxNode,
+}
+impl ast::AttrsOwner for ReturnStmt {}
+impl ReturnStmt {
+    pub fn return_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![return]) }
+    pub fn value(&self) -> Option<Expr> { support::child(&self.syntax) }
+    pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Assign {
     pub(crate) syntax: SyntaxNode,
 }
@@ -1112,6 +1142,9 @@ pub enum Stmt {
     EventStmt(EventStmt),
     EventTriggerStmt(EventTriggerStmt),
     BlockStmt(BlockStmt),
+    BreakStmt(BreakStmt),
+    ContinueStmt(ContinueStmt),
+    ReturnStmt(ReturnStmt),
 }
 impl ast::AttrsOwner for Stmt {}
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1402,6 +1435,39 @@ impl AstNode for BlockStmt {
     fn syntax(&self) -> &SyntaxNode {
         &self.syntax
     }
+}
+impl AstNode for BreakStmt {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == BREAK_STMT }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
+impl AstNode for ContinueStmt {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == CONTINUE_STMT }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
+impl AstNode for ReturnStmt {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == RETURN_STMT }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
 }
 impl AstNode for Assign {
     fn can_cast(kind: SyntaxKind) -> bool {
@@ -2303,11 +2369,21 @@ impl From<BlockStmt> for Stmt {
         Stmt::BlockStmt(node)
     }
 }
+impl From<BreakStmt> for Stmt {
+    fn from(node: BreakStmt) -> Stmt { Stmt::BreakStmt(node) }
+}
+impl From<ContinueStmt> for Stmt {
+    fn from(node: ContinueStmt) -> Stmt { Stmt::ContinueStmt(node) }
+}
+impl From<ReturnStmt> for Stmt {
+    fn from(node: ReturnStmt) -> Stmt { Stmt::ReturnStmt(node) }
+}
 impl AstNode for Stmt {
     fn can_cast(kind: SyntaxKind) -> bool {
         match kind {
             EMPTY_STMT | ASSIGN_STMT | EXPR_STMT | IF_STMT | WHILE_STMT | FOR_STMT | CASE_STMT
-            | EVENT_STMT | EVENT_TRIGGER_STMT | BLOCK_STMT => true,
+            | EVENT_STMT | EVENT_TRIGGER_STMT | BLOCK_STMT | BREAK_STMT | CONTINUE_STMT
+            | RETURN_STMT => true,
             _ => false,
         }
     }
@@ -2323,6 +2399,9 @@ impl AstNode for Stmt {
             EVENT_STMT => Stmt::EventStmt(EventStmt { syntax }),
             EVENT_TRIGGER_STMT => Stmt::EventTriggerStmt(EventTriggerStmt { syntax }),
             BLOCK_STMT => Stmt::BlockStmt(BlockStmt { syntax }),
+            BREAK_STMT => Stmt::BreakStmt(BreakStmt { syntax }),
+            CONTINUE_STMT => Stmt::ContinueStmt(ContinueStmt { syntax }),
+            RETURN_STMT => Stmt::ReturnStmt(ReturnStmt { syntax }),
             _ => return None,
         };
         Some(res)
@@ -2339,6 +2418,9 @@ impl AstNode for Stmt {
             Stmt::EventStmt(it) => &it.syntax,
             Stmt::EventTriggerStmt(it) => &it.syntax,
             Stmt::BlockStmt(it) => &it.syntax,
+            Stmt::BreakStmt(it) => &it.syntax,
+            Stmt::ContinueStmt(it) => &it.syntax,
+            Stmt::ReturnStmt(it) => &it.syntax,
         }
     }
 }
@@ -2791,6 +2873,21 @@ impl std::fmt::Display for EventTriggerStmt {
     }
 }
 impl std::fmt::Display for BlockStmt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
+impl std::fmt::Display for BreakStmt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
+impl std::fmt::Display for ContinueStmt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
+impl std::fmt::Display for ReturnStmt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
     }

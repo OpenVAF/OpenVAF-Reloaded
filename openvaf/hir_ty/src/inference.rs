@@ -101,7 +101,7 @@ impl InferenceResult {
             ..Default::default()
         };
 
-        let mut ctx = Ctx { result, body: &body, db, expr_stmt_ty: None, owner: id };
+        let mut ctx = Ctx { result, body: &body, db, expr_stmt_ty: None, owner: id, fn_return_ty: None };
         ctx.expr_stmt_ty = match id {
             DefWithBodyId::ParamId(param) => match &db.param_data(param).ty {
                 Some(ty) => Some(ty.clone()),
@@ -116,6 +116,10 @@ impl InferenceResult {
                 Type::Array { ty, .. } => *ty,
                 ty => ty,
             }),
+            DefWithBodyId::FunctionId(fun) => {
+                ctx.fn_return_ty = Some(db.function_data(fun).return_ty.clone());
+                None
+            }
             _ => None,
         };
 
@@ -137,6 +141,8 @@ struct Ctx<'a> {
     /// bodys this is simply none
     expr_stmt_ty: Option<Type>,
     owner: DefWithBodyId,
+    /// Return type of the enclosing analog function, if any.
+    fn_return_ty: Option<Type>,
 }
 
 impl Ctx<'_> {
@@ -191,6 +197,10 @@ impl Ctx<'_> {
                 if let Some(ty) = self.infere_expr(stmt, event) {
                     self.expect::<false>(event, None, ty, Cow::Borrowed(&[TyRequirement::Event]));
                 }
+            }
+            Stmt::Return { value: Some(value) } => {
+                let dst_ty = self.fn_return_ty.clone();
+                self.infere_assignment(stmt, value, dst_ty);
             }
             _ => (),
         };
