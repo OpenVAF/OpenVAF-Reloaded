@@ -655,9 +655,12 @@ impl Ctx<'_> {
             return (default_return_ty(info.signatures), false);
         }
 
-        if info.max_args.map_or(false, |max_args| max_args < args.len()) {
+        if let Some(max_args) = info.max_args.filter(|&max_args| max_args < args.len()) {
+            // the "too many arguments" message has to report the maximum, not the
+            // minimum (which produced "expected at most 1 arguments" for every
+            // over-long call to an operator with optional arguments)
             self.result.diagnostics.push(InferenceDiagnostic::ArgCntMismatch {
-                expected: info.min_args,
+                expected: max_args,
                 found: args.len(),
                 expr,
                 exact,

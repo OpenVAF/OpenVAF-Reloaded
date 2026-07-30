@@ -262,12 +262,15 @@ bultins! {
     }
 
 
+    // VAMS-2023 4.5.9:
+    //   transition ( expr [ , td [ , rise_time [ , fall_time [ , time_tol ] ] ] ] )
+    // Every argument is a dynamic expression (Table 4-20, Mantis 7810).
     TRANSITION = const {
         fn TRANSITION_NO_ARGS(Val(Real)) -> Real;
         fn TRANSITION_DELAY(Val(Real),Val(Real)) -> Real;
-        fn TRANSITION_DELAY_RISET(Val(Real),Val(Real)) -> Real;
-        fn TRANSITION_DELAY_RISET_FALLT(Val(Real),Val(Real),Val(Real)) -> Real;
-        fn TRANSITION_DELAY_RISET_FALLT_TOL(Val(Real),Val(Real),Val(Real), Val(Real)) -> Real;
+        fn TRANSITION_DELAY_RISET(Val(Real),Val(Real),Val(Real)) -> Real;
+        fn TRANSITION_DELAY_RISET_FALLT(Val(Real),Val(Real),Val(Real),Val(Real)) -> Real;
+        fn TRANSITION_DELAY_RISET_FALLT_TOL(Val(Real),Val(Real),Val(Real),Val(Real),Val(Real)) -> Real;
     }
 
 

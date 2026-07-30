@@ -874,6 +874,12 @@ impl BodyLoweringCtx<'_, '_, '_> {
                     // time constant is the rise time when the target is increasing and
                     // the fall time when decreasing — a continuous output the solver
                     // integrates through, with the requested transition speed.
+                    //
+                    // `transition(expr, td, rise_time, fall_time, time_tol)`: the
+                    // delay and the (dynamic, VAMS-2023 Table 4-20) `time_tol` do not
+                    // affect this continuous realization and are ignored - `time_tol`
+                    // bounds how precisely a simulator places the time point of the
+                    // transition, which a lag has no notion of.
                     let eps = self.ctx.fconst(1e-12);
                     let rise = if args.len() > 2 { self.lower_expr(args[2]) } else { eps };
                     let fall = if args.len() > 3 { self.lower_expr(args[3]) } else { rise };

@@ -13,7 +13,6 @@ use syntax::name::{AsIdent, Name};
 use crate::builtin::{
     ABSDELAY_MAX, DDT_TOL, IDT_IC_ASSERT_TOL, NATURE_ACCESS_BRANCH, NATURE_ACCESS_NODES,
     NATURE_ACCESS_NODE_GND, NATURE_ACCESS_PORT_FLOW, NOISE_TABLE_INLINE, NOISE_TABLE_INLINE_NAME,
-    TRANSITION_DELAY_RISET_FALLT_TOL,
 };
 use crate::db::HirTyDB;
 use crate::inference::{BranchWrite, InferenceResult, ResolvedFun};
@@ -724,8 +723,11 @@ impl ExprValidator<'_, '_> {
                 }
             }
 
+            // NOTE: `transition` is deliberately absent. VAMS-2023 Table 4-20
+            // (Mantis 7810) lists all of its arguments - including `time_tol` -
+            // as dynamic expressions; only `absdelay`'s `maxdelay`, `ddt`'s and
+            // `idt`/`idtmod`'s `abstol` are still constant expressions.
             (BuiltIn::absdelay, Some(ABSDELAY_MAX))
-            | (BuiltIn::transition, Some(TRANSITION_DELAY_RISET_FALLT_TOL))
             | (BuiltIn::ddt, Some(DDT_TOL))
             | (BuiltIn::idt | BuiltIn::idtmod, Some(IDT_IC_ASSERT_TOL)) => {
                 if let [other_args @ .., const_expr] = args {
