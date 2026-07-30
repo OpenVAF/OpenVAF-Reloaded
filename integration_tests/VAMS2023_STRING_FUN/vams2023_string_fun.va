@@ -1,0 +1,68 @@
+// VAMS-2023 (Mantis 7808, LRM 4.7.1): an analog user-defined function may be
+// declared with a string return type:
+//
+//     analog_function_type ::= integer | real | string
+//
+// End-to-end model exercising a string-returning function, string formal
+// arguments and the empty-string initialisation of both.
+`include "disciplines.vams"
+
+module vams2023_string_fun(a, c);
+    inout a, c;
+    electrical a, c;
+
+    parameter real r = 1000.0 from (0.0:inf);
+    parameter string mode = "nominal";
+
+    // string return value, assigned through the function identifier
+    analog function string classify;
+        input res;
+        real res;
+        begin
+            if (res > 1e6)
+                classify = "high";
+            else if (res > 1e3)
+                classify = "mid";
+            else
+                classify = "low";
+        end
+    endfunction
+
+    // string input and output arguments; `label` is written by the function,
+    // `spare` never is and therefore keeps its empty-string initialisation
+    analog function string relabel;
+        input kind;
+        output label;
+        output spare;
+        string kind, label, spare;
+        begin
+            label = kind;
+            relabel = kind;
+        end
+    endfunction
+
+    string band;
+    string label;
+    string spare;
+    real scale;
+
+    analog begin
+        band = classify(r);
+        band = relabel(band, label, spare);
+
+        if (band == "high")
+            scale = 0.5;
+        else if (band == "mid")
+            scale = 1.0;
+        else
+            scale = 2.0;
+
+        // an unwritten string output argument reads back as ""
+        if (spare != "")
+            scale = 0.0;
+
+        $strobe("mode=%s band=%s label=%s spare=[%s]", mode, band, label, spare);
+
+        I(a, c) <+ scale * V(a, c) / r;
+    end
+endmodule

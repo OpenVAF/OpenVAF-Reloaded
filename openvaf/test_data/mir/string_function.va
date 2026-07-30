@@ -1,0 +1,53 @@
+// VAMS-2023 (Mantis 7808, LRM 4.7.1): analog user-defined functions may return
+// a string. `analog_function_type ::= integer | real | string`.
+module string_function;
+    parameter real sel = 0.0;
+
+    // string return value, assigned through the function identifier
+    analog function string pick;
+        input flag;
+        integer flag;
+        begin
+            if (flag)
+                pick = "high";
+            else
+                pick = "low";
+        end
+    endfunction
+
+    // string input argument and a written string output argument
+    analog function string relay;
+        input core;
+        output copy;
+        string core, copy;
+        begin
+            copy = core;
+            relay = core;
+        end
+    endfunction
+
+    // `note` is never written by the function, so the caller observes the
+    // empty-string initialisation of a string-typed output argument
+    analog function integer decrement;
+        input n;
+        output note;
+        integer n;
+        string note;
+        decrement = n - 1;
+    endfunction
+
+    string tag;
+    string echoed;
+    string untouched;
+    integer left;
+    integer is_high;
+    integer is_blank;
+
+    analog begin
+        tag = pick(sel > 0.5);
+        echoed = relay(tag, echoed);
+        left = decrement(2, untouched);
+        is_high = (tag == "high");
+        is_blank = (untouched == "");
+    end
+endmodule
