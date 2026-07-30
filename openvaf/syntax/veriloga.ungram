@@ -52,6 +52,9 @@ EmptyStmt
 | EventStmt
 | EventTriggerStmt
 | BlockStmt
+| BreakStmt
+| ContinueStmt
+| ReturnStmt
 
 EmptyStmt = AttrList* ';'
 
@@ -100,6 +103,15 @@ BlockStmt =
     BlockScope?
     items: BlockItem*
   'end'
+
+BreakStmt =
+  AttrList* 'break' ';'
+
+ContinueStmt =
+  AttrList* 'continue' ';'
+
+ReturnStmt =
+  AttrList* 'return' value: Expr? ';'
 
 BlockScope = ':' Name
 

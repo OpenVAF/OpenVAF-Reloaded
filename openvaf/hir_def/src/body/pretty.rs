@@ -143,6 +143,16 @@ impl Printer<'_> {
                 });
                 wln!(self, "endcase");
             }
+            Stmt::Break => wln!(self, "break;"),
+            Stmt::Continue => wln!(self, "continue;"),
+            Stmt::Return { value } => {
+                w!(self, "return");
+                if let Some(value) = value {
+                    w!(self, " ");
+                    self.pretty_print_expr(value);
+                }
+                wln!(self, ";");
+            }
         }
     }
     pub fn pretty_print_expr(&mut self, e: ExprId) {

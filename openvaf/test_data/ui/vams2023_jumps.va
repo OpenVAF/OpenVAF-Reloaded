@@ -1,0 +1,27 @@
+// Negative cases for VAMS-2023 §5.11 jump statements.
+module test;
+    parameter integer n = 3;
+    integer i;
+    real y;
+
+    analog function real bad_return;
+        input x;
+        real x;
+        begin
+            return; // missing value
+        end
+    endfunction
+
+    analog begin
+        break; // outside loop
+        continue; // outside loop
+        return 1.0; // outside function
+
+        for (i = 0; i < n; i = i + 1) begin
+            break; // forbidden in analog for
+            continue; // forbidden in analog for
+        end
+
+        y = bad_return(0.0);
+    end
+endmodule

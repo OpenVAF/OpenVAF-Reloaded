@@ -250,6 +250,9 @@ impl<'a> BodyRef<'a> {
             }
             hir_def::Stmt::WhileLoop { cond, body } => Some(Stmt::WhileLoop { cond, body }),
             hir_def::Stmt::Case { discr, ref case_arms } => Some(Stmt::Case { discr, case_arms }),
+            hir_def::Stmt::Break => Some(Stmt::Break),
+            hir_def::Stmt::Continue => Some(Stmt::Continue),
+            hir_def::Stmt::Return { value } => Some(Stmt::Return { value }),
         }
     }
 }
@@ -322,6 +325,11 @@ pub enum Stmt<'a> {
         discr: ExprId,
         case_arms: &'a [Case],
     }, // TODO lint on unreachable
+    Break,
+    Continue,
+    Return {
+        value: Option<ExprId>,
+    },
 }
 impl Stmt<'_> {
     #[inline]

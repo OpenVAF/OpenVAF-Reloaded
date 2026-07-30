@@ -7,6 +7,9 @@ pub(super) const STMT_TS: TokenSet = TokenSet::new(&[
     FOR_KW,
     CASE_KW,
     BEGIN_KW,
+    BREAK_KW,
+    CONTINUE_KW,
+    RETURN_KW,
     T![;],
     IDENT,
     SYSFUN,
@@ -15,8 +18,18 @@ pub(super) const STMT_TS: TokenSet = TokenSet::new(&[
 ]);
 pub(super) const STMT_RECOVER: TokenSet = TokenSet::new(&[EOF, ENDMODULE_KW, T![;]]);
 
-pub(super) const STMT_ATTR_RECOVER: TokenSet =
-    TokenSet::new(&[IF_KW, WHILE_KW, FOR_KW, CASE_KW, BEGIN_KW, T![;]]).union(STMT_RECOVER);
+pub(super) const STMT_ATTR_RECOVER: TokenSet = TokenSet::new(&[
+    IF_KW,
+    WHILE_KW,
+    FOR_KW,
+    CASE_KW,
+    BEGIN_KW,
+    BREAK_KW,
+    CONTINUE_KW,
+    RETURN_KW,
+    T![;],
+])
+.union(STMT_RECOVER);
 
 pub(super) fn stmt_with_attrs(p: &mut Parser) {
     let m = p.start();
@@ -31,6 +44,9 @@ pub(super) fn stmt(p: &mut Parser, m: Marker, expected: TokenSet, recover: Token
         FOR_KW => for_stmt(p, m),
         CASE_KW => case_stmt(p, m),
         BEGIN_KW => block_stmt(p, m),
+        BREAK_KW => break_stmt(p, m),
+        CONTINUE_KW => continue_stmt(p, m),
+        RETURN_KW => return_stmt(p, m),
         T![@] => event_stmt(p, m),
         T![->] => event_trigger_stmt(p, m),
         IDENT | SYSFUN => expr_or_assign_stmt::<true>(p, m),
@@ -140,6 +156,27 @@ fn while_stmt(p: &mut Parser, m: Marker) {
     p.expect(T![')']);
     stmt_with_attrs(p);
     m.complete(p, WHILE_STMT);
+}
+
+fn break_stmt(p: &mut Parser, m: Marker) {
+    p.bump(BREAK_KW);
+    p.expect(T![;]);
+    m.complete(p, BREAK_STMT);
+}
+
+fn continue_stmt(p: &mut Parser, m: Marker) {
+    p.bump(CONTINUE_KW);
+    p.expect(T![;]);
+    m.complete(p, CONTINUE_STMT);
+}
+
+fn return_stmt(p: &mut Parser, m: Marker) {
+    p.bump(RETURN_KW);
+    if !p.at(T![;]) {
+        expr(p);
+    }
+    p.expect(T![;]);
+    m.complete(p, RETURN_STMT);
 }
 
 fn for_stmt(p: &mut Parser, m: Marker) {

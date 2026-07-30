@@ -180,6 +180,11 @@ impl LowerCtx<'_> {
                 Stmt::EventTrigger { event: self.collect_opt_expr(stmt.expr()) }
             }
             ast::Stmt::BlockStmt(stmt) => self.collect_block(stmt),
+            ast::Stmt::BreakStmt(_) => Stmt::Break,
+            ast::Stmt::ContinueStmt(_) => Stmt::Continue,
+            ast::Stmt::ReturnStmt(stmt) => {
+                Stmt::Return { value: stmt.value().map(|e| self.collect_expr(e)) }
+            }
         };
         self.alloc_stmt(s, AstPtr::new(&stmt), stmt.attrs())
     }

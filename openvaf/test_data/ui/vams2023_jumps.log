@@ -1,0 +1,40 @@
+error: 'break' can only be used inside a loop
+   --> /vams2023_jumps.va:16:9
+   |
+16 |         break; // outside loop
+   |         ^^^^^^ not inside a loop
+
+error: 'continue' can only be used inside a loop
+   --> /vams2023_jumps.va:17:9
+   |
+17 |         continue; // outside loop
+   |         ^^^^^^^^^ not inside a loop
+
+error: 'return' can only be used in an analog user-defined function
+   --> /vams2023_jumps.va:18:9
+   |
+18 |         return 1.0; // outside function
+   |         ^^^^^^^^^^^ not inside a function
+
+error: 'break' cannot be used inside an analog for loop
+   --> /vams2023_jumps.va:21:13
+   |
+21 |             break; // forbidden in analog for
+   |             ^^^^^^ not allowed in analog for
+   |
+   = help: use a while loop if you need break/continue
+
+error: 'continue' cannot be used inside an analog for loop
+   --> /vams2023_jumps.va:22:13
+   |
+22 |             continue; // forbidden in analog for
+   |             ^^^^^^^^^ not allowed in analog for
+   |
+   = help: use a while loop if you need break/continue
+
+error: 'return' requires an expression of the function return type
+   --> /vams2023_jumps.va:11:13
+   |
+11 |             return; // missing value
+   |             ^^^^^^^ missing return value
+
