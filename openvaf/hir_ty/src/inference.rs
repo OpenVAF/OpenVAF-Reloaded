@@ -6,7 +6,7 @@ use ahash::AHashMap;
 use arena::ArenaMap;
 use hir_def::body::Body;
 use hir_def::db::HirDefDB;
-use hir_def::expr::{CaseCond, Literal};
+use hir_def::expr::{CaseCond, Event, Literal};
 use hir_def::nameres::diagnostics::PathResolveError;
 use hir_def::nameres::{NatureAccess, ResolvedPath, ScopeDefItem, ScopeDefItemKind};
 use hir_def::{
@@ -183,6 +183,13 @@ impl Ctx<'_> {
                             }
                         }
                     }
+                }
+            }
+            // VAMS-2023 5.10.4: `-> ev;` and `@(ev)` both name a declared event
+            Stmt::EventTrigger { event }
+            | Stmt::EventControl { event: Event::Named { event }, .. } => {
+                if let Some(ty) = self.infere_expr(stmt, event) {
+                    self.expect::<false>(event, None, ty, Cow::Borrowed(&[TyRequirement::Event]));
                 }
             }
             _ => (),
@@ -434,6 +441,7 @@ impl Ctx<'_> {
                             Ty::Val(Type::Real)
                         }
                     },
+                    ScopeDefItem::EventId(event) => Ty::Event(event),
                     ScopeDefItem::BranchId(branch) => Ty::Branch(branch),
                     ScopeDefItem::BuiltIn(_) | ScopeDefItem::NatureAccess(_) => Ty::BuiltInFunction,
 

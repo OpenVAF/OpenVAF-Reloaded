@@ -77,6 +77,7 @@ impl lexer::TokenKind {
             ShlA => T![<<<],
             ShrA => T![>>>],
             Contribute => T![<+],
+            Trigger => T![->],
             Pow => T![**],
             NXorL => T![~^],
             NXorR => T![^~],

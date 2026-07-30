@@ -16,7 +16,7 @@ use crate::builtin::{insert_builtin_scope, BuiltIn, ParamSysFun};
 use crate::db::HirDefDB;
 use crate::nameres::diagnostics::PathResolveError;
 use crate::{
-    AliasParamId, BlockId, BranchId, DisciplineId, FunctionArgId, FunctionId, InstantiationId,
+    AliasParamId, EventId, BlockId, BranchId, DisciplineId, FunctionArgId, FunctionId, InstantiationId,
     Lookup, ModuleId, NatureAttrId, NatureId, NodeId, ParamId, VarId,
 };
 
@@ -86,6 +86,7 @@ pub enum ScopeDefItem {
     ParamSysFun(ParamSysFun),
     AliasParamId(AliasParamId),
     BranchId(BranchId),
+    EventId(EventId),
     FunctionId(FunctionId),
     BuiltIn(BuiltIn),
     FunctionReturn(FunctionId),
@@ -105,6 +106,7 @@ impl ScopeDefItem {
             ScopeDefItem::VarId(var) => var.lookup(db).ast_id(db).into(),
             ScopeDefItem::ParamId(param) => param.lookup(db).ast_id(db).into(),
             ScopeDefItem::BranchId(branch) => branch.lookup(db).ast_id(db).into(),
+            ScopeDefItem::EventId(event) => event.lookup(db).ast_id(db).into(),
             ScopeDefItem::FunctionReturn(fun) | ScopeDefItem::FunctionId(fun) => {
                 fun.lookup(db).ast_id(db).into()
             }
@@ -168,6 +170,17 @@ impl ScopeDefItem {
                     .syntax()
                     .text_range()
             }
+            ScopeDefItem::EventId(event) => {
+                let event = event.lookup(db);
+                let pos = event.item_tree(db)[event.id].name_idx;
+                ast_id_map
+                    .get(event.ast_id(db))
+                    .to_node(parse.tree().syntax())
+                    .names()
+                    .nth(pos)?
+                    .syntax()
+                    .text_range()
+            }
             ScopeDefItem::FunctionReturn(fun) | ScopeDefItem::FunctionId(fun) => ast_id_map
                 .get(fun.lookup(db).ast_id(db))
                 .to_node(parse.tree().syntax())
@@ -218,6 +231,7 @@ impl_from! {
     VarId,
     ParamId,
     BranchId,
+    EventId,
     FunctionId,
     NatureAttrId,
     AliasParamId,
@@ -262,6 +276,7 @@ scope_item_kinds! {
     ParamSysFun => "hierarchical parameter system function",
     AliasParamId => "parameter",
     BranchId => "branch",
+    EventId => "named event",
     FunctionId => "function",
     BuiltIn => "function",
     FunctionArgId => "function argument",

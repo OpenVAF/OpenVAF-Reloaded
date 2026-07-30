@@ -10,7 +10,7 @@ use syntax::{match_ast, AstNode, ConstExprValue, WalkEvent};
 use typed_index_collections::TiVec;
 
 use super::{
-    Block, Branch, BranchKind, BusDecl, Discipline, DisciplineAttr, DisciplineAttrKind, Domain,
+    Block, Branch, BranchKind, BusDecl, Discipline, DisciplineAttr, DisciplineAttrKind, Domain, Event,
     Function, FunctionArg, FunctionItem, Instantiation, ItemTree, ItemTreeDiagnostic, ItemTreeId,
     Module, ModuleItem, Nature, NatureAttr, NatureRef, NatureRefKind, Net, Node, Param, Port,
     RootItem, Var,
@@ -364,6 +364,7 @@ impl Ctx {
                 }
                 ast::ModuleItem::GenvarDecl(_) => {}
                 ast::ModuleItem::Instantiation(inst) => self.lower_instantiation(inst, dst),
+                ast::ModuleItem::EventDecl(decl) => self.lower_event_decl(decl, dst),
             };
         }
     }
@@ -494,6 +495,15 @@ impl Ctx {
     /// `"bus[2]"` path the bus's expanded scalar `Node` was declared under (see
     /// `expand_bus_names`). A non-constant index is diagnosed and fails to resolve (the
     /// branch becomes `BranchKind::Missing`).
+    fn lower_event_decl(&mut self, decl: ast::EventDecl, dst: &mut Vec<ModuleItem>) {
+        let ast_id = self.source_ast_id_map.ast_id(&decl);
+        for (name_idx, name) in decl.names().enumerate() {
+            let event = Event { name: name.as_name(), name_idx, ast_id };
+            let event = self.tree.data.events.push_and_get_key(event);
+            dst.push(event.into());
+        }
+    }
+
     fn resolve_branch_endpoint(
         &mut self,
         endpoint: ast::BranchEndpoint,

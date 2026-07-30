@@ -111,6 +111,8 @@ impl<'a, 'c> LoweringCtx<'a, 'c> {
                 PlaceKind::ImplicitResidual { .. } | PlaceKind::Contribute { .. } => F_ZERO,
                 PlaceKind::CollapseImplicitEquation(_) => TRUE,
                 PlaceKind::IsVoltageSrc(_) => FALSE,
+                // no named event has been triggered yet when the block starts
+                PlaceKind::NamedEvent(_) => FALSE,
                 PlaceKind::BoundStep => INFINITY,
                 PlaceKind::AbsDelayTime(_) => F_ZERO,
                 PlaceKind::AbsDelayMax(_) => F_ZERO,

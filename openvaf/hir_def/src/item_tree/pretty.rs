@@ -102,6 +102,9 @@ impl<'a> Printer<'a> {
                     let branch = &self.tree[branch];
                     wln!(self, "branch {} = {:?}", branch.name, branch.kind)
                 }
+                ModuleItem::Event(event) => {
+                    wln!(self, "event {}", self.tree[event].name)
+                }
                 ModuleItem::Node(node) => {
                     let node = &module.nodes[node];
                     let (is_input, is_output) = node.direction(self.tree);

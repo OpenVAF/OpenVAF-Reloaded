@@ -137,6 +137,9 @@ pub enum TokenKind {
     /// <+
     Contribute,
 
+    /// ->
+    Trigger,
+
     /// **
     Pow,
 

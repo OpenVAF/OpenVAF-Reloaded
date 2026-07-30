@@ -14,7 +14,7 @@ use crate::nameres::{DefMap, ScopeOrigin};
 use crate::{
     AliasParamId, AliasParamLoc, BlockId, BlockLoc, BranchId, BranchLoc, DefWithBodyId,
     DisciplineAttrId, DisciplineAttrLoc, DisciplineId, DisciplineLoc, FunctionArgId,
-    FunctionArgLoc, FunctionId, FunctionLoc, InstantiationId, InstantiationLoc, ModuleId,
+    EventId, EventLoc, FunctionArgLoc, FunctionId, FunctionLoc, InstantiationId, InstantiationLoc, ModuleId,
     ModuleLoc, NatureAttrId, NatureAttrLoc, NatureId, NatureLoc, NodeId, NodeLoc, ParamId,
     ParamLoc, VarId, VarLoc,
 };
@@ -35,6 +35,8 @@ pub trait InternDB: BaseDB {
     fn intern_block(&self, loc: BlockLoc) -> BlockId;
     #[salsa::interned]
     fn intern_branch(&self, loc: BranchLoc) -> BranchId;
+    #[salsa::interned]
+    fn intern_event(&self, loc: EventLoc) -> EventId;
     #[salsa::interned]
     fn intern_function(&self, loc: FunctionLoc) -> FunctionId;
     #[salsa::interned]

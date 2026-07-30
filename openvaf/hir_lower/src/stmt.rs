@@ -26,10 +26,38 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 self.lower_global_event(*kind, phases, body)
             }
             Stmt::EventControl { event, body } => {
-                let previous = self.ctx.in_initial_step;
-                self.ctx.in_initial_step |= matches!(event, Event::Global { kind: GlobalEvent::InitialStep, .. });
-                self.lower_stmt(body);
-                self.ctx.in_initial_step = previous;
+                // Track `@(initial_step)` so resets of retained (`@cross`) variables
+                // inside it are treated as initial values (read from the retained
+                // state) rather than per-evaluation resets. Other events lower their
+                // body directly; their effect is gated by guards in the body.
+                if matches!(event, hir::Event::Global { kind: hir::GlobalEvent::InitialStep, .. }) {
+                    let prev = self.ctx.in_initial_step;
+                    self.ctx.in_initial_step = true;
+                    self.lower_stmt(body);
+                    self.ctx.in_initial_step = prev;
+                } else if let hir::Event::Named { event } = *event {
+                    // `@(ev)` runs its body only if `ev` was triggered earlier in
+                    // this evaluation of the analog block (VAMS-2023 5.10.4).
+                    match self.body.resolve_event(event) {
+                        Some(event) => {
+                            let cond = self.ctx.use_place(PlaceKind::NamedEvent(event));
+                            self.ctx.make_cond(cond, |ctx, branch| {
+                                if branch {
+                                    BodyLoweringCtx { body: self.body, path: self.path, ctx }
+                                        .lower_stmt(body)
+                                }
+                            });
+                        }
+                        // unresolved event; already diagnosed
+                        None => self.lower_stmt(body),
+                    }
+                } else {
+                    self.lower_stmt(body);
+                }
+            }
+            // `-> ev;` records that the event occurred in this evaluation
+            Stmt::EventTrigger { event } => {
+                self.ctx.def_place(PlaceKind::NamedEvent(event), mir::TRUE);
             }
             Stmt::Assignment { lhs, rhs } => {
                 // A retained variable's `@(initial_step)` reset is its initial value

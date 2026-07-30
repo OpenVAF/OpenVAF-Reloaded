@@ -10,8 +10,8 @@ use hir_ty::types::{Signature, Ty};
 pub use syntax::ast::{BinaryOp, UnaryOp};
 
 use crate::{
-    Branch, BranchWrite, CompilationDB, Function, FunctionArg, NatureAttribute, Node, Parameter,
-    Variable,
+    Branch, BranchWrite, CompilationDB, Function, FunctionArg, NamedEvent, NatureAttribute, Node,
+    Parameter, Variable,
 };
 
 #[derive(Debug, Clone)]
@@ -68,6 +68,16 @@ impl<'a> BodyRef<'a> {
     pub fn array_var_ref(&self, expr: ExprId) -> Option<Vec<Variable>> {
         let ids = self.infere.array_var_refs.get(&expr)?;
         Some(ids.iter().map(|&id| Variable { id }).collect())
+    }
+
+    /// Resolves the path expression naming a [`NamedEvent`] in `-> ev;` or
+    /// `@(ev)`. `None` if the name did not resolve to an event (already
+    /// diagnosed by type inference).
+    pub fn resolve_event(&self, expr: ExprId) -> Option<NamedEvent> {
+        match self.infere.expr_types[expr] {
+            Ty::Event(id) => Some(NamedEvent { id }),
+            _ => None,
+        }
     }
 
     fn resolve_path(&self, expr: ExprId) -> Ref {
@@ -206,6 +216,10 @@ impl<'a> BodyRef<'a> {
             hir_def::Stmt::EventControl { ref event, body } => {
                 Some(Stmt::EventControl { event, body })
             }
+            // an unresolved event was already diagnosed; drop the statement
+            hir_def::Stmt::EventTrigger { event } => {
+                Some(Stmt::EventTrigger { event: self.resolve_event(event)? })
+            }
             hir_def::Stmt::Assignment { val, .. } => {
                 if let Some(&(constraint_lhs, constraint_rhs)) =
                     self.infere.indirect_branch_constraints.get(&stmnt)
@@ -296,6 +310,10 @@ pub enum Stmt<'a> {
     EventControl {
         event: &'a Event,
         body: StmtId,
+    },
+    /// VAMS-2023 5.10.4: `-> ev;`
+    EventTrigger {
+        event: NamedEvent,
     },
     Contribute {
         kind: ContributeKind,
