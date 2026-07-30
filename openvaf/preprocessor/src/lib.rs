@@ -71,6 +71,11 @@ pub trait SourceProvider {
     fn file_text(&self, file: FileId) -> Result<Arc<str>, FileReadError>;
     fn file_path(&self, file: FileId) -> VfsPath;
     fn file_id(&self, path: VfsPath) -> FileId;
+
+    /// Allocate a virtual file whose contents become the expansion text for a
+    /// preprocessor-generated token (e.g. `` `__FILE__ `` / `` `__LINE__ ``).
+    /// Token spans must point at real `FileId` text for the green tree builder.
+    fn allocate_virtual_file(&self, path: &str, contents: Arc<str>) -> FileId;
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

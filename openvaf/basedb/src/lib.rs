@@ -221,6 +221,15 @@ impl SourceProvider for SourceProviderDelegate<'_> {
     fn file_id(&self, path: VfsPath) -> FileId {
         self.0.file_id(path)
     }
+
+    fn allocate_virtual_file(&self, path: &str, contents: Arc<str>) -> FileId {
+        let path = VfsPath::new_virtual_path(path.to_owned());
+        let file_id = self.0.vfs().write().ensure_file_id(path);
+        self.0.vfs().write().set_file_contents(file_id, contents.to_string().into());
+        // Ensure subsequent salsa `file_text` reads see the contents immediately.
+        // Preprocess already mutates VFS via `file_id` / includes; this matches that pattern.
+        file_id
+    }
 }
 
 #[macro_export]
