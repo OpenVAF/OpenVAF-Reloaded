@@ -1,0 +1,38 @@
+error: unknown keyword version specifier "VAMS-2.5"
+  --> /begin_keywords_err.va:4:1
+  |
+4 | `begin_keywords "VAMS-2.5"
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^ unknown version specifier
+  |
+  = expected one of "1364-1995", "1364-2001", "1364-2005", "VAMS-2.3", "VAMS-2023"
+
+error: '`end_keywords' without a matching '`begin_keywords'
+  --> /begin_keywords_err.va:7:1
+  |
+7 | `end_keywords
+  | ^^^^^^^^^^^^^ no keyword set is active here
+
+error: '`begin_keywords' is not allowed inside a design element
+   --> /begin_keywords_err.va:11:5
+   |
+11 |     `begin_keywords "1364-2005"
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ directive is used inside a module
+   |
+   = keyword directives may only appear outside of design elements
+
+error: '`end_keywords' is not allowed inside a design element
+   --> /begin_keywords_err.va:12:5
+   |
+12 |     `end_keywords
+   |     ^^^^^^^^^^^^^ directive is used inside a module
+   |
+   = keyword directives may only appear outside of design elements
+
+error: '`begin_keywords' without a matching '`end_keywords'
+   --> /begin_keywords_err.va:16:1
+   |
+16 | `begin_keywords "1364-1995"
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ keyword set is opened here
+   |
+   = add '`end_keywords' to restore the default keywords
+

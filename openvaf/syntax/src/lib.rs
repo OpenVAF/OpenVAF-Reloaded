@@ -22,7 +22,7 @@ pub use rowan::{
 };
 pub use syntax_node::{SyntaxNode, SyntaxToken};
 pub use token_text::TokenText;
-pub use tokens::{SyntaxKind, T};
+pub use tokens::{KeywordSet, SyntaxKind, T};
 use vfs::FileId;
 
 pub use ast::ConstExprValue;
@@ -192,10 +192,11 @@ impl SourceFile {
         root_file: FileId,
         preprocess: &Preprocess,
     ) -> Parse<SourceFile> {
-        let (green, mut errors, ctx_map) = parsing::parse_text(db, root_file, preprocess);
+        let parsing::Built { tree: green, mut errors, ranges: ctx_map, keyword_regions } =
+            parsing::parse_text(db, root_file, preprocess);
         let root = SyntaxNode::new_root(green.clone());
 
-        validation::validate(&root, &mut errors);
+        validation::validate(&root, &keyword_regions, &mut errors);
 
         assert_eq!(root.kind(), SyntaxKind::SOURCE_FILE);
 

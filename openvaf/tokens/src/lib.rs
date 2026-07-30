@@ -1,6 +1,8 @@
+pub mod keywords;
 pub mod lexer;
 pub mod parser;
 
+pub use keywords::KeywordSet;
 use lexer::LiteralKind;
 use lexer::TokenKind::*;
 pub use parser::SyntaxKind;
@@ -12,7 +14,16 @@ pub enum LexerErrorKind {
 }
 
 impl lexer::TokenKind {
-    pub fn to_syntax(self, src: &str) -> (Option<parser::SyntaxKind>, Option<LexerErrorKind>) {
+    /// Converts a lexer token into a syntax token.
+    ///
+    /// `keywords` selects which identifiers are reserved words; it is changed by
+    /// the `` `begin_keywords ``/`` `end_keywords `` directives and is
+    /// [`KeywordSet::OpenVaf`] unless one is in effect.
+    pub fn to_syntax(
+        self,
+        src: &str,
+        keywords: KeywordSet,
+    ) -> (Option<parser::SyntaxKind>, Option<LexerErrorKind>) {
         let token = match self {
             // Combined operators
             LineComment | BlockComment { terminated: true } => SyntaxKind::COMMENT,
@@ -20,7 +31,7 @@ impl lexer::TokenKind {
                 return (Some(SyntaxKind::COMMENT), Some(LexerErrorKind::UnterminatedBlockComment))
             }
             Whitespace => SyntaxKind::WHITESPACE,
-            SimpleIdent => SyntaxKind::from_keyword(src).unwrap_or(SyntaxKind::IDENT),
+            SimpleIdent => keywords::from_keyword_in(src, keywords).unwrap_or(SyntaxKind::IDENT),
             EscapedIdent => SyntaxKind::IDENT,
             SystemCallIdent if src == "$root" => SyntaxKind::ROOT_KW,
             SystemCallIdent => SyntaxKind::SYSFUN,

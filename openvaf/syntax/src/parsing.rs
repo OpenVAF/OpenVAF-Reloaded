@@ -1,19 +1,17 @@
 mod tree_builder;
 
-use ::preprocessor::sourcemap::SourceContext;
 use ::preprocessor::{Preprocess, SourceProvider};
-use rowan::{TextRange, TextSize};
 use vfs::FileId;
 
+pub(crate) use tree_builder::{Built, KeywordRegions};
+
 use crate::parsing::tree_builder::SyntaxTreeBuilder;
-use crate::syntax_node::GreenNode;
-use crate::SyntaxError;
 
 pub(crate) fn parse_text(
     sources: &dyn SourceProvider,
     root_file: FileId,
     Preprocess { ts, sm, .. }: &Preprocess,
-) -> (GreenNode, Vec<SyntaxError>, Vec<(TextRange, SourceContext, TextSize)>) {
+) -> Built {
     // tokens without whitespaces/comments
     let parser_tokens: Vec<_> = ts
         .iter()
@@ -34,7 +32,5 @@ pub(crate) fn parse_text(
         }
     }
 
-    let (tree, parser_errors, ctx_map) = builder.finish();
-
-    (tree, parser_errors, ctx_map)
+    builder.finish()
 }

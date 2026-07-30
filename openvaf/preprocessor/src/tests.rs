@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::{cell::RefCell, path::PathBuf};
 
-use expect_test::expect_file;
+use expect_test::{expect, expect_file};
 use vfs::{FileId, Vfs, VfsPath};
 
 use crate::{preprocess, Preprocess, SourceProvider};
@@ -186,6 +186,135 @@ fn source_map_triple_replacement() {
     )
 }
 
+fn preprocessor_diagnostics(src: &str) -> String {
+    let sources = TestSourceProvider::new(vec![]);
+    let file = sources.vfs.borrow_mut().add_virt_file("/keywords_test.va", src.to_owned().into());
+    let Preprocess { diagnostics, .. } = preprocess(&sources, file);
+    diagnostics.iter().map(|diagnostic| format!("{diagnostic}\n")).collect()
+}
+
+/// VAMS-2023 10.6: `` `begin_keywords "1364-2005" `` releases the Verilog-AMS
+/// keywords, so `from`, `string` and `ground` lex as plain identifiers until the
+/// matching `` `end_keywords ``.
+#[test]
+fn begin_keywords_1364_2005() {
+    check_prepocessor_single_file(
+        r#"
+`begin_keywords "1364-2005"
+module legacy(from, string, ground);
+    input from, string, ground;
+endmodule
+`end_keywords
+module ams(a);
+    analog begin end
+endmodule
+"#,
+        "begin_keywords_1364_2005",
+    )
+}
+
+/// Nested directives form a stack: `` `end_keywords `` restores the enclosing
+/// keyword set rather than the default one.
+#[test]
+fn begin_keywords_nested() {
+    check_prepocessor_single_file(
+        r#"
+`begin_keywords "VAMS-2023"
+`begin_keywords "1364-1995"
+localparam genvar
+`end_keywords
+localparam genvar
+`end_keywords
+localparam genvar
+"#,
+        "begin_keywords_nested",
+    )
+}
+
+/// The directive "affects all source code that follows the directive, even
+/// across source code file boundaries".
+#[test]
+fn begin_keywords_across_include() {
+    let sources = TestSourceProvider::new(vec![]);
+    let root = {
+        let mut vfs = sources.vfs.borrow_mut();
+        vfs.add_virt_file("/inc.va", "analog string\n".to_owned().into());
+        vfs.add_virt_file(
+            "/parent.va",
+            concat!(
+                "`begin_keywords \"1364-2005\"\n",
+                "`include \"inc.va\"\n",
+                "analog string\n",
+                "`end_keywords\n",
+                "analog string\n"
+            )
+            .to_owned()
+            .into(),
+        )
+    };
+    check_prepocessor(sources, root, "begin_keywords_across_include");
+}
+
+/// Only the specifiers listed in VAMS-2023 10.6 are accepted; an unknown one is
+/// reported and leaves the active keyword set alone.
+#[test]
+fn begin_keywords_unknown_version() {
+    expect![[r#"
+        unknown keyword version specifier "VAMS-2.5"
+    "#]]
+    .assert_eq(&preprocessor_diagnostics("`begin_keywords \"VAMS-2.5\"\nanalog\n"));
+}
+
+/// An unmatched `` `end_keywords `` and a `` `begin_keywords `` that is never
+/// closed are both reported.
+#[test]
+fn begin_keywords_unbalanced() {
+    expect![[r#"
+        '`end_keywords' without a matching '`begin_keywords'
+    "#]]
+    .assert_eq(&preprocessor_diagnostics("`end_keywords\n"));
+
+    expect![[r#"
+        '`begin_keywords' without a matching '`end_keywords'
+    "#]]
+    .assert_eq(&preprocessor_diagnostics("`begin_keywords \"1364-2005\"\nanalog\n"));
+}
+
+/// A directive inside a disabled `` `ifdef `` branch is never taken.
+#[test]
+fn begin_keywords_in_disabled_branch() {
+    check_prepocessor_single_file(
+        r#"
+`ifdef NOT_DEFINED
+`begin_keywords "1364-2005"
+`endif
+analog string
+"#,
+        "begin_keywords_in_disabled_branch",
+    )
+}
+
+/// A keyword directive inside a `` `define `` body is rejected. The parser has
+/// to consume it: leaving it in place used to spin the macro-body loop forever.
+#[test]
+fn begin_keywords_inside_define() {
+    expect![[r#"
+        encountered unexpected token!
+    "#]]
+    .assert_eq(&preprocessor_diagnostics("`define BAD `begin_keywords \"1364-2005\"\n`BAD\n"));
+}
+
+/// VAMS-2023 10.6: the directives may only be specified outside of a design
+/// element.
+#[test]
+fn begin_keywords_inside_module() {
+    expect![[r#"
+        '`begin_keywords' is not allowed inside a design element
+    "#]]
+    .assert_eq(&preprocessor_diagnostics(
+        "module m;\n`begin_keywords \"1364-2005\"\nendmodule\n",
+    ));
+}
 /// VAMS-2023 §10.7: `` `__FILE__ `` / `` `__LINE__ `` expand to string / decimal
 /// literals of the current input file and line.
 #[test]

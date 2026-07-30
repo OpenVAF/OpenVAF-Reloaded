@@ -1,0 +1,16 @@
+// Error cases for the VAMS-2023 10.6 keyword directives.
+
+// only the version specifiers named by the standard are accepted
+`begin_keywords "VAMS-2.5"
+
+// `end_keywords without a matching `begin_keywords
+`end_keywords
+
+module m;
+    // the directives may only appear outside of a design element
+    `begin_keywords "1364-2005"
+    `end_keywords
+endmodule
+
+// ... and this one is never closed
+`begin_keywords "1364-1995"
