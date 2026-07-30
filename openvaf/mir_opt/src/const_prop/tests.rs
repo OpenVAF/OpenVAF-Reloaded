@@ -108,6 +108,61 @@ pub fn const_ln1p_precision() {
     check(raw, expect)
 }
 
+/// `$rtoi` / `fitrunc` truncates toward zero. 1.9 must fold to 1 (not 2).
+#[test]
+pub fn const_fitrunc_truncates_toward_zero() {
+    let raw = r##"
+        function %bar(v20) {
+            v30 = fconst 0x1.e666666666666p0
+        block0:
+            v21 = fitrunc v30
+            v22 = fneg v30
+            v23 = fitrunc v22
+            v24 = iadd v21, v23
+            v25 = iadd v24, v21
+            v26 = iadd v25, v20
+        }
+    "##;
+
+    let expect = expect![[r#"
+        function %bar(v20) {
+            v5 = iconst 1
+        block0:
+            v26 = iadd v5, v20
+        }
+    "#]];
+
+    check(raw, expect)
+}
+
+/// Language cast `ficast` rounds: 1.9 → 2. Guard that `$rtoi` did not
+/// accidentally start sharing this opcode (would fold to 2, not 1).
+#[test]
+pub fn const_ficast_rounds() {
+    let raw = r##"
+        function %bar(v20) {
+            v30 = fconst 0x1.e666666666666p0
+        block0:
+            v21 = ficast v30
+            v22 = fneg v30
+            v23 = ficast v22
+            v24 = iadd v21, v23
+            v25 = iadd v24, v21
+            v26 = iadd v25, v20
+        }
+    "##;
+
+    let expect = expect![[r#"
+        function %bar(v20) {
+            v31 = iconst 2
+        block0:
+            v26 = iadd v31, v20
+        }
+    "#]];
+
+    check(raw, expect)
+}
+
 #[test]
 pub fn no_const_backward_edge() {
     let raw = r##"

@@ -1,0 +1,10 @@
+param "$mfactor"
+units = "", desc = "Multiplier (Verilog-A $mfactor)", flags = ParameterFlags(PARA_KIND_INST)
+param "scale"
+units = "A", desc = "Output scale", flags = ParameterFlags(0x0)
+
+2 terminals
+node "A" units = "V", runits = "A"
+node "C" units = "V", runits = "A"
+0 states
+has bound_step false

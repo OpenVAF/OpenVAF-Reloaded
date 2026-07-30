@@ -95,6 +95,8 @@ impl<'a, FP: Arithmetic, M: Fn(Value, &Function) -> Value> SimplifyCtx<'a, FP, M
             Opcode::Fneg => return self.simplify_sub_inst::<FP>(F_ZERO, arg),
             Opcode::Ineg => return self.simplify_sub_inst::<i32>(ZERO, arg),
             Opcode::FIcast => Opcode::IFcast,
+            // Truncation of an integer→real cast is the identity (in-range).
+            Opcode::FItrunc => Opcode::IFcast,
             // When the inverse is lossy not transofmration is possible
             Opcode::IFcast
             | Opcode::BIcast

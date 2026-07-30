@@ -1,0 +1,31 @@
+`include "constants.vams"
+`include "disciplines.vams"
+
+// Exercises `$rtoi` / `$itor` (VAMS-2023 Mantis 7920) through HIR → MIR →
+// LLVM/OSDI. Arguments come from a branch voltage so const-fold cannot delete
+// the truncating cast before codegen.
+//
+// The contribution uses `$itor($rtoi(...))` so both conversions stay live, and
+// the scale is chosen so a rounding `$rtoi` (→ ±2 for |x|≈1.9) would change
+// the DC residual relative to truncation (→ ±1).
+module vams2023_rtoi(A, C);
+    inout A, C;
+    electrical A, C;
+
+    branch (A, C) br;
+
+    (*desc = "Output scale", units = "A"*) parameter real scale = 1.0 from (0:inf);
+
+    real x, xr;
+    integer xi;
+
+    analog begin
+        x = V(br);
+
+        // Keep |frac| in (0.5, 1) so truncation and rounding disagree.
+        xr = 1.0 + 0.9 * (x / (1.0 + abs(x)));
+        xi = $rtoi(xr);
+        // Round-trip through `$itor` so integer→real also reaches LLVM.
+        I(br) <+ scale * $itor(xi);
+    end
+endmodule
