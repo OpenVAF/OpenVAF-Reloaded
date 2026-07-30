@@ -306,6 +306,9 @@ impl<'a, 'd> Parser<'a, 'd> {
             "`endif" => CompilerDirective::EndIf,
             "`undef" => CompilerDirective::Undef,
             "`resetall" => CompilerDirective::ResetAll,
+            // VAMS-2023 §10.7 / IEEE 1364: expand to string / decimal literals.
+            "`__FILE__" => CompilerDirective::File,
+            "`__LINE__" => CompilerDirective::Line,
             _ => CompilerDirective::Macro,
         }
     }
@@ -334,5 +337,9 @@ pub enum CompilerDirective {
     EndIf,
     Undef,
     ResetAll,
+    /// `` `__FILE__ `` — expands to a string literal of the current input path.
+    File,
+    /// `` `__LINE__ `` — expands to a decimal literal of the current line number.
+    Line,
     Macro,
 }
