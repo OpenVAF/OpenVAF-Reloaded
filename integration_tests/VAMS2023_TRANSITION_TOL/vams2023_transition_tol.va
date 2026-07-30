@@ -1,0 +1,33 @@
+// VAMS-2023 4.5.9 / Table 4-20 (Mantis 7810): every argument of
+//
+//   transition ( expr [ , td [ , rise_time [ , fall_time [ , time_tol ] ] ] ] )
+//
+// is a dynamic expression. Earlier revisions required `time_tol` to be a
+// constant expression.
+`include "disciplines.vams"
+
+module vams2023_transition_tol(a, c);
+    inout a, c;
+    electrical a, c;
+
+    parameter real r = 1000.0 from (0.0:inf);
+    parameter real base = 1e-9 from (0.0:inf);
+    parameter real thresh = 0.5;
+
+    real level;
+    real speed;
+    real tol;
+    real drive;
+
+    analog begin
+        level = (V(a, c) > thresh) ? 1.0 : 0.0;
+
+        // rise time, fall time and time tolerance are all computed at run time
+        speed = base * (1.0 + r / 1000.0);
+        tol = speed / 100.0;
+
+        drive = transition(level, 0.0, speed, 2.0 * speed, tol);
+
+        I(a, c) <+ drive * V(a, c) / r;
+    end
+endmodule

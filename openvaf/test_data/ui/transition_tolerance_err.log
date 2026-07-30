@@ -1,0 +1,24 @@
+error: invalid argument count: expected at most 5 arguments but found 6
+   --> /transition_tolerance_err.va:14:13
+   |
+14 |         y = transition(level, 0.0, 1e-9, 2e-9, 1e-12, 1.0);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected at most 5 arguments
+
+error: constant expressions must not contain variable references
+   --> /transition_tolerance_err.va:17:24
+   |
+ 6 |     real dyn_tol;
+   |          ------- help: 'dyn_tol' was declared here
+   .
+17 |         y = ddt(level, dyn_tol);
+   |                        ^^^^^^^ not allowed here
+
+error: constant expressions must not contain variable references
+   --> /transition_tolerance_err.va:20:35
+   |
+ 6 |     real dyn_tol;
+   |          ------- help: 'dyn_tol' was declared here
+   .
+20 |         y = absdelay(level, 1e-9, dyn_tol);
+   |                                   ^^^^^^^ not allowed here
+

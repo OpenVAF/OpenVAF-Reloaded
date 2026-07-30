@@ -1,0 +1,22 @@
+// `transition` still takes at most five arguments, and the analog operators
+// whose tolerance VAMS-2023 Table 4-20 keeps as a *constant* expression are
+// unaffected by Mantis 7810.
+module transition_tolerance_err;
+    real level;
+    real dyn_tol;
+    real y;
+
+    analog begin
+        level = 1.0;
+        dyn_tol = 1e-12 * level;
+
+        // one argument too many
+        y = transition(level, 0.0, 1e-9, 2e-9, 1e-12, 1.0);
+
+        // `ddt`'s abstol is still a constant expression argument
+        y = ddt(level, dyn_tol);
+
+        // ... and so is `absdelay`'s maxdelay
+        y = absdelay(level, 1e-9, dyn_tol);
+    end
+endmodule
