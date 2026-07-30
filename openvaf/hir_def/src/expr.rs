@@ -133,13 +133,45 @@ pub enum Stmt {
     Missing,
     Empty,
     Expr(ExprId),
-    EventControl { event: Event, body: StmtId },
-    Assignment { dst: ExprId, val: ExprId, assignment_kind: ast::AssignOp },
-    Block { /*scope: Option<BlockId>,*/ body: Vec<StmtId> },
-    If { cond: ExprId, then_branch: StmtId, else_branch: StmtId },
-    ForLoop { init: StmtId, cond: ExprId, incr: StmtId, body: StmtId },
-    WhileLoop { cond: ExprId, body: StmtId },
-    Case { discr: ExprId, case_arms: Vec<Case> }, // TODO lint on unreachable
+    EventControl {
+        event: Event,
+        body: StmtId,
+    },
+    Assignment {
+        dst: ExprId,
+        val: ExprId,
+        assignment_kind: ast::AssignOp,
+    },
+    Block {
+        /*scope: Option<BlockId>,*/ body: Vec<StmtId>,
+    },
+    If {
+        cond: ExprId,
+        then_branch: StmtId,
+        else_branch: StmtId,
+    },
+    ForLoop {
+        init: StmtId,
+        cond: ExprId,
+        incr: StmtId,
+        body: StmtId,
+    },
+    WhileLoop {
+        cond: ExprId,
+        body: StmtId,
+    },
+    Case {
+        discr: ExprId,
+        case_arms: Vec<Case>,
+    }, // TODO lint on unreachable
+    /// VAMS-2023 §5.11 — exit the innermost loop.
+    Break,
+    /// VAMS-2023 §5.11 — skip to the end of the innermost loop (re-check condition).
+    Continue,
+    /// VAMS-2023 §5.11 / §4.7.2.2 — early exit from an analog user-defined function.
+    Return {
+        value: Option<ExprId>,
+    },
 }
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone, Copy)]
@@ -177,11 +209,18 @@ impl Stmt {
     #[inline]
     pub fn walk_child_exprs(&self, mut f: impl FnMut(ExprId)) {
         match *self {
-            Stmt::Empty | Stmt::Missing | Stmt::Block { .. } | Stmt::EventControl { .. } => (),
+            Stmt::Empty
+            | Stmt::Missing
+            | Stmt::Block { .. }
+            | Stmt::EventControl { .. }
+            | Stmt::Break
+            | Stmt::Continue => (),
             Stmt::If { cond: expr, .. }
             | Stmt::ForLoop { cond: expr, .. }
             | Stmt::WhileLoop { cond: expr, .. }
             | Stmt::Expr(expr) => f(expr),
+            Stmt::Return { value: Some(expr) } => f(expr),
+            Stmt::Return { value: None } => (),
             Stmt::Assignment { dst, val, .. } => {
                 f(dst);
                 f(val)
@@ -202,7 +241,13 @@ impl Stmt {
     #[inline]
     pub fn walk_child_stmts(&self, mut f: impl FnMut(StmtId)) {
         match *self {
-            Stmt::Expr(_) | Stmt::Assignment { .. } | Stmt::Missing | Stmt::Empty => (),
+            Stmt::Expr(_)
+            | Stmt::Assignment { .. }
+            | Stmt::Missing
+            | Stmt::Empty
+            | Stmt::Break
+            | Stmt::Continue
+            | Stmt::Return { .. } => (),
             Stmt::WhileLoop { body, .. } | Stmt::EventControl { body, .. } => f(body),
             Stmt::If { then_branch: true_stmt, else_branch: false_stmt, .. } => {
                 f(true_stmt);

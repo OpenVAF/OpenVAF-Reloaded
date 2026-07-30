@@ -10,7 +10,10 @@ use hir::signatures::{
     NATURE_ACCESS_NODES, NATURE_ACCESS_NODE_GND, NATURE_ACCESS_PORT_FLOW, REAL_EQ, REAL_OP,
     SIMPARAM_DEFAULT, SIMPARAM_NO_DEFAULT, STR_EQ,
 };
-use hir::{Body, BuiltIn, Expr, ExprId, Literal, /*ParamSysFun,*/ Ref, ResolvedFun, Type};
+use hir::{
+    Body, BodyRef, BuiltIn, Expr, ExprId, Literal, /*ParamSysFun,*/ Ref, ResolvedFun, Stmt,
+    Type,
+};
 use mir::builder::InstBuilder;
 use mir::{Opcode, Value, FALSE, F_ZERO, GRAVESTONE, INFINITY, TRUE, ZERO};
 use stdx::iter::zip;
@@ -244,7 +247,29 @@ impl BodyLoweringCtx<'_, '_, '_> {
         self.ctx.def_place(PlaceKind::FunctionReturn(fun), init);
 
         let body = fun.body(self.ctx.db);
-        BodyLoweringCtx { body: body.borrow(), path: self.path, ctx: self.ctx }.lower_entry_stmts();
+        let body_ref = body.borrow();
+        let needs_exit = body_has_return(&body_ref);
+        let (prev_exit, prev_fun, exit) = if needs_exit {
+            let exit = self.ctx.create_block();
+            let prev_exit = self.ctx.function_exit.replace(exit);
+            let prev_fun = self.ctx.function_return.replace(fun);
+            (prev_exit, prev_fun, Some(exit))
+        } else {
+            (None, None, None)
+        };
+
+        BodyLoweringCtx { body: body_ref, path: self.path, ctx: self.ctx }.lower_entry_stmts();
+
+        if let Some(exit) = exit {
+            self.ctx.ensured_sealed();
+            if !self.ctx.func.is_filled() {
+                self.ctx.ins().jump(exit);
+            }
+            self.ctx.seal_block(exit);
+            self.ctx.switch_to_block(exit);
+            self.ctx.function_exit = prev_exit;
+            self.ctx.function_return = prev_fun;
+        }
 
         // write outputs back to original (including possibly required cast)
         for (arg, &expr) in args {
@@ -1100,4 +1125,25 @@ impl BodyLoweringCtx<'_, '_, '_> {
         let expr = body.borrow().get_entry_expr(i);
         BodyLoweringCtx { ctx: self.ctx, body: body.borrow(), path: self.path }.lower_expr(expr)
     }
+}
+
+fn body_has_return(body: &BodyRef<'_>) -> bool {
+    fn walk(body: &BodyRef<'_>, stmt: hir::StmtId) -> bool {
+        match body.get_stmt(stmt) {
+            Some(Stmt::Return { .. }) => true,
+            Some(Stmt::Block { body: stmts }) => stmts.iter().any(|&s| walk(body, s)),
+            Some(Stmt::If { then_branch, else_branch, .. }) => {
+                walk(body, then_branch) || walk(body, else_branch)
+            }
+            Some(Stmt::WhileLoop { body: b, .. }) | Some(Stmt::EventControl { body: b, .. }) => {
+                walk(body, b)
+            }
+            Some(Stmt::ForLoop { init, incr, body: b, .. }) => {
+                walk(body, init) || walk(body, incr) || walk(body, b)
+            }
+            Some(Stmt::Case { case_arms, .. }) => case_arms.iter().any(|arm| walk(body, arm.body)),
+            _ => false,
+        }
+    }
+    body.entry().iter().any(|&s| walk(body, s))
 }

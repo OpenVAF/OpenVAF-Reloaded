@@ -91,7 +91,7 @@ impl InferenceResult {
             ..Default::default()
         };
 
-        let mut ctx = Ctx { result, body: &body, db, expr_stmt_ty: None };
+        let mut ctx = Ctx { result, body: &body, db, expr_stmt_ty: None, fn_return_ty: None };
         ctx.expr_stmt_ty = match id {
             DefWithBodyId::ParamId(param) => match &db.param_data(param).ty {
                 Some(ty) => Some(ty.clone()),
@@ -106,6 +106,10 @@ impl InferenceResult {
                 Type::Array { ty, .. } => *ty,
                 ty => ty,
             }),
+            DefWithBodyId::FunctionId(fun) => {
+                ctx.fn_return_ty = Some(db.function_data(fun).return_ty.clone());
+                None
+            }
             _ => None,
         };
 
@@ -126,6 +130,8 @@ struct Ctx<'a> {
     /// For behavioural (anlog body and function) and untype (nature attr)
     /// bodys this is simply none
     expr_stmt_ty: Option<Type>,
+    /// Return type of the enclosing analog function, if any.
+    fn_return_ty: Option<Type>,
 }
 
 impl Ctx<'_> {
@@ -169,6 +175,10 @@ impl Ctx<'_> {
                         }
                     }
                 }
+            }
+            Stmt::Return { value: Some(value) } => {
+                let dst_ty = self.fn_return_ty.clone();
+                self.infere_assignment(stmt, value, dst_ty);
             }
             _ => (),
         };

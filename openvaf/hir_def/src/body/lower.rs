@@ -176,6 +176,11 @@ impl LowerCtx<'_> {
             ast::Stmt::CaseStmt(stmt) => self.collect_case_stmt(stmt),
             ast::Stmt::EventStmt(stmt) => return self.collect_event_stmt(stmt),
             ast::Stmt::BlockStmt(stmt) => self.collect_block(stmt),
+            ast::Stmt::BreakStmt(_) => Stmt::Break,
+            ast::Stmt::ContinueStmt(_) => Stmt::Continue,
+            ast::Stmt::ReturnStmt(stmt) => {
+                Stmt::Return { value: stmt.value().map(|e| self.collect_expr(e)) }
+            }
         };
         self.alloc_stmt(s, AstPtr::new(&stmt), stmt.attrs())
     }
