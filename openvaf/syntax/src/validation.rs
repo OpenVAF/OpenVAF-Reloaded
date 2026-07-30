@@ -7,9 +7,14 @@ use crate::ast::{
     LiteralKind, ModulePortKind, ModulePorts, Name, PathSegmentKind,
 };
 use crate::name::{kw, kw_comp};
+use crate::parsing::KeywordRegions;
 use crate::{match_ast, AstNode, AstPtr, SyntaxError, SyntaxNode, SyntaxNodePtr, T};
 
-pub(crate) fn validate(root: &SyntaxNode, errors: &mut Vec<SyntaxError>) {
+pub(crate) fn validate(
+    root: &SyntaxNode,
+    keywords: &KeywordRegions,
+    errors: &mut Vec<SyntaxError>,
+) {
     for node in root.descendants() {
         match_ast! {
             match node {
@@ -21,7 +26,7 @@ pub(crate) fn validate(root: &SyntaxNode, errors: &mut Vec<SyntaxError>) {
                 ast::NatureDecl(decl) => validate_nature_decl(decl,errors),
                 ast::NatureAttr(attr) => validate_nature_attr(attr,errors),
                 ast::Literal(decl) => validate_literal(decl, errors),
-                ast::Name(name) => validate_name(name,errors),
+                ast::Name(name) => validate_name(name,keywords,errors),
                 ast::ModuleDecl(module) => validate_module(module,errors),
                 ast::ParamDecl(param) => validate_param(param, errors),
                 _ => validate_net_type_token(node,errors)
@@ -274,8 +279,14 @@ fn validate_function(fun: ast::Function, errors: &mut Vec<SyntaxError>) {
     }
 }
 
-fn validate_name(name: Name, errors: &mut Vec<SyntaxError>) {
+fn validate_name(name: Name, keywords: &KeywordRegions, errors: &mut Vec<SyntaxError>) {
     if let Some(ident) = name.ident_token() {
+        // VAMS-2023 10.6: a `begin_keywords region may release words that are
+        // reserved by default, which then become ordinary identifiers.
+        if !keywords.get(ident.text_range().start()).reserves(ident.text()) {
+            return;
+        }
+
         let parent = name.syntax().parent();
         let p = parent.as_ref();
 

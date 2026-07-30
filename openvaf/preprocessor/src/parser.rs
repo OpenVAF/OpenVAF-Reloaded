@@ -1,11 +1,13 @@
+use std::cell::Cell;
 use std::cmp::min;
 use std::ops::Range;
+use std::rc::Rc;
 
 use stdx::impl_idx_math_from;
 use text_size::{TextRange, TextSize};
 use tokens::lexer::{LiteralKind, Token, TokenKind};
 use tokens::parser::SyntaxKind;
-use tokens::LexerErrorKind;
+use tokens::{KeywordSet, LexerErrorKind};
 // use tracing::debug;
 use typed_index_collections::{TiSlice, TiVec};
 use vfs::VfsPath;
@@ -23,6 +25,45 @@ impl_idx_math_from!(FullTokenIdx(u32));
 pub struct RelevantTokenIdx(u32);
 impl_idx_math_from!(RelevantTokenIdx(u32));
 
+/// Lexer state that outlives an individual source file.
+///
+/// `` `begin_keywords `` affects "all source code that follows the directive,
+/// even across source code file boundaries" (VAMS-2023 10.6), so the active
+/// keyword set cannot live in the per-file [`Parser`]. It is owned by the
+/// [`Processor`](crate::processor::Processor) and shared with every parser it
+/// creates.
+#[derive(Debug, Default)]
+pub(crate) struct LexerState {
+    keywords: Cell<KeywordSet>,
+    /// Number of `module` tokens without a matching `endmodule` seen so far.
+    /// Used to reject keyword directives inside a design element.
+    module_depth: Cell<u32>,
+}
+
+impl LexerState {
+    pub(crate) fn keywords(&self) -> KeywordSet {
+        self.keywords.get()
+    }
+
+    pub(crate) fn set_keywords(&self, keywords: KeywordSet) {
+        self.keywords.set(keywords)
+    }
+
+    pub(crate) fn in_design_element(&self) -> bool {
+        self.module_depth.get() != 0
+    }
+
+    fn track_design_element(&self, kind: SyntaxKind) {
+        match kind {
+            SyntaxKind::MODULE_KW => self.module_depth.set(self.module_depth.get() + 1),
+            SyntaxKind::ENDMODULE_KW => {
+                self.module_depth.set(self.module_depth.get().saturating_sub(1))
+            }
+            _ => (),
+        }
+    }
+}
+
 pub(crate) struct Parser<'a, 'd> {
     full_tokens: TiVec<FullTokenIdx, tokens::lexer::Token>,
     relevant_tokens: TiVec<RelevantTokenIdx, (PreprocessorToken, FullTokenIdx)>,
@@ -35,6 +76,7 @@ pub(crate) struct Parser<'a, 'd> {
     pub(crate) ctx: SourceContext,
     pub(crate) dst: &'d mut Vec<crate::Token>,
     pub(crate) working_dir: VfsPath,
+    pub(crate) state: Rc<LexerState>,
 }
 
 fn mk_token(
@@ -53,6 +95,7 @@ impl<'a, 'd> Parser<'a, 'd> {
         ctx: SourceContext,
         working_dir: VfsPath,
         dst: &'d mut Vec<crate::Token>,
+        state: Rc<LexerState>,
         err: &mut Vec<PreprocessorDiagnostic>,
     ) -> Self {
         let full_tokens = TiVec::from(lexer::tokenize(src));
@@ -93,6 +136,7 @@ impl<'a, 'd> Parser<'a, 'd> {
             ctx,
             dst,
             working_dir,
+            state,
             previous_offset: 0.into(),
             offset: 0.into(),
             token,
@@ -170,11 +214,21 @@ impl<'a, 'd> Parser<'a, 'd> {
     fn advance(&mut self, save: bool, start: FullTokenIdx, err: &mut Vec<PreprocessorDiagnostic>) {
         let range = start..self.full_token_pos;
         if save {
+            let state = &*self.state;
             self.dst.extend(self.full_tokens[range].iter().filter_map(|token| {
-                let res = Self::convert_lexer_token(*token, self.offset, self.src, err, self.ctx);
+                let keywords = state.keywords();
+                let res = Self::convert_lexer_token(
+                    *token,
+                    self.offset,
+                    self.src,
+                    err,
+                    self.ctx,
+                    keywords,
+                );
                 self.offset += token.len;
                 let (kind, range) = res?;
-                Some(crate::Token { span: CtxSpan { range, ctx: self.ctx }, kind })
+                state.track_design_element(kind);
+                Some(crate::Token { span: CtxSpan { range, ctx: self.ctx }, kind, keywords })
             }))
         } else {
             let len: TextSize = self.full_tokens[range].iter().map(|token| token.len).sum();
@@ -188,9 +242,10 @@ impl<'a, 'd> Parser<'a, 'd> {
         src: &str,
         err: &mut Vec<PreprocessorDiagnostic>,
         ctx: SourceContext,
+        keywords: KeywordSet,
     ) -> Option<(SyntaxKind, TextRange)> {
         let range = TextRange::at(offset, token.len);
-        let (syntax, error) = token.kind.to_syntax(&src[range]);
+        let (syntax, error) = token.kind.to_syntax(&src[range], keywords);
         if let Some(error) = error {
             let span = CtxSpan { range, ctx };
             match error {
@@ -214,8 +269,13 @@ impl<'a, 'd> Parser<'a, 'd> {
         dst: &mut Vec<ParsedToken<'a>>,
         err: &mut Vec<PreprocessorDiagnostic>,
     ) {
+        // NOTE: macro bodies are resolved to syntax tokens at definition time, so
+        // they capture the keyword set in effect where the `define appears rather
+        // than the one at the expansion site.
+        let keywords = self.state.keywords();
         dst.extend(self.full_tokens[range].iter().filter_map(|token| {
-            let res = Self::convert_lexer_token(*token, self.offset, self.src, err, self.ctx);
+            let res =
+                Self::convert_lexer_token(*token, self.offset, self.src, err, self.ctx, keywords);
             self.offset += token.len;
             let (kind, range) = res?;
             Some(ParsedToken { kind: kind.into(), range })
@@ -306,6 +366,9 @@ impl<'a, 'd> Parser<'a, 'd> {
             "`endif" => CompilerDirective::EndIf,
             "`undef" => CompilerDirective::Undef,
             "`resetall" => CompilerDirective::ResetAll,
+            // VAMS-2023 10.6: select the set of reserved keywords.
+            "`begin_keywords" => CompilerDirective::BeginKeywords,
+            "`end_keywords" => CompilerDirective::EndKeywords,
             // VAMS-2023 §10.7 / IEEE 1364: expand to string / decimal literals.
             "`__FILE__" => CompilerDirective::File,
             "`__LINE__" => CompilerDirective::Line,
@@ -337,6 +400,10 @@ pub enum CompilerDirective {
     EndIf,
     Undef,
     ResetAll,
+    /// `` `begin_keywords "<version_specifier>" `` — push a keyword set.
+    BeginKeywords,
+    /// `` `end_keywords `` — pop back to the previous keyword set.
+    EndKeywords,
     /// `` `__FILE__ `` — expands to a string literal of the current input path.
     File,
     /// `` `__LINE__ `` — expands to a decimal literal of the current line number.

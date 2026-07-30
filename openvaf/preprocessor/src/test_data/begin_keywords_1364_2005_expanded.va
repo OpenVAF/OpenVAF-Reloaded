@@ -1,0 +1,7 @@
+
+module legacy(from, string, ground);
+    input from, string, ground;
+endmodule
+module ams(a);
+    analog begin end
+endmodule

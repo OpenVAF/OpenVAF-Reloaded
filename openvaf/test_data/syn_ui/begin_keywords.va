@@ -1,0 +1,34 @@
+// VAMS-2023 10.6 (Mantis 7921): `begin_keywords / `end_keywords select the set
+// of reserved keywords. Under a plain Verilog specifier the Verilog-AMS
+// keywords are ordinary identifiers again.
+
+// The example from 10.6: `sin` is a Verilog-AMS keyword but not a 1364-2005 one.
+`begin_keywords "1364-2005"
+module m2(sin);
+    input sin;
+endmodule
+
+module legacy(clk);
+    input clk;
+    // `discipline`, `from`, `string` and `ground` are Verilog-AMS keywords but
+    // ordinary identifiers in IEEE Std 1364-2005
+    integer discipline;
+    integer from;
+    integer string;
+    integer ground;
+    // ... while `localparam` and `uwire` are reserved by 1364-2005
+    localparam integer two = 2;
+endmodule
+`end_keywords
+
+// ... and the Verilog-AMS keywords are keywords again once the region is closed
+module ams(a);
+    inout a;
+    electrical a;
+    parameter real r = 1.0 from [0.0:inf);
+    string label;
+    analog begin
+        label = "ok";
+        I(a) <+ V(a) / r;
+    end
+endmodule

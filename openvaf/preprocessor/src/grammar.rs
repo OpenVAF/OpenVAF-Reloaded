@@ -9,6 +9,7 @@
  */
 
 use text_size::TextRange;
+use tokens::KeywordSet;
 // use tracing::{debug, trace, trace_span};
 use typed_index_collections::TiVec;
 
@@ -108,6 +109,41 @@ pub(crate) fn parse_include<'a>(
         Some((&path[1..path.len() - 1], TextRange::new(start, p.previous_range().end())))
     } else {
         None
+    }
+}
+
+/// Parses `` `begin_keywords "<version_specifier>" `` (VAMS-2023 10.6).
+///
+/// Returns the selected keyword set together with the span of the whole
+/// directive. `None` is returned (and a diagnostic emitted) if the specifier is
+/// missing or is not one of the specifiers the standard defines; the caller
+/// keeps the currently active set in that case.
+pub(crate) fn parse_begin_keywords(
+    p: &mut Parser<'_, '_>,
+    err: &mut Diagnostics,
+) -> Option<(KeywordSet, CtxSpan)> {
+    let start = p.current_range().start();
+    p.bump();
+
+    let specifier = p.current_text();
+    if !p.expect(PreprocessorToken::StrLit, "a version specifier", err) {
+        return None;
+    }
+
+    let range = TextRange::new(start, p.previous_range().end());
+    let span = CtxSpan { ctx: p.ctx(), range };
+    // strip the surrounding quotes
+    let specifier = &specifier[1..specifier.len() - 1];
+
+    match KeywordSet::from_version_specifier(specifier) {
+        Some(set) => Some((set, span)),
+        None => {
+            err.push(PreprocessorDiagnostic::UnknownKeywordVersion {
+                version: specifier.to_owned(),
+                span,
+            });
+            None
+        }
     }
 }
 
@@ -215,7 +251,9 @@ fn parse_macro_token<'a>(
         match p.compiler_directive() {
             // `` `__FILE__ `` / `` `__LINE__ `` must be stored like macros so they
             // expand at the call site of the enclosing `` `define ``. Treating them
-            // as unexpected without bumping the parser would spin forever.
+            // as unexpected without bumping the parser would spin forever - and the
+            // same applies to every other directive that is not valid here (such as
+            // `` `begin_keywords ``), hence the `bump()` in the fallback arm.
             CompilerDirective::Macro | CompilerDirective::File | CompilerDirective::Line => {
                 let (call, range) = parse_macro_call(p, err, args, sm, end);
                 dst.push(ParsedToken { range, kind: ParsedTokenKind::MacroCall(call) });

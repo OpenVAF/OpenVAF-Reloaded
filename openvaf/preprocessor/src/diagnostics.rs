@@ -18,6 +18,11 @@ pub enum PreprocessorDiagnostic {
     MissingOrUnexpectedToken { expected: &'static str, expected_at: CtxSpan, span: CtxSpan },
     UnexpectedToken(CtxSpan),
     MacroOverwritten { old: CtxSpan, new: CtxSpan, name: String },
+    // `begin_keywords / `end_keywords (VAMS-2023 10.6)
+    UnknownKeywordVersion { version: String, span: CtxSpan },
+    UnmatchedEndKeywords { span: CtxSpan },
+    UnterminatedKeywords { span: CtxSpan },
+    KeywordsInDesignElement { name: &'static str, span: CtxSpan },
 }
 
 use PreprocessorDiagnostic::*;
@@ -34,5 +39,9 @@ impl_display! {
         MissingOrUnexpectedToken { expected, ..} => "unexpected token, expected '{}'", expected;
         UnexpectedToken(_) => "encountered unexpected token!";
         MacroOverwritten { name, .. } => "macro '`{}' was overwritten", name;
+        UnknownKeywordVersion { version, .. } => "unknown keyword version specifier \"{}\"", version;
+        UnmatchedEndKeywords { .. } => "'`end_keywords' without a matching '`begin_keywords'";
+        UnterminatedKeywords { .. } => "'`begin_keywords' without a matching '`end_keywords'";
+        KeywordsInDesignElement { name, .. } => "'`{}' is not allowed inside a design element", name;
     }
 }
