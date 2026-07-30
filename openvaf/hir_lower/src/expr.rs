@@ -226,9 +226,11 @@ impl BodyLoweringCtx<'_, '_, '_> {
             let init = if arg.is_input(self.ctx.db) {
                 self.lower_expr(*expr)
             } else {
-                match &arg.ty(self.ctx.db) {
+                match arg.ty(self.ctx.db) {
                     Type::Real => F_ZERO,
                     Type::Integer => ZERO,
+                    // VAMS-2023 4.7.1: string-typed function arguments start empty
+                    Type::String => self.ctx.sconst(""),
                     ty => unreachable!("invalid function arg type {:?}", ty),
                 }
             };
@@ -236,9 +238,12 @@ impl BodyLoweringCtx<'_, '_, '_> {
             self.ctx.def_place(PlaceKind::FunctionArg(arg), init);
         }
 
-        let init = match &fun.return_ty(self.ctx.db) {
+        let init = match fun.return_ty(self.ctx.db) {
             Type::Real => F_ZERO,
             Type::Integer => ZERO,
+            // VAMS-2023 4.7.1: `analog function string` - the return value is
+            // initialised to the empty string
+            Type::String => self.ctx.sconst(""),
             ty => unreachable!("invalid function return type {:?}", ty),
         };
         self.ctx.def_place(PlaceKind::FunctionReturn(fun), init);
