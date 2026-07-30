@@ -52,6 +52,7 @@ fn zero_derivative(dfg: &DataFlowGraph, inst: Inst) -> bool {
             | Opcode::FBcast
             | Opcode::BFcast
             | Opcode::FIcast
+            | Opcode::FItrunc
             | Opcode::Irem
             | Opcode::Inot
             | Opcode::Ixor

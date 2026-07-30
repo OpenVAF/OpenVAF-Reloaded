@@ -66,6 +66,9 @@ opcodes! {
         Ineg
 
         FIcast
+        // Truncating real→integer cast used by `$rtoi` (IEEE 1364). Distinct from
+        // `FIcast`, which rounds via `llvm.lround` / `.round()` for language casts.
+        FItrunc
         IFcast
 
         BIcast

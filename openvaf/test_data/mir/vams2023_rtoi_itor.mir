@@ -1,0 +1,18 @@
+function %(v16, v18, v19, v21, v22, v24, v30) {
+    v25 = fconst 0x1.e666666666666p0
+                                block0:
+@0003                               v17 = fitrunc v16
+@0006                               v20 = fitrunc v19
+@0009                               v23 = ifcast v22
+@000c                               v26 = fitrunc v25
+@000e                               v27 = fneg v25
+@000f                               v28 = fitrunc v27
+@0010                               v29 = iadd v26, v28
+                                    v31 = optbarrier v17
+                                    v32 = optbarrier v20
+                                    v33 = optbarrier v23
+                                    v34 = optbarrier v29
+                                    jmp block1
+
+                                block1:
+}
