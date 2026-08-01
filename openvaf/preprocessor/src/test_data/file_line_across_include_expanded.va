@@ -1,0 +1,3 @@
+// included
+$display("/inc.va", 2);
+$display("/parent.va", 2);

@@ -41,6 +41,10 @@ impl SourceProvider for TestSourceProvider {
     fn file_id(&self, path: VfsPath) -> FileId {
         self.vfs.borrow_mut().ensure_file_id(path)
     }
+
+    fn allocate_virtual_file(&self, path: &str, contents: Arc<str>) -> FileId {
+        self.vfs.borrow_mut().add_virt_file(path, contents.to_string().into())
+    }
 }
 
 fn check_prepocessor(sources: TestSourceProvider, root_file: FileId, test_name: &'static str) {
@@ -310,4 +314,50 @@ fn begin_keywords_inside_module() {
     .assert_eq(&preprocessor_diagnostics(
         "module m;\n`begin_keywords \"1364-2005\"\nendmodule\n",
     ));
+}
+/// VAMS-2023 §10.7: `` `__FILE__ `` / `` `__LINE__ `` expand to string / decimal
+/// literals of the current input file and line.
+#[test]
+fn file_line_directives() {
+    // Keep the directives on known lines so the expanded decimals are stable.
+    // Line 1 is blank after the raw-string newline; line 2 is the display call.
+    check_prepocessor_single_file(
+        r#"
+$display("at %s:%d", `__FILE__, `__LINE__);
+"#,
+        "file_line_directives",
+    )
+}
+
+/// After `` `include ``, `` `__FILE__ `` / `` `__LINE__ `` must report the included
+/// file; once the include ends they revert to the parent.
+#[test]
+fn file_line_across_include() {
+    let sources = TestSourceProvider::new(vec![]);
+    let root = {
+        let mut vfs = sources.vfs.borrow_mut();
+        vfs.add_virt_file(
+            "/inc.va",
+            concat!("// included\n", "$display(`__FILE__, `__LINE__);\n").to_owned().into(),
+        );
+        vfs.add_virt_file(
+            "/parent.va",
+            concat!("`include \"inc.va\"\n", "$display(`__FILE__, `__LINE__);\n")
+                .to_owned()
+                .into(),
+        )
+    };
+    check_prepocessor(sources, root, "file_line_across_include");
+}
+
+/// Nested appearance inside a `` `define `` body expands at the call site.
+#[test]
+fn file_line_inside_define() {
+    check_prepocessor_single_file(
+        r#"
+`define LOC `__FILE__, `__LINE__
+$display(`LOC);
+"#,
+        "file_line_inside_define",
+    )
 }

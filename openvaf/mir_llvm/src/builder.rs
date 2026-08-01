@@ -741,6 +741,17 @@ impl<'ll> Builder<'_, '_, 'll> {
                     UNNAMED,
                 )
             }
+            // `$rtoi`: IEEE 1364 truncates toward zero via FPToSI.
+            // Do not call `llvm.lround` (that is `FIcast` / language real→int).
+            Opcode::FItrunc => {
+                let arg = NonNull::from(self.values[args[0]].get(self)).as_ptr();
+                llvm_sys::core::LLVMBuildFPToSI(
+                    self.llbuilder,
+                    arg,
+                    NonNull::from(self.cx.ty_int()).as_ptr(),
+                    UNNAMED,
+                )
+            }
             Opcode::BFcast => {
                 let arg = NonNull::from(self.values[args[0]].get(self)).as_ptr();
                 llvm_sys::core::LLVMBuildUIToFP(

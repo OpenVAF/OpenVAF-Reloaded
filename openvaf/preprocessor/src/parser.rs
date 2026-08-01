@@ -369,6 +369,9 @@ impl<'a, 'd> Parser<'a, 'd> {
             // VAMS-2023 10.6: select the set of reserved keywords.
             "`begin_keywords" => CompilerDirective::BeginKeywords,
             "`end_keywords" => CompilerDirective::EndKeywords,
+            // VAMS-2023 §10.7 / IEEE 1364: expand to string / decimal literals.
+            "`__FILE__" => CompilerDirective::File,
+            "`__LINE__" => CompilerDirective::Line,
             _ => CompilerDirective::Macro,
         }
     }
@@ -401,5 +404,9 @@ pub enum CompilerDirective {
     BeginKeywords,
     /// `` `end_keywords `` — pop back to the previous keyword set.
     EndKeywords,
+    /// `` `__FILE__ `` — expands to a string literal of the current input path.
+    File,
+    /// `` `__LINE__ `` — expands to a decimal literal of the current line number.
+    Line,
     Macro,
 }

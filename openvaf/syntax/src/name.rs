@@ -153,10 +153,16 @@ macro_rules! keywords {
 
             #[allow(bad_style, dead_code)]
             pub const use_:&str = "use";
+            #[allow(bad_style, dead_code)]
+            pub const break_: &str = "break";
+            #[allow(bad_style, dead_code)]
+            pub const continue_: &str = "continue";
+            #[allow(bad_style, dead_code)]
+            pub const return_: &str = "return";
         }
 
         pub fn is_reserved(name: &str) -> bool{
-            matches!(name,$(stringify!($ident) |)* "use")
+            matches!(name, $(stringify!($ident) |)* "use" | "break" | "continue" | "return")
         }
     };
 }
@@ -164,6 +170,12 @@ macro_rules! keywords {
 pub mod kw {
     #[allow(bad_style, dead_code)]
     pub const use_: super::Name = super::Name::new_inline("use");
+    #[allow(bad_style, dead_code)]
+    pub const break_: super::Name = super::Name::new_inline("break");
+    #[allow(bad_style, dead_code)]
+    pub const continue_: super::Name = super::Name::new_inline("continue");
+    #[allow(bad_style, dead_code)]
+    pub const return_: super::Name = super::Name::new_inline("return");
     #[allow(bad_style, dead_code)]
     pub const root: super::Name = super::Name::new_inline("$root");
     // VAMS-2023 reserves expm1/ln1p, but compact models written against older
@@ -491,6 +503,8 @@ pub mod sysfun {
 
         bitstoreal,
         realtobits,
+        rtoi,
+        itor,
 
         dist_chi_square,
         dist_exponential,

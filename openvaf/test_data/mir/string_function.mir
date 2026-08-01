@@ -1,0 +1,35 @@
+function %(v16, v25, v26, v29, v30, v33, v36) {
+    v5 = iconst 1
+    v17 = fconst 0x1.0000000000000p-1
+    v20 = sconst "<DUMMY>"
+    v22 = sconst "<DUMMY>"
+    v23 = sconst "<DUMMY>"
+    v27 = iconst 2
+                                block0:
+@0004                               v18 = fgt v16, v17
+@0004                               v19 = bicast v18
+@0001                               v21 = ibcast v19
+@0005                               br v21, block2, block3
+
+                                block2:
+@0005                               jmp block4
+
+                                block3:
+@0005                               jmp block4
+
+                                block4:
+@0004                               v24 = phi [v22, block2], [v23, block3]
+@0011                               v28 = isub v27, v5
+@0011                               v31 = seq v24, v22
+@0015                               v32 = bicast v31
+@0015                               v34 = seq v20, v20
+                                    v35 = bicast v34
+                                    v37 = optbarrier v24
+                                    v38 = optbarrier v24
+                                    v39 = optbarrier v28
+                                    v40 = optbarrier v32
+                                    v41 = optbarrier v35
+                                    jmp block1
+
+                                block1:
+}
