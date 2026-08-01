@@ -144,6 +144,9 @@ impl<'a> Interpreter<'a> {
             mir::Opcode::Fneg => (-args(0).f64()).into(),
             mir::Opcode::Ineg => (-args(0).i32()).into(),
             mir::Opcode::FIcast => (args(0).f64() as i32).into(),
+            // `$rtoi`: truncate toward zero. Distinct MIR opcode from the rounding
+            // language cast so the interpreter cannot accidentally share paths later.
+            mir::Opcode::FItrunc => (args(0).f64() as i32).into(),
             mir::Opcode::IFcast => (args(0).i32() as f64).into(),
             mir::Opcode::BIcast => (args(0).bool() as i32).into(),
             mir::Opcode::IBcast => (args(0).i32() != 0).into(),

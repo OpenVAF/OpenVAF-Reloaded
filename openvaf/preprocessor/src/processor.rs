@@ -6,7 +6,7 @@ use ahash::AHashMap;
 use stdx::{impl_debug_display, impl_idx_from};
 use text_size::{TextRange, TextSize};
 use tokens::parser::SyntaxKind;
-use tokens::SyntaxKind::{L_PAREN, R_PAREN};
+use tokens::SyntaxKind::{INT_NUMBER, L_PAREN, R_PAREN, STR_LIT};
 // use tracing::{debug, debug_span, trace};
 use typed_index_collections::{TiSlice, TiVec};
 use vfs::{FileId, VfsPath};
@@ -25,6 +25,8 @@ pub(crate) struct Processor<'a> {
     arena: &'a ScopedTextArea,
     macros: AHashMap<&'a str, Macro<'a>>,
     include_dirs: Arc<[VfsPath]>,
+    /// Monotonic id for virtual expansion files allocated for `` `__FILE__ `` / `` `__LINE__ ``.
+    expand_seq: u32,
 }
 
 impl<'a> Processor<'a> {
@@ -51,6 +53,7 @@ impl<'a> Processor<'a> {
             arena: storage,
             sources,
             include_dirs: sources.include_dirs(root_file),
+            expand_seq: 0,
         };
         Ok(res)
     }
@@ -149,6 +152,17 @@ impl<'a> Processor<'a> {
         dst: &mut Vec<Token>,
         errors: &mut Diagnostics,
     ) {
+        // `` `__FILE__ `` / `` `__LINE__ `` may appear inside `` `define `` bodies as
+        // nested macro calls; expand them at the nested call site.
+        if call.name == "__FILE__" {
+            self.expand_file_line(true, span, dst);
+            return;
+        }
+        if call.name == "__LINE__" {
+            self.expand_file_line(false, span, dst);
+            return;
+        }
+
         // TODO track recursion
         //
         let parent_ctx_span = self.source_map.ctx_data(span.ctx).decl.range.start();
@@ -194,6 +208,53 @@ impl<'a> Processor<'a> {
         } else {
             errors.push(MacroNotFound { name: call.name.to_owned(), span })
         }
+    }
+
+    /// Expand `` `__FILE__ `` (`is_file`) or `` `__LINE__ `` to a literal token whose
+    /// text lives in a freshly allocated virtual file (green-tree text is always
+    /// sliced from a `FileId`).
+    fn expand_file_line(&mut self, is_file: bool, call_site: CtxSpan, dst: &mut Vec<Token>) {
+        // Direct uses (and uses inside `` `include ``d files) report the current
+        // input file. When expanding from a user-macro body the context decl is a
+        // subrange of a file, and we report the macro invocation site instead so
+        // idioms like `` `define LOC `__FILE__, `__LINE__ `` are useful.
+        let loc_span = {
+            let ctx_data = self.source_map.ctx_data(call_site.ctx);
+            let decl = ctx_data.decl;
+            let whole_file = self
+                .sources
+                .file_text(decl.file)
+                .ok()
+                .map(|src| decl.range == TextRange::up_to(TextSize::of(&*src)))
+                .unwrap_or(true);
+            if !whole_file {
+                ctx_data.call_site.unwrap_or(call_site)
+            } else {
+                call_site
+            }
+        };
+        let filespan = loc_span.to_file_span(&self.source_map);
+        let lit_text: Arc<str> = if is_file {
+            let path = self.sources.file_path(filespan.file);
+            format!("\"{}\"", escape_pp_string(&path.to_string())).into()
+        } else {
+            let src =
+                self.sources.file_text(filespan.file).expect("SourceContext file must be readable");
+            let line = line_number_1based(&src, filespan.range.start());
+            line.to_string().into()
+        };
+
+        let seq = self.expand_seq;
+        self.expand_seq = seq.wrapping_add(1);
+        let virt_path = format!("/<pp-expand>/{}/{}", if is_file { "file" } else { "line" }, seq);
+        let file = self.sources.allocate_virtual_file(&virt_path, lit_text.clone());
+        let lit_text = self.arena.ensure(lit_text);
+        let range = TextRange::up_to(TextSize::of(lit_text));
+        let ctx = self.source_map.add_ctx(FileSpan { file, range }, call_site);
+        dst.push(Token {
+            kind: if is_file { STR_LIT } else { INT_NUMBER },
+            span: CtxSpan { range, ctx },
+        });
     }
 
     pub(crate) fn process_file(&mut self, mut p: Parser<'a, '_>, err: &mut Diagnostics) {
@@ -268,6 +329,16 @@ impl<'a> Processor<'a> {
                     });
                     p.bump();
                 }
+                CompilerDirective::File => {
+                    let span = p.current_span();
+                    p.bump();
+                    self.expand_file_line(true, span, p.dst);
+                }
+                CompilerDirective::Line => {
+                    let span = p.current_span();
+                    p.bump();
+                    self.expand_file_line(false, span, p.dst);
+                }
                 CompilerDirective::Macro => {
                     let (call, range) =
                         parse_macro_call(p, err, &[], &mut self.source_map, p.end());
@@ -284,6 +355,26 @@ impl<'a> Processor<'a> {
             _ => p.save_token(err),
         }
     }
+}
+
+/// 1-based line number of `offset` in `src` (newlines before the offset).
+fn line_number_1based(src: &str, offset: TextSize) -> u32 {
+    let idx: usize = offset.into();
+    let idx = idx.min(src.len());
+    1 + src[..idx].bytes().filter(|&b| b == b'\n').count() as u32
+}
+
+/// Escape a path for embedding inside a Verilog string literal.
+fn escape_pp_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 pub(crate) type MacroArgs<'s> = TiVec<MacroArg, (Vec<ParsedToken<'s>>, TextRange)>;

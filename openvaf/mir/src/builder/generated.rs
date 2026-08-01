@@ -110,6 +110,10 @@ pub trait InstBuilder<'f>: InstBuilderBase<'f> {
         let (inst, dfg) = self.unary(Opcode::FIcast, arg0);
         dfg.first_result(inst)
     }
+    fn fitrunc(self, arg0: Value) -> Value {
+        let (inst, dfg) = self.unary(Opcode::FItrunc, arg0);
+        dfg.first_result(inst)
+    }
     fn ifcast(self, arg0: Value) -> Value {
         let (inst, dfg) = self.unary(Opcode::IFcast, arg0);
         dfg.first_result(inst)

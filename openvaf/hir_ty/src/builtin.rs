@@ -188,6 +188,10 @@ bultins! {
     const fn REAL_MATH_1(Val(Real)) -> Real;
     const fn REAL_MATH_2(Val(Real),Val(Real)) -> Real;
     const fn INT_MATH_1(Val(Integer)) -> Integer;
+    // IEEE 1364 / VAMS-2023 §9.11 conversion system functions.
+    // `$rtoi` truncates toward zero; `$itor` is the integer→real inverse.
+    const fn RTOI(Val(Real)) -> Integer;
+    const fn ITOR(Val(Integer)) -> Real;
 
 
     VT = const {
