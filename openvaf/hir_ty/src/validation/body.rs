@@ -54,6 +54,13 @@ pub enum BodyValidationDiagnostic {
         ctx: BodyCtx,
     },
 
+    /// VAMS-2023 5.10.4: in an analog context `-> ev;` is an
+    /// `analog_event_statement`, so it may only appear under an event control.
+    IllegalEventTrigger {
+        stmt: StmtId,
+        ctx: BodyCtx,
+    },
+
     WriteToInputArg {
         expr: ExprId,
         arg: FunctionArgLoc,
@@ -158,6 +165,7 @@ impl BodyValidationDiagnostic {
             infer: &infere,
             diagnostics: Vec::new(),
             ctx,
+            in_event_control: false,
             non_const_dominator: Box::default(),
             non_trivial_branches: HashSet::default(),
             trivial_probes: HashMap::default(),
@@ -236,6 +244,9 @@ struct BodyValidator<'a> {
     infer: &'a InferenceResult,
     diagnostics: Vec<BodyValidationDiagnostic>,
     ctx: BodyCtx,
+    /// Whether the statement being validated is (transitively) the body of an
+    /// event control. Unlike `ctx` this survives entering a conditional.
+    in_event_control: bool,
     non_const_dominator: Box<[ExprId]>,
     non_trivial_branches: HashSet<BranchWrite>,
     trivial_probes: HashMap<BranchWrite, Vec<(StmtId, ExprId)>>,
@@ -270,7 +281,9 @@ impl BodyValidator<'_> {
             }
             Stmt::EventControl { body, .. } => {
                 let old = replace(&mut self.ctx, BodyCtx::EventControl);
+                let old_event = replace(&mut self.in_event_control, true);
                 self.validate_stmt(body);
+                self.in_event_control = old_event;
                 self.ctx = old;
                 return;
             }
@@ -280,6 +293,17 @@ impl BodyValidator<'_> {
             }
 
             Stmt::Missing | Stmt::Empty => return,
+
+            // VAMS-2023 5.10.4: `-> ev;` is an `analog_event_statement`; it is not
+            // part of `analog_statement`, so in the analog context it may only
+            // appear inside an event control (`@(timer(1n)) -> ev;`).
+            Stmt::EventTrigger { .. } => {
+                if !self.in_event_control && self.ctx != BodyCtx::ProceduralBlock {
+                    self.diagnostics
+                        .push(BodyValidationDiagnostic::IllegalEventTrigger { stmt, ctx: self.ctx })
+                }
+                return;
+            }
 
             Stmt::Expr(e) => {
                 self.validate_expr(e, stmt);

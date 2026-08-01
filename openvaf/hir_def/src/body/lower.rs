@@ -175,6 +175,10 @@ impl LowerCtx<'_> {
             }
             ast::Stmt::CaseStmt(stmt) => self.collect_case_stmt(stmt),
             ast::Stmt::EventStmt(stmt) => return self.collect_event_stmt(stmt),
+            // VAMS-2023 5.10.4: `-> event_identifier;`
+            ast::Stmt::EventTriggerStmt(stmt) => {
+                Stmt::EventTrigger { event: self.collect_opt_expr(stmt.expr()) }
+            }
             ast::Stmt::BlockStmt(stmt) => self.collect_block(stmt),
             ast::Stmt::BreakStmt(_) => Stmt::Break,
             ast::Stmt::ContinueStmt(_) => Stmt::Continue,
@@ -191,10 +195,17 @@ impl LowerCtx<'_> {
         } else if event_stmt.final_step_token().is_some() {
             GlobalEvent::FinalStep
         } else {
-            // Monitored event (`@(cross(...))` / `@(timer(...))`): preserve it so MIR
+            // A bare path is a named event (VAMS-2023 5.10.4); everything else is a
+            // monitored event (`@(cross(...))` / `@(timer(...))`), preserved so MIR
             // lowering can give the variables it assigns cross-timestep retention.
+            let event = match event_stmt.event() {
+                Some(ast::Expr::PathExpr(path)) => {
+                    Event::Named { event: self.collect_expr(ast::Expr::PathExpr(path)) }
+                }
+                _ => Event::Cross,
+            };
             let body = self.collect_opt_stmt(event_stmt.stmt());
-            let stmt = Stmt::EventControl { event: Event::Cross, body };
+            let stmt = Stmt::EventControl { event, body };
             return self.alloc_stmt(
                 stmt,
                 AstPtr::new(event_stmt).cast().unwrap(),

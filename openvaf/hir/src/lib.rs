@@ -21,7 +21,7 @@ pub use hir_def::expr::CaseCond;
 pub use hir_def::nameres::diagnostics::PathResolveError;
 use hir_def::nameres::{DefMap, LocalScopeId, ScopeDefItem};
 use hir_def::{
-    AliasParamId, BlockId, BlockLoc, BranchId, DefWithBodyId, DisciplineId, FunctionId,
+    AliasParamId, BlockId, BlockLoc, BranchId, DefWithBodyId, DisciplineId, EventId, FunctionId,
     LocalFunctionArgId, Lookup, ModuleBodyKind, ModuleId, ModuleLoc, NatureAttrId, NatureId,
     NodeId, ParamId, VarId,
 };
@@ -212,6 +212,25 @@ impl Block {
     }
 }
 
+/// A named event (VAMS-2023 5.10.4): `event ana_event;`
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NamedEvent {
+    pub(crate) id: EventId,
+}
+
+stdx::impl_debug! {
+    match NamedEvent{
+        NamedEvent{ id } => "{id:?}";
+    }
+}
+
+impl NamedEvent {
+    pub fn name(self, db: &CompilationDB) -> String {
+        let loc = self.id.lookup(db);
+        loc.item_tree(db)[loc.id].name.to_string()
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Function {
     id: FunctionId,
@@ -364,6 +383,7 @@ impl Scope {
                         ScopeDef::AliasParameter(AliasParameter { id })
                     }
                     ScopeDefItem::BranchId(id) => ScopeDef::Branch(Branch { id }),
+                    ScopeDefItem::EventId(id) => ScopeDef::NamedEvent(NamedEvent { id }),
                     ScopeDefItem::FunctionId(id) => ScopeDef::Function(Function { id }),
                     // implementation details
                     ScopeDefItem::BuiltIn(_)
@@ -649,5 +669,6 @@ pub enum ScopeDef {
     Parameter(Parameter),
     AliasParameter(AliasParameter),
     Branch(Branch),
+    NamedEvent(NamedEvent),
     Function(Function),
 }

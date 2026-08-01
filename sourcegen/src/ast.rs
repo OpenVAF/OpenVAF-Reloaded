@@ -500,6 +500,7 @@ impl Field {
                     "\"*)\"" => "r_attr_paren",
                     "\"'{\"" => "l_curly_arr",
                     "<+" => "contr",
+                    "->" => "trigger",
                     _ => name,
                 };
                 let ident = format_ident!("{}_token", name);

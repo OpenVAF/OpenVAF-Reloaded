@@ -10,9 +10,9 @@ use syntax::{match_ast, AstNode, ConstExprValue, WalkEvent};
 use typed_index_collections::TiVec;
 
 use super::{
-    Block, Branch, BranchKind, Discipline, DisciplineAttr, DisciplineAttrKind, Domain, Function,
-    FunctionArg, FunctionItem, ItemTree, ItemTreeId, Module, ModuleItem, Nature, NatureAttr,
-    NatureRef, NatureRefKind, Net, Node, Param, Port, RootItem, Var,
+    Block, Branch, BranchKind, Discipline, DisciplineAttr, DisciplineAttrKind, Domain, Event,
+    Function, FunctionArg, FunctionItem, ItemTree, ItemTreeId, Module, ModuleItem, Nature,
+    NatureAttr, NatureRef, NatureRefKind, Net, Node, Param, Port, RootItem, Var,
 };
 // use tracing::trace;
 use crate::db::HirDefDB;
@@ -309,6 +309,7 @@ impl Ctx {
                 // entity. The genvar `for` loop is unrolled during body lowering, so
                 // there is nothing to lower here.
                 ast::ModuleItem::GenvarDecl(_) => {}
+                ast::ModuleItem::EventDecl(decl) => self.lower_event_decl(decl, dst),
             };
         }
     }
@@ -366,6 +367,16 @@ impl Ctx {
             };
             let fun = self.tree.data.functions.push_and_get_key(fun);
             dst.push(fun.into())
+        }
+    }
+
+    /// VAMS-2023 5.10.4: `event ana_event, dig_event;`
+    fn lower_event_decl(&mut self, decl: ast::EventDecl, dst: &mut Vec<ModuleItem>) {
+        let ast_id = self.source_ast_id_map.ast_id(&decl);
+        for (name_idx, name) in decl.names().enumerate() {
+            let event = Event { name: name.as_name(), name_idx, ast_id };
+            let event = self.tree.data.events.push_and_get_key(event);
+            dst.push(event.into())
         }
     }
 

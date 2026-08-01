@@ -1,0 +1,26 @@
+error: type mismatch: expected named event but found integer variable reference
+   --> /named_events_err.va:15:25
+   |
+15 |         @(timer(1n)) -> not_an_event;
+   |                         ^^^^^^^^^^^^ expected named event
+
+error: type mismatch: expected named event but found integer variable reference
+   --> /named_events_err.va:18:11
+   |
+18 |         @(not_an_event) not_an_event = 1;
+   |           ^^^^^^^^^^^^ expected named event
+
+error: 'missing_event' was not found in the current scope
+   --> /named_events_err.va:21:25
+   |
+21 |         @(timer(1n)) -> missing_event;
+   |                         ^^^^^^^^^^^^^ not found
+
+error: event triggers are not allowed in analog block
+   --> /named_events_err.va:12:9
+   |
+12 |         -> ana_event;
+   |         ------------- not allowed here
+   |
+   = help: in an analog block an event may only be triggered from an event statement such as '@(timer(1n)) -> ev;'
+

@@ -1,0 +1,33 @@
+// VAMS-2023 5.10.4 (Mantis 7809): declaring, triggering and detecting analog
+// named events.
+module named_events;
+    parameter real period = 1e-9;
+
+    // several events may be declared in one statement
+    event ana_event, other_event;
+    event third_event;
+
+    integer count;
+    real held;
+
+    analog begin
+        count = 0;
+        held = 0.0;
+
+        // triggered from an analog event statement
+        @(timer(period)) -> ana_event;
+
+        @(timer(2.0 * period)) begin
+            -> other_event;
+            -> third_event;
+        end
+
+        // detected in the analog block
+        @(ana_event) count = count + 1;
+        @(other_event) held = period;
+        @(third_event) begin
+            count = count + 1;
+            held = 2.0 * period;
+        end
+    end
+endmodule

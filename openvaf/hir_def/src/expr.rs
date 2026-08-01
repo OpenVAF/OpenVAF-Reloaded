@@ -164,6 +164,11 @@ pub enum Stmt {
         discr: ExprId,
         case_arms: Vec<Case>,
     }, // TODO lint on unreachable
+    /// VAMS-2023 5.10.4: `-> event_identifier;`. `event` is the path expression
+    /// naming the event so it is resolved like any other reference.
+    EventTrigger {
+        event: ExprId,
+    },
     /// VAMS-2023 §5.11 — exit the innermost loop.
     Break,
     /// VAMS-2023 §5.11 — skip to the end of the innermost loop (re-check condition).
@@ -191,6 +196,11 @@ pub enum Event {
     /// A monitored analog event such as `@(cross(...))` / `@(timer(...))`. Variables
     /// assigned inside its body are given cross-timestep retention during lowering.
     Cross,
+    /// A named event (VAMS-2023 5.10.4): `@(ana_event)`. `event` is the path
+    /// expression naming the event.
+    Named {
+        event: ExprId,
+    },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -209,12 +219,13 @@ impl Stmt {
     #[inline]
     pub fn walk_child_exprs(&self, mut f: impl FnMut(ExprId)) {
         match *self {
-            Stmt::Empty
-            | Stmt::Missing
-            | Stmt::Block { .. }
-            | Stmt::EventControl { .. }
-            | Stmt::Break
-            | Stmt::Continue => (),
+            Stmt::Empty | Stmt::Missing | Stmt::Block { .. } | Stmt::Break | Stmt::Continue => (),
+            Stmt::EventControl { ref event, .. } => {
+                if let Event::Named { event } = *event {
+                    f(event)
+                }
+            }
+            Stmt::EventTrigger { event } => f(event),
             Stmt::If { cond: expr, .. }
             | Stmt::ForLoop { cond: expr, .. }
             | Stmt::WhileLoop { cond: expr, .. }
@@ -245,6 +256,7 @@ impl Stmt {
             | Stmt::Assignment { .. }
             | Stmt::Missing
             | Stmt::Empty
+            | Stmt::EventTrigger { .. }
             | Stmt::Break
             | Stmt::Continue
             | Stmt::Return { .. } => (),
