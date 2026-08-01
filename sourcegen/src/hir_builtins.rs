@@ -114,7 +114,7 @@ const BUILTINS: [&str; 28] = [
 
 const PARAM_SYSFUNS: [&str; 6] = ["mfactor", "xposition", "yposition", "angle", "hflip", "vflip"];
 
-const SYSFUNS: [&str; 86] = [
+const SYSFUNS: [&str; 88] = [
     "$display",
     "$strobe",
     "$write",
@@ -188,6 +188,10 @@ const SYSFUNS: [&str; 86] = [
     "$min",
     "$max",
     "$abs",
+    // VAMS-2023 (Mantis 7920): conversion system functions in the analog context.
+    // IEEE 1364 `$rtoi` truncates toward zero; do not alias the rounding `FIcast`.
+    "$rtoi",
+    "$itor",
     "$temperature",
     "$vt",
     "$simparam",
