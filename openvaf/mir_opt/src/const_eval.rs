@@ -87,6 +87,8 @@ pub fn eval_unary(func: &mut Function, op: Opcode, val: Const) -> Option<Value> 
                 Opcode::Acosh => func.dfg.f64const(val.acosh()),
                 Opcode::Atanh => func.dfg.f64const(val.atanh()),
                 Opcode::FIcast => func.dfg.iconst(val.round() as i32),
+                // `$rtoi` / `FItrunc`: truncate toward zero (Rust `as i32`).
+                Opcode::FItrunc => func.dfg.iconst(val as i32),
                 Opcode::FBcast => (val.abs() != 0.0).into(),
                 Opcode::Fneg => func.dfg.f64const(-val),
                 _ => unreachable!("invalid real operation {}", op),

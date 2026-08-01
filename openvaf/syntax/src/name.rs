@@ -491,6 +491,8 @@ pub mod sysfun {
 
         bitstoreal,
         realtobits,
+        rtoi,
+        itor,
 
         dist_chi_square,
         dist_exponential,
