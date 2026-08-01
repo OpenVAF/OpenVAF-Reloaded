@@ -101,7 +101,7 @@ impl<'c1, 'c2> BodyLoweringCtx<'_, 'c1, 'c2> {
             Stmt::Assignment { .. } | Stmt::Expr(_) | Stmt::Contribute { .. } | Stmt::EventTrigger { .. } | Stmt::IndirectContribute { .. } => {}
             Stmt::Break | Stmt::Continue | Stmt::Return { .. } => {}
             Stmt::EventControl { event, body } => {
-                let inner = in_cross || matches!(event, Event::Cross);
+                let inner = in_cross || matches!(event, Event::Cross { .. });
                 self.collect_cross_assigned(body, inner, dst);
             }
             Stmt::Block { body } => {

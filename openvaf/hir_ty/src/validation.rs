@@ -378,6 +378,12 @@ impl Diagnostic for BodyValidationDiagnosticWrapped<'_> {
                     IllegalCtxAccessKind::Builtin { name } => {
                         res.with_message(format!("'{}' is not allowed in {}", name, ctx))
                     }
+                    IllegalCtxAccessKind::EventFun { name } => res
+                        .with_message(format!("event function '{}' is not allowed here", name))
+                        .with_notes(vec![format!(
+                            "help: '{}' may only be used as the event expression of an event control, as in `@({}(...))`",
+                            name, name
+                        )]),
                     IllegalCtxAccessKind::Var(var) => {
                         let name = var.lookup(self.db.upcast()).name(self.db.upcast());
                         let def = var.lookup(self.db.upcast()).ast_ptr(self.db.upcast()).range();

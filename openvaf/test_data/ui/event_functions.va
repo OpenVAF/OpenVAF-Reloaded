@@ -1,0 +1,62 @@
+`include "disciplines.vams"
+
+// VAMS-2023 5.10.3: the analog event functions. Every argument is an
+// `analog_expression`, so all of the forms below -- including the ones whose
+// tolerances are variables rather than constants -- are legal.
+//
+//   5.10.3.1  cross    ( expr [ , dir [ , time_tol [ , expr_tol [ , enable ] ] ] ] )
+//   5.10.3.2  above    ( expr [ , time_tol [ , expr_tol [ , enable ] ] ] )
+//   5.10.3.3  timer    ( start_time [ , period [ , time_tol [ , enable ] ] ] )
+//   5.10.3.4  absdelta ( expr , delta [ , time_tol [ , expr_tol [ , enable ] ] ] )
+module event_functions(d, q);
+    inout d, q;
+    electrical d, q;
+
+    parameter real period = 1e-9;
+    parameter real delta = 0.1;
+
+    integer dir;
+    integer enable;
+    real ttol;
+    real etol;
+    real y;
+
+    analog begin
+        y = 0.0;
+        dir = 1;
+        enable = 1;
+        ttol = 1e-12;
+        etol = 1e-6;
+
+        // cross: all five arities
+        @(cross(V(d) - 0.5)) y = 1.0;
+        @(cross(V(d) - 0.5, +1)) y = 2.0;
+        @(cross(V(d) - 0.5, -1, ttol)) y = 3.0;
+        @(cross(V(d) - 0.5, dir, ttol, etol)) y = 4.0;
+        @(cross(V(d) - 0.5, dir, ttol, etol, enable)) y = 5.0;
+
+        // above: all four arities
+        @(above(V(d) - 2.5)) y = 6.0;
+        @(above(V(d) - 2.5, ttol)) y = 7.0;
+        @(above(V(d) - 2.5, ttol, etol)) y = 8.0;
+        @(above(V(d) - 2.5, ttol, etol, enable)) y = 9.0;
+
+        // timer: all four arities
+        @(timer(0.0)) y = 10.0;
+        @(timer(0.0, period)) y = 11.0;
+        @(timer(0.0, period, ttol)) y = 12.0;
+        @(timer(0.0, period, ttol, enable)) y = 13.0;
+
+        // absdelta: all four arities
+        @(absdelta(V(d), delta)) y = 14.0;
+        @(absdelta(V(d), delta, ttol)) y = 15.0;
+        @(absdelta(V(d), delta, ttol, etol)) y = 16.0;
+        @(absdelta(V(d), delta, ttol, etol, enable)) y = 17.0;
+
+        // integers convert to real where a real is expected, and vice versa
+        @(cross(V(d), 0, 1, 1)) y = 18.0;
+        @(timer(1, 2)) y = 19.0;
+
+        I(q) <+ y;
+    end
+endmodule

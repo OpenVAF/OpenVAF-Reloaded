@@ -1,0 +1,54 @@
+// VAMS-2023 5.10.3: the analog event functions
+//
+//   5.10.3.1  cross    ( expr [ , dir [ , time_tol [ , expr_tol [ , enable ] ] ] ] )
+//   5.10.3.2  above    ( expr [ , time_tol [ , expr_tol [ , enable ] ] ] )
+//   5.10.3.3  timer    ( start_time [ , period [ , time_tol [ , enable ] ] ] )
+//   5.10.3.4  absdelta ( expr , delta [ , time_tol [ , expr_tol [ , enable ] ] ] )
+//
+// Every argument is an `analog_expression`; the tolerances in particular are not
+// required to be constants and the LRM explicitly allows them to change during
+// the simulation. This model computes all of them at run time.
+//
+// The event condition does not take part in scheduling in OpenVAF (the guarded
+// body is always evaluated, see `hir_lower`'s `EventControl`), so the point of
+// this model is that the whole set compiles end to end -- the arguments are what
+// is being checked.
+`include "disciplines.vams"
+
+module vams2023_event_funs(d, q);
+    inout d, q;
+    electrical d, q;
+
+    parameter real thresh = 0.5;
+    parameter real period = 1e-9 from (0.0:inf);
+    parameter real vdelta = 0.1 from (0.0:inf);
+
+    integer dir;
+    integer enable;
+    real ttol;
+    real vtol;
+    real state;
+
+    analog begin
+        // all of these are dynamic expressions, not constants
+        dir = (V(d) > thresh) ? 1 : -1;
+        enable = 1;
+        ttol = period / 100.0;
+        vtol = vdelta / 100.0;
+
+        state = 0.0;
+
+        @(cross(V(d) - thresh, dir, ttol, vtol, enable)) state = state + 1.0;
+        @(above(V(d) - thresh, ttol, vtol, enable)) state = state + 2.0;
+        @(timer(0.0, period, ttol, enable)) state = state + 4.0;
+        @(absdelta(V(d), vdelta, ttol, vtol, enable)) state = state + 8.0;
+
+        // shorter arities of the same four functions
+        @(cross(V(d) - thresh)) state = state + 16.0;
+        @(above(V(d) - thresh)) state = state + 32.0;
+        @(timer(0.0)) state = state + 64.0;
+        @(absdelta(V(d), vdelta)) state = state + 128.0;
+
+        I(q) <+ V(q) - state;
+    end
+endmodule
