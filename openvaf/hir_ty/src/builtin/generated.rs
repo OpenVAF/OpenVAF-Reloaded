@@ -4,7 +4,7 @@ use hir_def::BuiltIn;
 
 use crate::builtin::*;
 
-const BUILTIN_INFO: [BuiltinInfo; 113usize] = [
+const BUILTIN_INFO: [BuiltinInfo; 115usize] = [
     ABS,
     ACOS,
     ACOSH,
@@ -81,6 +81,8 @@ const BUILTIN_INFO: [BuiltinInfo; 113usize] = [
     RDIST_T,
     CLOG2,
     LOG10,
+    RTOI,
+    ITOR,
     TEMPERATURE,
     VT,
     SIMPARAM,

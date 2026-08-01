@@ -1,0 +1,36 @@
+// VAMS-2023 4.5.9 / Table 4-20 (Mantis 7810):
+//
+//   transition ( expr [ , td [ , rise_time [ , fall_time [ , time_tol ] ] ] ] )
+//
+// All five arguments are dynamic expressions, so none of them has to be a
+// constant expression.
+module transition_tolerance;
+    parameter real tr = 1e-9;
+    parameter real tf = 2e-9;
+
+    real level;
+    real speed;
+    real tol;
+    real y1;
+    real y2;
+    real y3;
+    real y4;
+    real y5;
+
+    analog begin
+        level = 1.0;
+        speed = tr;
+        tol = tf / 100.0;
+
+        // all argument counts from one to five are accepted
+        y1 = transition(level);
+        y2 = transition(level, 0.0);
+        y3 = transition(level, 0.0, tr);
+        y4 = transition(level, 0.0, tr, tf);
+        y5 = transition(level, 0.0, tr, tf, tol);
+
+        // and every argument may be a run-time expression, including the
+        // fall time and the time tolerance
+        y1 = transition(level, 0.0, speed, speed * 2.0, speed / 100.0);
+    end
+endmodule

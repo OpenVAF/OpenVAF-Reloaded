@@ -106,14 +106,58 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
             Stmt::ForLoop { init, cond, incr, body } => {
                 self.lower_stmt(init);
-                self.lower_loop(cond, |s| {
-                    s.lower_stmt(body);
-                    s.lower_stmt(incr);
-                });
+                if stmt_has_continue(self.body, body) {
+                    self.lower_for_loop(cond, incr, body);
+                } else {
+                    // No `continue`: keep the classic body→incr→cond shape so MIR for
+                    // ordinary analog for-loops stays unchanged.
+                    self.lower_while_loop_with(cond, |s| {
+                        s.lower_stmt(body);
+                        s.lower_stmt(incr);
+                    });
+                }
             }
-            Stmt::WhileLoop { cond, body } => self.lower_loop(cond, |s| s.lower_stmt(body)),
+            Stmt::WhileLoop { cond, body } => {
+                self.lower_while_loop_with(cond, |s| s.lower_stmt(body))
+            }
             Stmt::Case { discr, case_arms } => self.lower_case(discr, case_arms),
+            Stmt::Break => self.lower_break(),
+            Stmt::Continue => self.lower_continue(),
+            Stmt::Return { value } => self.lower_return(value),
         }
+    }
+
+    fn after_jump(&mut self) {
+        // Terminal jump filled the current block; give any following statements an
+        // unreachable block to lower into (mirrors `$fatal`).
+        let unreachable_bb = self.ctx.create_block();
+        self.ctx.switch_to_block(unreachable_bb);
+        self.ctx.seal_block(unreachable_bb);
+    }
+
+    fn lower_break(&mut self) {
+        let target =
+            self.ctx.loop_stack.last().expect("break validated to be inside a loop").break_to;
+        self.ctx.ins().jump(target);
+        self.after_jump();
+    }
+
+    fn lower_continue(&mut self) {
+        let target =
+            self.ctx.loop_stack.last().expect("continue validated to be inside a loop").continue_to;
+        self.ctx.ins().jump(target);
+        self.after_jump();
+    }
+
+    fn lower_return(&mut self, value: Option<ExprId>) {
+        let fun = self.ctx.function_return.expect("return validated to be inside a function");
+        let exit = self.ctx.function_exit.expect("function exit block");
+        if let Some(value) = value {
+            let val = self.lower_expr(value);
+            self.ctx.def_place(PlaceKind::FunctionReturn(fun), val);
+        }
+        self.ctx.ins().jump(exit);
+        self.after_jump();
     }
 
     fn lower_case(&mut self, discr: ExprId, case_arms: &[Case]) {
@@ -245,7 +289,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
         }
     }
 
-    fn lower_loop(&mut self, cond: ExprId, lower_body: impl FnOnce(&mut Self)) {
+    fn lower_while_loop_with(&mut self, cond: ExprId, lower_body: impl FnOnce(&mut Self)) {
         let loop_cond_head = self.ctx.create_block();
         let loop_body_head = self.ctx.create_block();
         let loop_end = self.ctx.create_block();
@@ -255,15 +299,60 @@ impl BodyLoweringCtx<'_, '_, '_> {
 
         let cond = self.lower_expr(cond);
         self.ctx.ins().br_loop(cond, loop_body_head, loop_end);
+        // Body has only the loop-branch predecessor. Cond/end stay open until after
+        // the body so `continue`/`break` can register additional predecessors.
         self.ctx.seal_block(loop_body_head);
-        self.ctx.seal_block(loop_end);
 
         self.ctx.switch_to_block(loop_body_head);
+        self.ctx
+            .loop_stack
+            .push(crate::ctx::LoopTargets { continue_to: loop_cond_head, break_to: loop_end });
         lower_body(self);
-        self.ctx.ins().jump(loop_cond_head);
+        self.ctx.loop_stack.pop();
+        self.ctx.ensured_sealed();
+        if !self.ctx.func.is_filled() {
+            self.ctx.ins().jump(loop_cond_head);
+        }
 
         self.ctx.seal_block(loop_cond_head);
+        self.ctx.seal_block(loop_end);
+        self.ctx.switch_to_block(loop_end);
+    }
 
+    fn lower_for_loop(&mut self, cond: ExprId, incr: StmtId, body: StmtId) {
+        let loop_cond_head = self.ctx.create_block();
+        let loop_body_head = self.ctx.create_block();
+        let loop_continue = self.ctx.create_block();
+        let loop_end = self.ctx.create_block();
+
+        self.ctx.ins().jump(loop_cond_head);
+        self.ctx.switch_to_block(loop_cond_head);
+
+        let cond = self.lower_expr(cond);
+        self.ctx.ins().br_loop(cond, loop_body_head, loop_end);
+        self.ctx.seal_block(loop_body_head);
+
+        self.ctx.switch_to_block(loop_body_head);
+        self.ctx
+            .loop_stack
+            .push(crate::ctx::LoopTargets { continue_to: loop_continue, break_to: loop_end });
+        self.lower_stmt(body);
+        self.ctx.loop_stack.pop();
+        self.ctx.ensured_sealed();
+        if !self.ctx.func.is_filled() {
+            self.ctx.ins().jump(loop_continue);
+        }
+
+        self.ctx.seal_block(loop_continue);
+        self.ctx.switch_to_block(loop_continue);
+        self.lower_stmt(incr);
+        self.ctx.ensured_sealed();
+        if !self.ctx.func.is_filled() {
+            self.ctx.ins().jump(loop_cond_head);
+        }
+
+        self.ctx.seal_block(loop_cond_head);
+        self.ctx.seal_block(loop_end);
         self.ctx.switch_to_block(loop_end);
     }
 
@@ -402,5 +491,27 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
             (None, None) => unreachable!(),
         };
+    }
+}
+
+fn stmt_has_continue(body: hir::BodyRef<'_>, stmt: StmtId) -> bool {
+    match body.get_stmt(stmt) {
+        Some(Stmt::Continue) => true,
+        Some(Stmt::Block { body: stmts }) => stmts.iter().any(|&s| stmt_has_continue(body, s)),
+        Some(Stmt::If { then_branch, else_branch, .. }) => {
+            stmt_has_continue(body, then_branch) || stmt_has_continue(body, else_branch)
+        }
+        Some(Stmt::WhileLoop { body: b, .. }) | Some(Stmt::EventControl { body: b, .. }) => {
+            stmt_has_continue(body, b)
+        }
+        Some(Stmt::ForLoop { init, incr, body: b, .. }) => {
+            stmt_has_continue(body, init)
+                || stmt_has_continue(body, incr)
+                || stmt_has_continue(body, b)
+        }
+        Some(Stmt::Case { case_arms, .. }) => {
+            case_arms.iter().any(|arm| stmt_has_continue(body, arm.body))
+        }
+        _ => false,
     }
 }

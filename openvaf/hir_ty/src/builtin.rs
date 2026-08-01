@@ -188,6 +188,10 @@ bultins! {
     const fn REAL_MATH_1(Val(Real)) -> Real;
     const fn REAL_MATH_2(Val(Real),Val(Real)) -> Real;
     const fn INT_MATH_1(Val(Integer)) -> Integer;
+    // IEEE 1364 / VAMS-2023 §9.11 conversion system functions.
+    // `$rtoi` truncates toward zero; `$itor` is the integer→real inverse.
+    const fn RTOI(Val(Real)) -> Integer;
+    const fn ITOR(Val(Integer)) -> Real;
 
 
     VT = const {
@@ -262,12 +266,15 @@ bultins! {
     }
 
 
+    // VAMS-2023 4.5.9:
+    //   transition ( expr [ , td [ , rise_time [ , fall_time [ , time_tol ] ] ] ] )
+    // Every argument is a dynamic expression (Table 4-20, Mantis 7810).
     TRANSITION = const {
         fn TRANSITION_NO_ARGS(Val(Real)) -> Real;
         fn TRANSITION_DELAY(Val(Real),Val(Real)) -> Real;
-        fn TRANSITION_DELAY_RISET(Val(Real),Val(Real)) -> Real;
-        fn TRANSITION_DELAY_RISET_FALLT(Val(Real),Val(Real),Val(Real)) -> Real;
-        fn TRANSITION_DELAY_RISET_FALLT_TOL(Val(Real),Val(Real),Val(Real), Val(Real)) -> Real;
+        fn TRANSITION_DELAY_RISET(Val(Real),Val(Real),Val(Real)) -> Real;
+        fn TRANSITION_DELAY_RISET_FALLT(Val(Real),Val(Real),Val(Real),Val(Real)) -> Real;
+        fn TRANSITION_DELAY_RISET_FALLT_TOL(Val(Real),Val(Real),Val(Real),Val(Real),Val(Real)) -> Real;
     }
 
 

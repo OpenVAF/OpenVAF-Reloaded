@@ -58,7 +58,9 @@ pub enum SyntaxKind {
     ANALOG_KW,
     BEGIN_KW,
     BRANCH_KW,
+    BREAK_KW,
     CASE_KW,
+    CONTINUE_KW,
     DEFAULT_KW,
     DISABLE_KW,
     DISCIPLINE_KW,
@@ -85,6 +87,7 @@ pub enum SyntaxKind {
     PARAMETER_KW,
     LOCALPARAM_KW,
     REAL_KW,
+    RETURN_KW,
     STRING_KW,
     WHILE_KW,
     ROOT_KW,
@@ -120,10 +123,12 @@ pub enum SyntaxKind {
     BLOCK_SCOPE,
     BLOCK_STMT,
     BRANCH_DECL,
+    BREAK_STMT,
     CALL,
     CASE,
     CASE_STMT,
     CONSTRAINT,
+    CONTINUE_STMT,
     DIRECTION,
     DISCIPLINE_DECL,
     DISCIPLINE_ATTR,
@@ -158,6 +163,7 @@ pub enum SyntaxKind {
     PORTS,
     PREFIX_EXPR,
     RANGE,
+    RETURN_STMT,
     SELECT_EXPR,
     TYPE,
     VAR,
@@ -174,13 +180,13 @@ use self::SyntaxKind::*;
 impl SyntaxKind {
     pub fn is_keyword(self) -> bool {
         match self {
-            ANALOG_KW | BEGIN_KW | BRANCH_KW | CASE_KW | DEFAULT_KW | DISABLE_KW
-            | DISCIPLINE_KW | ELSE_KW | END_KW | ENDCASE_KW | ENDDISCIPLINE_KW | ENDFUNCTION_KW
-            | ENDMODULE_KW | ENDNATURE_KW | EXCLUDE_KW | FOR_KW | FROM_KW | FUNCTION_KW
-            | GENVAR_KW | IF_KW | INF_KW | INOUT_KW | INPUT_KW | INTEGER_KW | MODULE_KW
-            | NATURE_KW | OUTPUT_KW | PARAMETER_KW | LOCALPARAM_KW | REAL_KW | STRING_KW
-            | WHILE_KW | ROOT_KW | INITIAL_STEP_KW | INITIAL_KW | FINAL_STEP_KW | FINAL_KW
-            | ALIASPARAM_KW | EVENT_KW => true,
+            ANALOG_KW | BEGIN_KW | BRANCH_KW | BREAK_KW | CASE_KW | CONTINUE_KW | DEFAULT_KW
+            | DISABLE_KW | DISCIPLINE_KW | ELSE_KW | END_KW | ENDCASE_KW | ENDDISCIPLINE_KW
+            | ENDFUNCTION_KW | ENDMODULE_KW | ENDNATURE_KW | EXCLUDE_KW | FOR_KW | FROM_KW
+            | FUNCTION_KW | GENVAR_KW | IF_KW | INF_KW | INOUT_KW | INPUT_KW | INTEGER_KW
+            | MODULE_KW | NATURE_KW | OUTPUT_KW | PARAMETER_KW | LOCALPARAM_KW | REAL_KW
+            | RETURN_KW | STRING_KW | WHILE_KW | ROOT_KW | INITIAL_STEP_KW | INITIAL_KW
+            | FINAL_STEP_KW | FINAL_KW | ALIASPARAM_KW | EVENT_KW => true,
             _ => false,
         }
     }
@@ -205,7 +211,9 @@ impl SyntaxKind {
             "analog" => ANALOG_KW,
             "begin" => BEGIN_KW,
             "branch" => BRANCH_KW,
+            "break" => BREAK_KW,
             "case" => CASE_KW,
+            "continue" => CONTINUE_KW,
             "default" => DEFAULT_KW,
             "disable" => DISABLE_KW,
             "discipline" => DISCIPLINE_KW,
@@ -232,6 +240,7 @@ impl SyntaxKind {
             "parameter" => PARAMETER_KW,
             "localparam" => LOCALPARAM_KW,
             "real" => REAL_KW,
+            "return" => RETURN_KW,
             "string" => STRING_KW,
             "while" => WHILE_KW,
             "root" => ROOT_KW,
@@ -333,7 +342,9 @@ impl std::fmt::Display for SyntaxKind {
             Self::ANALOG_KW => "'analog'",
             Self::BEGIN_KW => "'begin'",
             Self::BRANCH_KW => "'branch'",
+            Self::BREAK_KW => "'break'",
             Self::CASE_KW => "'case'",
+            Self::CONTINUE_KW => "'continue'",
             Self::DEFAULT_KW => "'default'",
             Self::DISABLE_KW => "'disable'",
             Self::DISCIPLINE_KW => "'discipline'",
@@ -360,6 +371,7 @@ impl std::fmt::Display for SyntaxKind {
             Self::PARAMETER_KW => "'parameter'",
             Self::LOCALPARAM_KW => "'localparam'",
             Self::REAL_KW => "'real'",
+            Self::RETURN_KW => "'return'",
             Self::STRING_KW => "'string'",
             Self::WHILE_KW => "'while'",
             Self::ROOT_KW => "'root'",
@@ -387,4 +399,4 @@ impl std::fmt::Display for SyntaxKind {
     }
 }
 #[macro_export]
-macro_rules ! T { [;] => { $ crate :: SyntaxKind :: SEMICOLON } ; [,] => { $ crate :: SyntaxKind :: COMMA } ; ['('] => { $ crate :: SyntaxKind :: L_PAREN } ; [')'] => { $ crate :: SyntaxKind :: R_PAREN } ; ['{'] => { $ crate :: SyntaxKind :: L_CURLY } ; ['}'] => { $ crate :: SyntaxKind :: R_CURLY } ; ['['] => { $ crate :: SyntaxKind :: L_BRACK } ; [']'] => { $ crate :: SyntaxKind :: R_BRACK } ; [<] => { $ crate :: SyntaxKind :: L_ANGLE } ; [>] => { $ crate :: SyntaxKind :: R_ANGLE } ; [@] => { $ crate :: SyntaxKind :: AT } ; [#] => { $ crate :: SyntaxKind :: POUND } ; [~] => { $ crate :: SyntaxKind :: TILDE } ; [?] => { $ crate :: SyntaxKind :: QUESTION } ; [$] => { $ crate :: SyntaxKind :: DOLLAR } ; [&] => { $ crate :: SyntaxKind :: AMP } ; [|] => { $ crate :: SyntaxKind :: PIPE } ; [+] => { $ crate :: SyntaxKind :: PLUS } ; [*] => { $ crate :: SyntaxKind :: STAR } ; [/] => { $ crate :: SyntaxKind :: SLASH } ; [^] => { $ crate :: SyntaxKind :: CARET } ; [%] => { $ crate :: SyntaxKind :: PERCENT } ; ["_"] => { $ crate :: SyntaxKind :: UNDERSCORE } ; [.] => { $ crate :: SyntaxKind :: DOT } ; [:] => { $ crate :: SyntaxKind :: COLON } ; [=] => { $ crate :: SyntaxKind :: EQ } ; [==] => { $ crate :: SyntaxKind :: EQ2 } ; [!] => { $ crate :: SyntaxKind :: BANG } ; [!=] => { $ crate :: SyntaxKind :: NEQ } ; [-] => { $ crate :: SyntaxKind :: MINUS } ; [<=] => { $ crate :: SyntaxKind :: LTEQ } ; [>=] => { $ crate :: SyntaxKind :: GTEQ } ; [&&] => { $ crate :: SyntaxKind :: AMP2 } ; [||] => { $ crate :: SyntaxKind :: PIPE2 } ; [<<<] => { $ crate :: SyntaxKind :: ASHL } ; [>>>] => { $ crate :: SyntaxKind :: ASHR } ; [<<] => { $ crate :: SyntaxKind :: SHL } ; [>>] => { $ crate :: SyntaxKind :: SHR } ; ["(*"] => { $ crate :: SyntaxKind :: L_ATTR_PAREN } ; ["*)"] => { $ crate :: SyntaxKind :: R_ATTR_PAREN } ; ["'{"] => { $ crate :: SyntaxKind :: ARR_START } ; [<+] => { $ crate :: SyntaxKind :: CONTR } ; [->] => { $ crate :: SyntaxKind :: TRIGGER } ; [**] => { $ crate :: SyntaxKind :: POW } ; [~^] => { $ crate :: SyntaxKind :: L_NXOR } ; [^~] => { $ crate :: SyntaxKind :: R_NXOR } ; [analog] => { $ crate :: SyntaxKind :: ANALOG_KW } ; [begin] => { $ crate :: SyntaxKind :: BEGIN_KW } ; [branch] => { $ crate :: SyntaxKind :: BRANCH_KW } ; [case] => { $ crate :: SyntaxKind :: CASE_KW } ; [default] => { $ crate :: SyntaxKind :: DEFAULT_KW } ; [disable] => { $ crate :: SyntaxKind :: DISABLE_KW } ; [discipline] => { $ crate :: SyntaxKind :: DISCIPLINE_KW } ; [else] => { $ crate :: SyntaxKind :: ELSE_KW } ; [end] => { $ crate :: SyntaxKind :: END_KW } ; [endcase] => { $ crate :: SyntaxKind :: ENDCASE_KW } ; [enddiscipline] => { $ crate :: SyntaxKind :: ENDDISCIPLINE_KW } ; [endfunction] => { $ crate :: SyntaxKind :: ENDFUNCTION_KW } ; [endmodule] => { $ crate :: SyntaxKind :: ENDMODULE_KW } ; [endnature] => { $ crate :: SyntaxKind :: ENDNATURE_KW } ; [exclude] => { $ crate :: SyntaxKind :: EXCLUDE_KW } ; [for] => { $ crate :: SyntaxKind :: FOR_KW } ; [from] => { $ crate :: SyntaxKind :: FROM_KW } ; [function] => { $ crate :: SyntaxKind :: FUNCTION_KW } ; [genvar] => { $ crate :: SyntaxKind :: GENVAR_KW } ; [if] => { $ crate :: SyntaxKind :: IF_KW } ; [inf] => { $ crate :: SyntaxKind :: INF_KW } ; [inout] => { $ crate :: SyntaxKind :: INOUT_KW } ; [input] => { $ crate :: SyntaxKind :: INPUT_KW } ; [integer] => { $ crate :: SyntaxKind :: INTEGER_KW } ; [module] => { $ crate :: SyntaxKind :: MODULE_KW } ; [nature] => { $ crate :: SyntaxKind :: NATURE_KW } ; [output] => { $ crate :: SyntaxKind :: OUTPUT_KW } ; [parameter] => { $ crate :: SyntaxKind :: PARAMETER_KW } ; [localparam] => { $ crate :: SyntaxKind :: LOCALPARAM_KW } ; [real] => { $ crate :: SyntaxKind :: REAL_KW } ; [string] => { $ crate :: SyntaxKind :: STRING_KW } ; [while] => { $ crate :: SyntaxKind :: WHILE_KW } ; [root] => { $ crate :: SyntaxKind :: ROOT_KW } ; [initial_step] => { $ crate :: SyntaxKind :: INITIAL_STEP_KW } ; [initial] => { $ crate :: SyntaxKind :: INITIAL_KW } ; [final_step] => { $ crate :: SyntaxKind :: FINAL_STEP_KW } ; [final] => { $ crate :: SyntaxKind :: FINAL_KW } ; [aliasparam] => { $ crate :: SyntaxKind :: ALIASPARAM_KW } ; [event] => { $ crate :: SyntaxKind :: EVENT_KW } ; [ident] => { $ crate :: SyntaxKind :: IDENT } ; [net_type] => { $ crate :: SyntaxKind :: NET_TYPE } ; [sysfun] => { $ crate :: SyntaxKind :: SYSFUN } ; }
+macro_rules ! T { [;] => { $ crate :: SyntaxKind :: SEMICOLON } ; [,] => { $ crate :: SyntaxKind :: COMMA } ; ['('] => { $ crate :: SyntaxKind :: L_PAREN } ; [')'] => { $ crate :: SyntaxKind :: R_PAREN } ; ['{'] => { $ crate :: SyntaxKind :: L_CURLY } ; ['}'] => { $ crate :: SyntaxKind :: R_CURLY } ; ['['] => { $ crate :: SyntaxKind :: L_BRACK } ; [']'] => { $ crate :: SyntaxKind :: R_BRACK } ; [<] => { $ crate :: SyntaxKind :: L_ANGLE } ; [>] => { $ crate :: SyntaxKind :: R_ANGLE } ; [@] => { $ crate :: SyntaxKind :: AT } ; [#] => { $ crate :: SyntaxKind :: POUND } ; [~] => { $ crate :: SyntaxKind :: TILDE } ; [?] => { $ crate :: SyntaxKind :: QUESTION } ; [$] => { $ crate :: SyntaxKind :: DOLLAR } ; [&] => { $ crate :: SyntaxKind :: AMP } ; [|] => { $ crate :: SyntaxKind :: PIPE } ; [+] => { $ crate :: SyntaxKind :: PLUS } ; [*] => { $ crate :: SyntaxKind :: STAR } ; [/] => { $ crate :: SyntaxKind :: SLASH } ; [^] => { $ crate :: SyntaxKind :: CARET } ; [%] => { $ crate :: SyntaxKind :: PERCENT } ; ["_"] => { $ crate :: SyntaxKind :: UNDERSCORE } ; [.] => { $ crate :: SyntaxKind :: DOT } ; [:] => { $ crate :: SyntaxKind :: COLON } ; [=] => { $ crate :: SyntaxKind :: EQ } ; [==] => { $ crate :: SyntaxKind :: EQ2 } ; [!] => { $ crate :: SyntaxKind :: BANG } ; [!=] => { $ crate :: SyntaxKind :: NEQ } ; [-] => { $ crate :: SyntaxKind :: MINUS } ; [<=] => { $ crate :: SyntaxKind :: LTEQ } ; [>=] => { $ crate :: SyntaxKind :: GTEQ } ; [&&] => { $ crate :: SyntaxKind :: AMP2 } ; [||] => { $ crate :: SyntaxKind :: PIPE2 } ; [<<<] => { $ crate :: SyntaxKind :: ASHL } ; [>>>] => { $ crate :: SyntaxKind :: ASHR } ; [<<] => { $ crate :: SyntaxKind :: SHL } ; [>>] => { $ crate :: SyntaxKind :: SHR } ; ["(*"] => { $ crate :: SyntaxKind :: L_ATTR_PAREN } ; ["*)"] => { $ crate :: SyntaxKind :: R_ATTR_PAREN } ; ["'{"] => { $ crate :: SyntaxKind :: ARR_START } ; [<+] => { $ crate :: SyntaxKind :: CONTR } ; [->] => { $ crate :: SyntaxKind :: TRIGGER } ; [**] => { $ crate :: SyntaxKind :: POW } ; [~^] => { $ crate :: SyntaxKind :: L_NXOR } ; [^~] => { $ crate :: SyntaxKind :: R_NXOR } ; [analog] => { $ crate :: SyntaxKind :: ANALOG_KW } ; [begin] => { $ crate :: SyntaxKind :: BEGIN_KW } ; [branch] => { $ crate :: SyntaxKind :: BRANCH_KW } ; [break] => { $ crate :: SyntaxKind :: BREAK_KW } ; [case] => { $ crate :: SyntaxKind :: CASE_KW } ; [continue] => { $ crate :: SyntaxKind :: CONTINUE_KW } ; [default] => { $ crate :: SyntaxKind :: DEFAULT_KW } ; [disable] => { $ crate :: SyntaxKind :: DISABLE_KW } ; [discipline] => { $ crate :: SyntaxKind :: DISCIPLINE_KW } ; [else] => { $ crate :: SyntaxKind :: ELSE_KW } ; [end] => { $ crate :: SyntaxKind :: END_KW } ; [endcase] => { $ crate :: SyntaxKind :: ENDCASE_KW } ; [enddiscipline] => { $ crate :: SyntaxKind :: ENDDISCIPLINE_KW } ; [endfunction] => { $ crate :: SyntaxKind :: ENDFUNCTION_KW } ; [endmodule] => { $ crate :: SyntaxKind :: ENDMODULE_KW } ; [endnature] => { $ crate :: SyntaxKind :: ENDNATURE_KW } ; [exclude] => { $ crate :: SyntaxKind :: EXCLUDE_KW } ; [for] => { $ crate :: SyntaxKind :: FOR_KW } ; [from] => { $ crate :: SyntaxKind :: FROM_KW } ; [function] => { $ crate :: SyntaxKind :: FUNCTION_KW } ; [genvar] => { $ crate :: SyntaxKind :: GENVAR_KW } ; [if] => { $ crate :: SyntaxKind :: IF_KW } ; [inf] => { $ crate :: SyntaxKind :: INF_KW } ; [inout] => { $ crate :: SyntaxKind :: INOUT_KW } ; [input] => { $ crate :: SyntaxKind :: INPUT_KW } ; [integer] => { $ crate :: SyntaxKind :: INTEGER_KW } ; [module] => { $ crate :: SyntaxKind :: MODULE_KW } ; [nature] => { $ crate :: SyntaxKind :: NATURE_KW } ; [output] => { $ crate :: SyntaxKind :: OUTPUT_KW } ; [parameter] => { $ crate :: SyntaxKind :: PARAMETER_KW } ; [localparam] => { $ crate :: SyntaxKind :: LOCALPARAM_KW } ; [real] => { $ crate :: SyntaxKind :: REAL_KW } ; [return] => { $ crate :: SyntaxKind :: RETURN_KW } ; [string] => { $ crate :: SyntaxKind :: STRING_KW } ; [while] => { $ crate :: SyntaxKind :: WHILE_KW } ; [root] => { $ crate :: SyntaxKind :: ROOT_KW } ; [initial_step] => { $ crate :: SyntaxKind :: INITIAL_STEP_KW } ; [initial] => { $ crate :: SyntaxKind :: INITIAL_KW } ; [final_step] => { $ crate :: SyntaxKind :: FINAL_STEP_KW } ; [final] => { $ crate :: SyntaxKind :: FINAL_KW } ; [aliasparam] => { $ crate :: SyntaxKind :: ALIASPARAM_KW } ; [event] => { $ crate :: SyntaxKind :: EVENT_KW } ; [ident] => { $ crate :: SyntaxKind :: IDENT } ; [net_type] => { $ crate :: SyntaxKind :: NET_TYPE } ; [sysfun] => { $ crate :: SyntaxKind :: SYSFUN } ; }

@@ -1,0 +1,2 @@
+
+$display("at %s:%d", "/macro_expansion_test.va", 2);

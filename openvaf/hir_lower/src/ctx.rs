@@ -35,6 +35,21 @@ pub struct LoweringCtx<'a, 'c> {
     /// there are their initial value (read from the retained state), not a
     /// per-evaluation reset.
     pub in_initial_step: bool,
+    /// Stack of enclosing loops for `break`/`continue` (innermost last).
+    pub loop_stack: Vec<LoopTargets>,
+    /// Exit block of the analog function currently being lowered, if any.
+    pub function_exit: Option<Block>,
+    /// Function whose return place early `return` statements write into.
+    pub function_return: Option<hir::Function>,
+}
+
+/// CFG targets for the innermost enclosing loop.
+#[derive(Clone, Copy)]
+pub struct LoopTargets {
+    /// Where `continue` jumps (condition head for while; incr head for for).
+    pub continue_to: Block,
+    /// Where `break` jumps.
+    pub break_to: Block,
 }
 
 /// Synthetic constant base used as the (non-parameter) `lim_state` key for retained
@@ -59,6 +74,9 @@ impl<'a, 'c> LoweringCtx<'a, 'c> {
             num_noise_sources: 0,
             retained_states: AHashMap::default(),
             in_initial_step: false,
+            loop_stack: Vec::new(),
+            function_exit: None,
+            function_return: None,
         }
     }
 

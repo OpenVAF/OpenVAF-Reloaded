@@ -169,6 +169,14 @@ pub enum Stmt {
     EventTrigger {
         event: ExprId,
     },
+    /// VAMS-2023 §5.11 — exit the innermost loop.
+    Break,
+    /// VAMS-2023 §5.11 — skip to the end of the innermost loop (re-check condition).
+    Continue,
+    /// VAMS-2023 §5.11 / §4.7.2.2 — early exit from an analog user-defined function.
+    Return {
+        value: Option<ExprId>,
+    },
 }
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone, Copy)]
@@ -211,7 +219,7 @@ impl Stmt {
     #[inline]
     pub fn walk_child_exprs(&self, mut f: impl FnMut(ExprId)) {
         match *self {
-            Stmt::Empty | Stmt::Missing | Stmt::Block { .. } => (),
+            Stmt::Empty | Stmt::Missing | Stmt::Block { .. } | Stmt::Break | Stmt::Continue => (),
             Stmt::EventControl { ref event, .. } => {
                 if let Event::Named { event } = *event {
                     f(event)
@@ -222,6 +230,8 @@ impl Stmt {
             | Stmt::ForLoop { cond: expr, .. }
             | Stmt::WhileLoop { cond: expr, .. }
             | Stmt::Expr(expr) => f(expr),
+            Stmt::Return { value: Some(expr) } => f(expr),
+            Stmt::Return { value: None } => (),
             Stmt::Assignment { dst, val, .. } => {
                 f(dst);
                 f(val)
@@ -246,7 +256,10 @@ impl Stmt {
             | Stmt::Assignment { .. }
             | Stmt::Missing
             | Stmt::Empty
-            | Stmt::EventTrigger { .. } => (),
+            | Stmt::EventTrigger { .. }
+            | Stmt::Break
+            | Stmt::Continue
+            | Stmt::Return { .. } => (),
             Stmt::WhileLoop { body, .. } | Stmt::EventControl { body, .. } => f(body),
             Stmt::If { then_branch: true_stmt, else_branch: false_stmt, .. } => {
                 f(true_stmt);

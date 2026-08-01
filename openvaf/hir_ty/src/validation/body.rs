@@ -13,7 +13,6 @@ use syntax::name::{AsIdent, Name};
 use crate::builtin::{
     ABSDELAY_MAX, DDT_TOL, IDT_IC_ASSERT_TOL, NATURE_ACCESS_BRANCH, NATURE_ACCESS_NODES,
     NATURE_ACCESS_NODE_GND, NATURE_ACCESS_PORT_FLOW, NOISE_TABLE_INLINE, NOISE_TABLE_INLINE_NAME,
-    TRANSITION_DELAY_RISET_FALLT_TOL,
 };
 use crate::db::HirTyDB;
 use crate::inference::{BranchWrite, InferenceResult, ResolvedFun};
@@ -103,6 +102,43 @@ pub enum BodyValidationDiagnostic {
         node1: NodeId,
         node2: NodeId,
     },
+
+    /// `break`/`continue` outside any loop (VAMS-2023 §5.11).
+    JumpOutsideLoop {
+        stmt: StmtId,
+        kind: JumpKind,
+    },
+
+    /// `break`/`continue` inside an analog `for` loop (VAMS-2023 §5.11 / §5.9.3).
+    JumpInAnalogFor {
+        stmt: StmtId,
+        kind: JumpKind,
+    },
+
+    /// `return` outside an analog user-defined function (VAMS-2023 §5.11).
+    ReturnOutsideFunction {
+        stmt: StmtId,
+    },
+
+    /// `return;` without a value in a function that returns a value (VAMS-2023 §5.11).
+    MissingReturnValue {
+        stmt: StmtId,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JumpKind {
+    Break,
+    Continue,
+}
+
+impl JumpKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JumpKind::Break => "break",
+            JumpKind::Continue => "continue",
+        }
+    }
 }
 
 impl BodyValidationDiagnostic {
@@ -133,6 +169,7 @@ impl BodyValidationDiagnostic {
             non_const_dominator: Box::default(),
             non_trivial_branches: HashSet::default(),
             trivial_probes: HashMap::default(),
+            loop_stack: Vec::new(),
         };
 
         for stmt in &*body.entry_stmts {
@@ -213,6 +250,14 @@ struct BodyValidator<'a> {
     non_const_dominator: Box<[ExprId]>,
     non_trivial_branches: HashSet<BranchWrite>,
     trivial_probes: HashMap<BranchWrite, Vec<(StmtId, ExprId)>>,
+    /// Innermost loop first... actually push on enter so last is innermost.
+    loop_stack: Vec<LoopKind>,
+}
+
+#[derive(Clone, Copy)]
+enum LoopKind {
+    While,
+    For,
 }
 
 impl BodyValidator<'_> {
@@ -265,15 +310,61 @@ impl BodyValidator<'_> {
                 return;
             }
 
-            Stmt::If { cond, .. }
-            | Stmt::ForLoop { cond, .. }
-            | Stmt::WhileLoop { cond, .. }
-            | Stmt::Case { discr: cond, .. } => cond,
+            Stmt::Break => {
+                self.validate_jump(stmt, JumpKind::Break);
+                return;
+            }
+            Stmt::Continue => {
+                self.validate_jump(stmt, JumpKind::Continue);
+                return;
+            }
+            Stmt::Return { value } => {
+                if !matches!(self.owner, DefWithBodyId::FunctionId(_)) {
+                    self.diagnostics.push(BodyValidationDiagnostic::ReturnOutsideFunction { stmt });
+                } else if value.is_none() {
+                    self.diagnostics.push(BodyValidationDiagnostic::MissingReturnValue { stmt });
+                }
+                if let Some(value) = value {
+                    self.validate_expr(value, stmt);
+                }
+                return;
+            }
+
+            Stmt::WhileLoop { cond, body, .. } => {
+                self.validate_condition(cond, stmt, |s| {
+                    s.loop_stack.push(LoopKind::While);
+                    s.validate_stmt(body);
+                    s.loop_stack.pop();
+                });
+                return;
+            }
+            Stmt::ForLoop { cond, .. } => {
+                self.validate_condition(cond, stmt, |s| {
+                    s.loop_stack.push(LoopKind::For);
+                    s.body.stmts[stmt].walk_child_stmts(|child| s.validate_stmt(child));
+                    s.loop_stack.pop();
+                });
+                return;
+            }
+
+            Stmt::If { cond, .. } | Stmt::Case { discr: cond, .. } => cond,
         };
 
         self.validate_condition(cond, stmt, |s| {
             s.body.stmts[stmt].walk_child_stmts(|stmt| s.validate_stmt(stmt))
         });
+    }
+
+    fn validate_jump(&mut self, stmt: StmtId, kind: JumpKind) {
+        match self.loop_stack.last() {
+            None => {
+                self.diagnostics.push(BodyValidationDiagnostic::JumpOutsideLoop { stmt, kind });
+            }
+            Some(LoopKind::For) => {
+                self.diagnostics.push(BodyValidationDiagnostic::JumpInAnalogFor { stmt, kind });
+            }
+            Some(LoopKind::While) => {}
+        }
     }
 
     fn validate_condition(
@@ -748,8 +839,11 @@ impl ExprValidator<'_, '_> {
                 }
             }
 
+            // NOTE: `transition` is deliberately absent. VAMS-2023 Table 4-20
+            // (Mantis 7810) lists all of its arguments - including `time_tol` -
+            // as dynamic expressions; only `absdelay`'s `maxdelay`, `ddt`'s and
+            // `idt`/`idtmod`'s `abstol` are still constant expressions.
             (BuiltIn::absdelay, Some(ABSDELAY_MAX))
-            | (BuiltIn::transition, Some(TRANSITION_DELAY_RISET_FALLT_TOL))
             | (BuiltIn::ddt, Some(DDT_TOL))
             | (BuiltIn::idt | BuiltIn::idtmod, Some(IDT_IC_ASSERT_TOL)) => {
                 if let [other_args @ .., const_expr] = args {
