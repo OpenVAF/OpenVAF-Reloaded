@@ -270,6 +270,59 @@ impl Diagnostic for PreprocessorDiagnostic {
                     },
                 ])
             }
+            PreprocessorDiagnostic::UnknownKeywordVersion { span, .. } => {
+                let span = span.to_file_span(&sm);
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: span.file,
+                        range: span.range.into(),
+                        message: "unknown version specifier".to_owned(),
+                    }])
+                    .with_notes(vec![format!(
+                        "expected one of {}",
+                        syntax::KeywordSet::VERSION_SPECIFIERS
+                            .iter()
+                            .map(|specifier| format!("\"{specifier}\""))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )])
+            }
+            PreprocessorDiagnostic::UnmatchedEndKeywords { span } => {
+                let span = span.to_file_span(&sm);
+                Report::error().with_labels(vec![Label {
+                    style: LabelStyle::Primary,
+                    file_id: span.file,
+                    range: span.range.into(),
+                    message: "no keyword set is active here".to_owned(),
+                }])
+            }
+            PreprocessorDiagnostic::UnterminatedKeywords { span } => {
+                let span = span.to_file_span(&sm);
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: span.file,
+                        range: span.range.into(),
+                        message: "keyword set is opened here".to_owned(),
+                    }])
+                    .with_notes(vec![
+                        "add '`end_keywords' to restore the default keywords".to_owned()
+                    ])
+            }
+            PreprocessorDiagnostic::KeywordsInDesignElement { span, .. } => {
+                let span = span.to_file_span(&sm);
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: span.file,
+                        range: span.range.into(),
+                        message: "directive is used inside a module".to_owned(),
+                    }])
+                    .with_notes(vec![
+                        "keyword directives may only appear outside of design elements".to_owned(),
+                    ])
+            }
         };
 
         report.with_message(self.to_string())
