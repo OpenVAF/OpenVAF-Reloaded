@@ -4,7 +4,7 @@ use hir_def::BuiltIn;
 
 use crate::builtin::*;
 
-const BUILTIN_INFO: [BuiltinInfo; 115usize] = [
+const BUILTIN_INFO: [BuiltinInfo; 119usize] = [
     ABS,
     ACOS,
     ACOSH,
@@ -120,5 +120,9 @@ const BUILTIN_INFO: [BuiltinInfo; 115usize] = [
     LAST_CROSSING,
     SLEW,
     TRANSITION,
+    CROSS,
+    ABOVE,
+    TIMER,
+    ABSDELTA,
 ];
 pub(crate) fn builtin_info(builtin: BuiltIn) -> BuiltinInfo { BUILTIN_INFO[builtin as u8 as usize] }
