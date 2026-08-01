@@ -796,6 +796,7 @@ impl<'a, 'u> DerivativeBuilder<'a, 'u> {
             | Opcode::FBcast
             | Opcode::BFcast
             | Opcode::FIcast
+            | Opcode::FItrunc
             | Opcode::Irem
             | Opcode::Inot
             | Opcode::Ixor

@@ -1,0 +1,21 @@
+// VAMS-2023 (Mantis 7920): `$rtoi` / `$itor` in the analog context.
+//
+// IEEE 1364 `$rtoi` truncates toward zero. OpenVAF's language real→integer
+// cast (`FIcast`) rounds, so these literals must lower to `fitrunc` and fold
+// to truncated integers — never to the rounded values 2 / -2.
+module test;
+    parameter real rx = 1.9;
+    parameter real ry = -1.9;
+    parameter integer ix = 7;
+    real a;
+    integer b, c, d;
+    analog begin
+        // Non-const params keep `fitrunc` / `ifcast` visible in MIR.
+        b = $rtoi(rx);
+        c = $rtoi(ry);
+        a = $itor(ix);
+
+        // Literals exercise const-fold truncation (1.9 → 1, -1.9 → -1).
+        d = $rtoi(1.9) + $rtoi(-1.9);
+    end
+endmodule

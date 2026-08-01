@@ -541,6 +541,18 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 self.ctx.ins().ceil(arg0)
             }
 
+            // `$rtoi`: IEEE 1364 truncates toward zero. Must not reuse `FIcast`,
+            // which rounds (language real→integer conversion / `llvm.lround`).
+            BuiltIn::rtoi => {
+                let arg0 = self.lower_expr(args[0]);
+                self.ctx.ins().fitrunc(arg0)
+            }
+            // `$itor`: integer→real; same semantics as the language `IFcast`.
+            BuiltIn::itor => {
+                let arg0 = self.lower_expr(args[0]);
+                self.ctx.ins().ifcast(arg0)
+            }
+
             BuiltIn::max => {
                 let comparison = match_signature!(signature: MAX_REAL => InstBuilder::fgt, MAX_INT => InstBuilder::igt);
                 let arg0 = self.lower_expr(args[0]);
