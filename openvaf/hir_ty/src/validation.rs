@@ -502,6 +502,68 @@ impl Diagnostic for BodyValidationDiagnosticWrapped<'_> {
 
                 res
             }
+            BodyValidationDiagnostic::JumpOutsideLoop { stmt, kind } => {
+                let FileSpan { range, file } = self.parse.to_file_span(
+                    self.body_sm.stmt_map_back[stmt].as_ref().unwrap().range(),
+                    self.sm,
+                );
+                Report::error()
+                    .with_message(format!("'{}' can only be used inside a loop", kind.as_str()))
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: "not inside a loop".to_owned(),
+                    }])
+            }
+            BodyValidationDiagnostic::JumpInAnalogFor { stmt, kind } => {
+                let FileSpan { range, file } = self.parse.to_file_span(
+                    self.body_sm.stmt_map_back[stmt].as_ref().unwrap().range(),
+                    self.sm,
+                );
+                Report::error()
+                    .with_message(format!(
+                        "'{}' cannot be used inside an analog for loop",
+                        kind.as_str()
+                    ))
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: "not allowed in analog for".to_owned(),
+                    }])
+                    .with_notes(
+                        vec!["help: use a while loop if you need break/continue".to_owned()],
+                    )
+            }
+            BodyValidationDiagnostic::ReturnOutsideFunction { stmt } => {
+                let FileSpan { range, file } = self.parse.to_file_span(
+                    self.body_sm.stmt_map_back[stmt].as_ref().unwrap().range(),
+                    self.sm,
+                );
+                Report::error()
+                    .with_message("'return' can only be used in an analog user-defined function")
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: "not inside a function".to_owned(),
+                    }])
+            }
+            BodyValidationDiagnostic::MissingReturnValue { stmt } => {
+                let FileSpan { range, file } = self.parse.to_file_span(
+                    self.body_sm.stmt_map_back[stmt].as_ref().unwrap().range(),
+                    self.sm,
+                );
+                Report::error()
+                    .with_message("'return' requires an expression of the function return type")
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: "missing return value".to_owned(),
+                    }])
+            }
         }
     }
 

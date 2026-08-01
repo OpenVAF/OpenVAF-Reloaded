@@ -99,6 +99,7 @@ impl<'c1, 'c2> BodyLoweringCtx<'_, 'c1, 'c2> {
                 _ => {}
             },
             Stmt::Assignment { .. } | Stmt::Expr(_) | Stmt::Contribute { .. } => {}
+            Stmt::Break | Stmt::Continue | Stmt::Return { .. } => {}
             Stmt::EventControl { event, body } => {
                 let inner = in_cross || matches!(event, Event::Cross);
                 self.collect_cross_assigned(body, inner, dst);
