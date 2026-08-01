@@ -212,15 +212,21 @@ fn parse_macro_token<'a>(
     }
 
     if p.at(PreprocessorToken::CompilerDirective) {
-        if p.compiler_directive() == CompilerDirective::Macro {
-            let (call, range) = parse_macro_call(p, err, args, sm, end);
-            dst.push(ParsedToken { range, kind: ParsedTokenKind::MacroCall(call) });
-        } else {
-            // TODO nicer error?
-            err.push(PreprocessorDiagnostic::UnexpectedToken(CtxSpan {
-                ctx: p.ctx,
-                range: p.current_range(),
-            }))
+        match p.compiler_directive() {
+            // `` `__FILE__ `` / `` `__LINE__ `` must be stored like macros so they
+            // expand at the call site of the enclosing `` `define ``. Treating them
+            // as unexpected without bumping the parser would spin forever.
+            CompilerDirective::Macro | CompilerDirective::File | CompilerDirective::Line => {
+                let (call, range) = parse_macro_call(p, err, args, sm, end);
+                dst.push(ParsedToken { range, kind: ParsedTokenKind::MacroCall(call) });
+            }
+            _ => {
+                err.push(PreprocessorDiagnostic::UnexpectedToken(CtxSpan {
+                    ctx: p.ctx,
+                    range: p.current_range(),
+                }));
+                p.bump();
+            }
         }
         return;
     }
