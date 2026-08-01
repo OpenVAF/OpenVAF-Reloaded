@@ -3,8 +3,8 @@ use std::mem::replace;
 use ahash::{HashMap, HashSet};
 use hir_def::body::Body;
 use hir_def::{
-    BranchId, BuiltIn, DefWithBodyId, DisciplineId, Expr, ExprId, FunctionArgLoc, Literal, Lookup,
-    ModuleBodyKind, NatureId, NodeId, ParamId, Path, Stmt, StmtId, VarId,
+    expr::Event, BranchId, BuiltIn, DefWithBodyId, DisciplineId, Expr, ExprId, FunctionArgLoc,
+    Literal, Lookup, ModuleBodyKind, NatureId, NodeId, ParamId, Path, Stmt, StmtId, VarId,
 };
 use stdx::impl_display;
 use syntax::ast::AssignOp;
@@ -19,11 +19,13 @@ use crate::inference::{BranchWrite, InferenceResult, ResolvedFun};
 use crate::lower::BranchKind;
 use crate::types::{Signature, Ty};
 
+// `EventFun` is an analog event function used outside `@(...)` (VAMS-2023 5.10.3).
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum IllegalCtxAccessKind {
     NatureAccess,
     AnalogOperator { name: Name, is_standard: bool, non_const_dominator: Box<[ExprId]> },
     AnalysisFun { name: Name },
+    EventFun { name: Name },
     Var(VarId),
 }
 
@@ -166,6 +168,7 @@ impl BodyValidationDiagnostic {
             diagnostics: Vec::new(),
             ctx,
             in_event_control: false,
+            event_call: None,
             non_const_dominator: Box::default(),
             non_trivial_branches: HashSet::default(),
             trivial_probes: HashMap::default(),
@@ -247,6 +250,10 @@ struct BodyValidator<'a> {
     /// Whether the statement being validated is (transitively) the body of an
     /// event control. Unlike `ctx` this survives entering a conditional.
     in_event_control: bool,
+    /// The event-function call an event control is currently being validated for.
+    /// An event function is legal at exactly this expression and nowhere else
+    /// (VAMS-2023 5.10.3), so a nested `@(cross(cross(...)))` is still rejected.
+    event_call: Option<ExprId>,
     non_const_dominator: Box<[ExprId]>,
     non_trivial_branches: HashSet<BranchWrite>,
     trivial_probes: HashMap<BranchWrite, Vec<(StmtId, ExprId)>>,
@@ -279,9 +286,20 @@ impl BodyValidator<'_> {
 
                 return;
             }
-            Stmt::EventControl { body, .. } => {
+            Stmt::EventControl { ref event, body } => {
+                let call = match *event {
+                    Event::Cross { call } => call,
+                    _ => None,
+                };
                 let old = replace(&mut self.ctx, BodyCtx::EventControl);
                 let old_event = replace(&mut self.in_event_control, true);
+                // The event expression is validated in the event context too: it may
+                // read natures (`@(cross(V(a)))`) but not use analog operators.
+                if let Some(call) = call {
+                    let old_call = replace(&mut self.event_call, Some(call));
+                    self.validate_expr(call, stmt);
+                    self.event_call = old_call;
+                }
                 self.validate_stmt(body);
                 self.in_event_control = old_event;
                 self.ctx = old;
@@ -699,6 +717,19 @@ impl ExprValidator<'_, '_> {
                     },
                     expr,
                     self.parent.ctx.allow_analog_operator(),
+                )
+            }
+
+            // VAMS-2023 5.10.3: event functions are not expressions; they may only
+            // appear as the event expression of an event control.
+            _ if call.is_event_fun() => {
+                let allowed = self.parent.event_call == Some(expr);
+                self.check_access(
+                    |_| IllegalCtxAccessKind::EventFun {
+                        name: name.as_ref().and_then(|p| p.as_ident()).unwrap(),
+                    },
+                    expr,
+                    allowed,
                 )
             }
 

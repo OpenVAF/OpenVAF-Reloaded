@@ -183,6 +183,12 @@ impl Ctx<'_> {
                     self.expect::<false>(event, None, ty, Cow::Borrowed(&[TyRequirement::Event]));
                 }
             }
+            // VAMS-2023 5.10.3: `@(cross(...))` and friends. Inferring the call
+            // checks the event function's arguments; the result is discarded
+            // because the event expression is never lowered.
+            Stmt::EventControl { event: Event::Cross { call: Some(call) }, .. } => {
+                self.infere_expr(stmt, call);
+            }
             Stmt::Return { value: Some(value) } => {
                 let dst_ty = self.fn_return_ty.clone();
                 self.infere_assignment(stmt, value, dst_ty);
@@ -1131,10 +1137,17 @@ impl Ctx<'_> {
                         .map_or(false, |req| ty.satisfies_with_conversion(req))
                 });
                 if new_candidates.is_empty() {
-                    let candidate_types: Vec<TyRequirement> = candidates
-                        .iter()
-                        .filter_map(|candidate| signatures[*candidate].args.get(i).cloned())
-                        .collect();
+                    let mut candidate_types: Vec<TyRequirement> = Vec::new();
+                    for candidate in &candidates {
+                        if let Some(req) = signatures[*candidate].args.get(i) {
+                            // Several signatures usually agree on a given argument
+                            // (all five `cross` forms take a real `expr` first);
+                            // listing that requirement once reads far better.
+                            if !candidate_types.contains(req) {
+                                candidate_types.push(req.clone());
+                            }
+                        }
+                    }
                     debug_assert_ne!(&candidate_types, &[]);
                     errors.push(TypeMismatch {
                         expected: Cow::from(candidate_types),

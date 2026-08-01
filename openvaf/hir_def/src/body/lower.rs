@@ -198,11 +198,17 @@ impl LowerCtx<'_> {
             // A bare path is a named event (VAMS-2023 5.10.4); everything else is a
             // monitored event (`@(cross(...))` / `@(timer(...))`), preserved so MIR
             // lowering can give the variables it assigns cross-timestep retention.
+            //
+            // A call is collected as well, so that the event function and its
+            // arguments are name-resolved and type-checked (VAMS-2023 5.10.3).
             let event = match event_stmt.event() {
                 Some(ast::Expr::PathExpr(path)) => {
                     Event::Named { event: self.collect_expr(ast::Expr::PathExpr(path)) }
                 }
-                _ => Event::Cross,
+                Some(call @ ast::Expr::Call(_)) => {
+                    Event::Cross { call: Some(self.collect_expr(call)) }
+                }
+                _ => Event::Cross { call: None },
             };
             let body = self.collect_opt_stmt(event_stmt.stmt());
             let stmt = Stmt::EventControl { event, body };

@@ -1,0 +1,37 @@
+`include "disciplines.vams"
+
+// VAMS-2023 5.10.3: the arguments of the analog event functions are now
+// name-resolved and type-checked. Before that, every call-shaped event
+// expression was dropped on the floor and all of the errors below compiled
+// with zero diagnostics.
+module event_functions_err(d, q);
+    inout d, q;
+    electrical d, q;
+
+    real y;
+
+    analog begin
+        y = 0.0;
+
+        // too many arguments (cross takes at most 5)
+        @(cross(V(d), 1, 1e-12, 1e-6, 1, 7, 8)) y = 1.0;
+
+        // not enough arguments
+        @(cross()) y = 2.0;
+        @(absdelta(V(d))) y = 3.0;
+
+        // unresolved names in the arguments
+        @(timer(nonexistent_name, also_bogus)) y = 4.0;
+
+        // wrong argument type
+        @(above("a string")) y = 5.0;
+
+        // an event function is not an expression (5.10.3)
+        y = cross(V(d), 1);
+
+        // ... not even nested inside another event function
+        @(cross(above(V(d)))) y = 6.0;
+
+        I(q) <+ y;
+    end
+endmodule

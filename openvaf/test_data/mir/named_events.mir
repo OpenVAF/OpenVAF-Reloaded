@@ -15,7 +15,7 @@ function %(v16, v17, v18, v19) {
 
                                 block4:
                                     v55 = phi [v5, block2], [v4, block3]
-@000c                               v21 = fgt v19, v20
+@000e                               v21 = fgt v19, v20
                                     br v21, block5, block6
 
                                 block5:
@@ -26,7 +26,7 @@ function %(v16, v17, v18, v19) {
 
                                 block7:
                                     v22 = phi [v2, block5], [v1, block6]
-@0013                               br v22, block8, block9
+@0017                               br v22, block8, block9
 
                                 block8:
                                     v34 = iadd v4, v5
@@ -37,7 +37,7 @@ function %(v16, v17, v18, v19) {
 
                                 block10:
                                     v63 = phi [v34, block8], [v4, block9]
-@0018                               br v2, block11, block12
+@001c                               br v2, block11, block12
 
                                 block11:
                                     v48 = iadd v4, v5

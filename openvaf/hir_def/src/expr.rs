@@ -195,7 +195,15 @@ pub enum Event {
     },
     /// A monitored analog event such as `@(cross(...))` / `@(timer(...))`. Variables
     /// assigned inside its body are given cross-timestep retention during lowering.
-    Cross,
+    ///
+    /// `call` is the event-function call expression (VAMS-2023 5.10.3), collected so
+    /// that its arguments are name-resolved and type-checked. It is `None` when the
+    /// event expression was missing or was not a call. The call itself is never
+    /// lowered: the event condition does not take part in scheduling, the guarded
+    /// body is always evaluated (see `hir_lower`'s `EventControl`).
+    Cross {
+        call: Option<ExprId>,
+    },
     /// A named event (VAMS-2023 5.10.4): `@(ana_event)`. `event` is the path
     /// expression naming the event.
     Named {
@@ -220,11 +228,11 @@ impl Stmt {
     pub fn walk_child_exprs(&self, mut f: impl FnMut(ExprId)) {
         match *self {
             Stmt::Empty | Stmt::Missing | Stmt::Block { .. } | Stmt::Break | Stmt::Continue => (),
-            Stmt::EventControl { ref event, .. } => {
-                if let Event::Named { event } = *event {
-                    f(event)
-                }
-            }
+            Stmt::EventControl { ref event, .. } => match *event {
+                Event::Named { event } => f(event),
+                Event::Cross { call: Some(call) } => f(call),
+                _ => (),
+            },
             Stmt::EventTrigger { event } => f(event),
             Stmt::If { cond: expr, .. }
             | Stmt::ForLoop { cond: expr, .. }

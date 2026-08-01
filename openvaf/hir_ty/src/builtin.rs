@@ -283,6 +283,44 @@ bultins! {
         fn LAST_CROSSING_DIRECTION(Val(Real),Val(Integer)) -> Real;
     }
 
+    // VAMS-2023 5.10.3 — the analog event functions. Every argument is an
+    // `analog_expression`, so none of them (in particular none of the tolerances)
+    // has to be a constant expression; the LRM explicitly permits `time_tol` and
+    // `expr_tol` to change during the simulation.
+
+    // 5.10.3.1: cross ( expr [ , dir [ , time_tol [ , expr_tol [ , enable ] ] ] ] )
+    CROSS = const {
+        fn CROSS_EXPR(Val(Real)) -> Bool;
+        fn CROSS_DIR(Val(Real),Val(Integer)) -> Bool;
+        fn CROSS_DIR_TTOL(Val(Real),Val(Integer),Val(Real)) -> Bool;
+        fn CROSS_DIR_TTOL_ETOL(Val(Real),Val(Integer),Val(Real),Val(Real)) -> Bool;
+        fn CROSS_DIR_TTOL_ETOL_ENABLE(Val(Real),Val(Integer),Val(Real),Val(Real),Val(Integer)) -> Bool;
+    }
+
+    // 5.10.3.2: above ( expr [ , time_tol [ , expr_tol [ , enable ] ] ] )
+    ABOVE = const {
+        fn ABOVE_EXPR(Val(Real)) -> Bool;
+        fn ABOVE_TTOL(Val(Real),Val(Real)) -> Bool;
+        fn ABOVE_TTOL_ETOL(Val(Real),Val(Real),Val(Real)) -> Bool;
+        fn ABOVE_TTOL_ETOL_ENABLE(Val(Real),Val(Real),Val(Real),Val(Integer)) -> Bool;
+    }
+
+    // 5.10.3.3: timer ( start_time [ , period [ , time_tol [ , enable ] ] ] )
+    TIMER = const {
+        fn TIMER_START(Val(Real)) -> Bool;
+        fn TIMER_START_PERIOD(Val(Real),Val(Real)) -> Bool;
+        fn TIMER_START_PERIOD_TTOL(Val(Real),Val(Real),Val(Real)) -> Bool;
+        fn TIMER_START_PERIOD_TTOL_ENABLE(Val(Real),Val(Real),Val(Real),Val(Integer)) -> Bool;
+    }
+
+    // 5.10.3.4: absdelta ( expr , delta [ , time_tol [ , expr_tol [ , enable ] ] ] )
+    ABSDELTA = const {
+        fn ABSDELTA_DELTA(Val(Real),Val(Real)) -> Bool;
+        fn ABSDELTA_DELTA_TTOL(Val(Real),Val(Real),Val(Real)) -> Bool;
+        fn ABSDELTA_DELTA_TTOL_ETOL(Val(Real),Val(Real),Val(Real),Val(Real)) -> Bool;
+        fn ABSDELTA_DELTA_TTOL_ETOL_ENABLE(Val(Real),Val(Real),Val(Real),Val(Real),Val(Integer)) -> Bool;
+    }
+
     fn BASIC_IO(Val(Integer)) -> Integer;
 
      FOPEN = {
