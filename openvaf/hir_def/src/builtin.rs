@@ -127,6 +127,10 @@ pub enum BuiltIn {
     last_crossing = 112u8,
     slew = 113u8,
     transition = 114u8,
+    cross = 115u8,
+    above = 116u8,
+    timer = 117u8,
+    absdelta = 118u8,
 }
 #[derive(Eq, PartialEq, Copy, Clone, Hash, Debug)]
 #[allow(nonstandard_style, unreachable_pub)]
@@ -226,6 +230,15 @@ impl BuiltIn {
             | BuiltIn::rdist_erlang
             | BuiltIn::rdist_normal
             | BuiltIn::rdist_t => true,
+            _ => false,
+        }
+    }
+    #[doc = r" VAMS-2023 5.10.3: an analog event function, only valid as the"]
+    #[doc = r" event expression of an event control (`@(cross(...))`)."]
+    #[allow(clippy::match_like_matches_macro)]
+    pub fn is_event_fun(self) -> bool {
+        match self {
+            BuiltIn::cross | BuiltIn::above | BuiltIn::timer | BuiltIn::absdelta => true,
             _ => false,
         }
     }
@@ -383,6 +396,10 @@ pub fn insert_builtin_scope(dst: &mut IndexMap<Name, ScopeDefItem, BuildHasherDe
     dst.insert(kw::last_crossing, BuiltIn::last_crossing.into());
     dst.insert(kw::slew, BuiltIn::slew.into());
     dst.insert(kw::transition, BuiltIn::transition.into());
+    dst.insert(kw::cross, BuiltIn::cross.into());
+    dst.insert(kw::above, BuiltIn::above.into());
+    dst.insert(kw::timer, BuiltIn::timer.into());
+    dst.insert(kw::absdelta, BuiltIn::absdelta.into());
 }
 pub fn insert_module_builtin_scope(
     dst: &mut IndexMap<Name, ScopeDefItem, BuildHasherDefault<FxHasher>>,

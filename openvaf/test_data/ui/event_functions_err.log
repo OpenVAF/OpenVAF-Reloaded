@@ -1,0 +1,52 @@
+error: invalid argument count: expected at most 5 arguments but found 7
+   --> /event_functions_err.va:17:11
+   |
+17 |         @(cross(V(d), 1, 1e-12, 1e-6, 1, 7, 8)) y = 1.0;
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected at most 5 arguments
+
+error: invalid argument count: expected at least 1 arguments but found 0
+   --> /event_functions_err.va:20:11
+   |
+20 |         @(cross()) y = 2.0;
+   |           ^^^^^^^ expected at least 1 arguments
+
+error: invalid argument count: expected at least 2 arguments but found 1
+   --> /event_functions_err.va:21:11
+   |
+21 |         @(absdelta(V(d))) y = 3.0;
+   |           ^^^^^^^^^^^^^^ expected at least 2 arguments
+
+error: 'nonexistent_name' was not found in the current scope
+   --> /event_functions_err.va:24:17
+   |
+24 |         @(timer(nonexistent_name, also_bogus)) y = 4.0;
+   |                 ^^^^^^^^^^^^^^^^ not found
+
+error: 'also_bogus' was not found in the current scope
+   --> /event_functions_err.va:24:35
+   |
+24 |         @(timer(nonexistent_name, also_bogus)) y = 4.0;
+   |                                   ^^^^^^^^^^ not found
+
+error: type mismatch: expected real value but found string literal
+   --> /event_functions_err.va:27:17
+   |
+27 |         @(above("a string")) y = 5.0;
+   |                 ^^^^^^^^^^ expected real value
+
+error: event function 'cross' is not allowed here
+   --> /event_functions_err.va:30:13
+   |
+30 |         y = cross(V(d), 1);
+   |             ^^^^^^^^^^^^^^ not allowed here
+   |
+   = help: 'cross' may only be used as the event expression of an event control, as in `@(cross(...))`
+
+error: event function 'above' is not allowed here
+   --> /event_functions_err.va:33:17
+   |
+33 |         @(cross(above(V(d)))) y = 6.0;
+   |                 ^^^^^^^^^^^ not allowed here
+   |
+   = help: 'above' may only be used as the event expression of an event control, as in `@(above(...))`
+

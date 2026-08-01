@@ -78,6 +78,10 @@ const UNSUPPORTED: [&str; 48] = [
 
 const ANALOG_OPERATORS_SYSFUN: [&str; 1] = ["$limit"];
 
+// VAMS-2023 5.10.3: analog event functions. They are not analog operators and
+// may only appear as the event expression of an event control (`@(...)`).
+const EVENT_FUNS: [&str; 4] = ["cross", "above", "timer", "absdelta"];
+
 const ANALYSIS_FUNS: [&str; 6] =
     ["analysis", "ac_stim", "noise_table", "noise_table_log", "white_noise", "flicker_noise"];
 
@@ -219,6 +223,7 @@ fn generate_builtins() {
         .chain(ANALYSIS_FUNS)
         .chain(ANALOG_OPERATORS_SYSFUN)
         .chain(ANALOG_OPERATORS)
+        .chain(EVENT_FUNS)
         .map(|builtin| {
             let is_sysfun = builtin.starts_with('$');
 
@@ -239,6 +244,7 @@ fn generate_builtins() {
 
     let analysis_funs = ANALYSIS_FUNS.into_iter().map(|op| format_ident!("{}", op));
     let analog_operators = ANALOG_OPERATORS.into_iter().map(|op| format_ident!("{}", op));
+    let event_funs = EVENT_FUNS.into_iter().map(|op| format_ident!("{}", op));
     let unsupported = UNSUPPORTED.into_iter().map(|op| format_ident!("{}", op));
     let analog_operators_sysfun =
         ANALOG_OPERATORS_SYSFUN.into_iter().map(|op| format_ident!("{}", &op[1..]));
@@ -288,6 +294,16 @@ fn generate_builtins() {
             pub fn is_unsupported(self)->bool{
                 match self{
                     #(BuiltIn::#unsupported)|* =>true,
+                    _ => false
+                }
+            }
+
+            /// VAMS-2023 5.10.3: an analog event function, only valid as the
+            /// event expression of an event control (`@(cross(...))`).
+            #[allow(clippy::match_like_matches_macro)]
+            pub fn is_event_fun(self)->bool{
+                match self{
+                    #(BuiltIn::#event_funs)|* =>true,
                     _ => false
                 }
             }
