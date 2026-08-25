@@ -53,9 +53,29 @@ jobs:
         run: |
           set -euo pipefail
           PKG="openvaf-r-${RELEASE_TAG}-linux-x86_64"
+          LIBDIR="$(llvm-config-"$LLVM_VERSION" --libdir)"
           mkdir -p "dist/$PKG/bin" "dist/$PKG/lib"
           cp target/release/openvaf-r "dist/$PKG/bin/"
-          cp -a "$(llvm-config-"$LLVM_VERSION" --libdir)"/libLLVM*.so* "dist/$PKG/lib/"
+          cp -a "$LIBDIR"/libLLVM*.so* "dist/$PKG/lib/"
+          # apt.llvm.org's libdir provides libLLVM.so.* as symlinks into the
+          # system multiarch dir (../../x86_64-linux-gnu/...). `cp -a` keeps
+          # them as symlinks, so the tarball ships dangling links instead of
+          # the library and the packaged binary only runs on hosts that
+          # already have a system libLLVM of the right major version.
+          # Materialize links that point outside the package's lib dir with
+          # the real file; same-dir sibling links (libLLVM.so -> libLLVM.so.N)
+          # stay symlinks and become valid once their target is materialized.
+          find "dist/$PKG/lib" -xtype l | while read -r link; do
+            case "$(readlink "$link")" in
+              */*) cp --remove-destination \
+                     "$(readlink -f "$LIBDIR/$(basename "$link")")" "$link" ;;
+            esac
+          done
+          if find "dist/$PKG" -xtype l | grep -q .; then
+            echo "error: package contains broken symlinks:" >&2
+            find "dist/$PKG" -xtype l >&2
+            exit 1
+          fi
           patchelf --set-rpath '$ORIGIN/../lib' "dist/$PKG/bin/openvaf-r"
           ldd "dist/$PKG/bin/openvaf-r"
           tar -C dist -czf "$PKG.tar.gz" "$PKG"
