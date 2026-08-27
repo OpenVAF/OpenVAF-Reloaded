@@ -1,0 +1,98 @@
+---
+title: "T11 — Multi-Port Model and Node Collapse"
+---
+
+## Goal
+
+Write a three-terminal BJT stub model that declares an explicit internal base
+node.  Compile it and inspect the `NodeCollapse` output from `sim_back`:
+confirm that the `CollapsePair` for the internal node appears, and understand
+the conditions under which a simulator may collapse it.
+
+---
+
+## Prerequisites
+
+- [T8](t08-diode-nonlinearity.qmd) completed.
+- [T5](t05-mir-contribution.qmd) recommended: reading MIR dumps.
+
+**Background reading:** [`sim_back` INTERNALS §node collapse](../docs/sim_back/INTERNALS.md)
+
+---
+
+## Walkthrough
+
+### The node-collapse optimisation
+
+In a Verilog-A model, an *internal node* (one not listed in the port
+declaration) may have a purely resistive connection to an external node —
+for example a base contact resistance `R_b` between the external base port
+`B` and the internal base node `Bi`.
+
+If `R_b = 0` (or the simulator decides the voltage across it is negligibly
+small), the simulator can *collapse* the two nodes: treat them as the same
+node in the circuit matrix, eliminating one row and one column.  This reduces
+the matrix size and speeds up Newton iteration.
+
+`sim_back` identifies potential collapse candidates and records them in
+`NodeCollapse`.  The OSDI descriptor includes this information so the
+simulator can decide at runtime whether to collapse.
+
+### A minimal BJT stub
+
+```verilog
+`include "disciplines.vams"
+
+module bjt_stub(C, B, E);
+    inout C, B, E;
+    electrical C, B, E, Bi;   // Bi is internal
+
+    parameter real Rb = 100.0 from [0:inf];
+
+    analog begin
+        // base contact resistance
+        V(B, Bi) <+ Rb * I(B, Bi);
+
+        // placeholder collector current (not physical)
+        I(C, E) <+ 1e-3 * V(B, Bi);
+    end
+endmodule
+```
+
+### Inspecting the NodeCollapse
+
+Compile with `--dump-mir`:
+
+```bash
+./target/release/openvaf-r tutorials/models/bjt_stub.va \
+    --dump-mir --dry-run
+```
+
+In the `sim_back` output look for the `NodeCollapse` section.  When `Rb` can
+be zero, the pair `(B, Bi)` should appear as a collapse candidate.
+
+---
+
+## Exercises
+
+1. **Force collapse.**  Set `Rb = 0.0` as the *only* default (no `from`
+   range).  Does `sim_back` mark the pair as collapsible?
+
+2. **Internal node with capacitance.**  Add `I(B, Bi) <+ ddt(C_b * V(B,Bi))`
+   (a capacitance).  Does the node still collapse?
+
+3. **Read `NodeCollapse` source.**  Open
+   `openvaf/sim_back/src/node_collapse.rs` and find the condition that decides
+   when a node pair becomes a collapse candidate.
+
+4. **Check the OSDI descriptor.**  Compile and inspect the descriptor
+   (as in T9).  Find the collapse-pair field and verify it matches your
+   analysis.
+
+---
+
+## What's next
+
+[T12 — Multi-Domain Model (Electro-Thermal)](t12-multi-domain.qmd) shows
+how OpenVAF handles models with multiple disciplines (electrical and thermal)
+and how `hir_ty` resolves two different nature hierarchies.

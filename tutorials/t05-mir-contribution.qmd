@@ -1,0 +1,140 @@
+---
+title: "T5 — Trace a Contribution Through the MIR"
+---
+
+## Goal
+
+Use `--dump-mir` and `--dump-unopt-mir` to print the MIR `Function` produced
+for the resistor evaluation body.  Identify the `fdiv` instruction that
+implements Ohm's law, the `pow` call for the temperature coefficient, and the
+`optbarrier` marking the contribution output.
+
+---
+
+## Prerequisites
+
+- [T4](t04-lowered-body.qmd) completed.
+
+**Background reading:** [`mir` INTERNALS](../docs/mir/INTERNALS.md) |
+[`hir_lower` INTERNALS](../docs/hir_lower/INTERNALS.md)
+
+---
+
+## Setup
+
+No additional tools needed.  This tutorial uses flags built into `openvaf-r`.
+
+---
+
+## Walkthrough
+
+### Step 1 — Dump the unoptimised MIR
+
+```bash
+./target/release/openvaf-r \
+    integration_tests/RESISTOR/resistor.va \
+    --dump-unopt-mir \
+    --dry-run
+```
+
+The `--dry-run` flag stops before LLVM codegen so no `.osdi` file is written.
+The `--dump-unopt-mir` flag prints the MIR immediately after HIR lowering,
+before any `mir_opt` passes run.
+
+### Step 2 — Dump the optimised MIR
+
+```bash
+./target/release/openvaf-r \
+    integration_tests/RESISTOR/resistor.va \
+    --dump-mir \
+    --dry-run
+```
+
+### Step 3 — Reading the MIR
+
+The MIR uses an SSA text format similar to Cranelift or LLVM IR.  Each
+function starts with its parameter list, then lists blocks.
+
+For the resistor you will see approximately:
+
+```
+function %(v0, v1, v2, v3, v4) {
+                            block0:
+    v5 = fdiv v0, v1
+    v6 = fdiv v3, v4
+    v7 = pow v6, v2
+    v8 = fmul v1, v7          // res = R * pow($temperature/tnom, zeta)
+    v9 = fdiv v0, v8          // vres / res
+    v10 = optbarrier v9
+}
+```
+
+The function parameters `v0 … v4` correspond to `ParamKind` entries in the
+`HirInterner`:
+
+| Value | `ParamKind` | HIR entity |
+|---|---|---|
+| `v0` | `Voltage { hi: A, lo: B }` | `V(br_a_b)` / `vres` |
+| `v1` | `Param(R)` | parameter `R` |
+| `v2` | `Param(zeta)` | parameter `zeta` |
+| `v3` | `Temperature` | `$temperature` |
+| `v4` | `Param(tnom)` | parameter `tnom` |
+
+The `optbarrier` instruction at the end marks the contribution output.  It is
+semantically a no-op — the value passes through unchanged — but it prevents
+LLVM from moving the computation across the output boundary during
+optimisation.
+
+### Step 4 — Compare with the snapshot
+
+The test snapshot for the resistor MIR is stored at:
+```
+openvaf/test_data/dae/resistor_va_mir.snap
+```
+
+Compare it to your `--dump-mir` output.  The snapshot was generated from the
+same source, so the instructions should match (modulo `Value` numbering).
+
+### Step 5 — What the `PlaceKind` table says
+
+The `HirInterner::outputs` map records where the MIR function writes its
+results.  For the resistor evaluation kernel, the one output is:
+
+```
+PlaceKind::Contribute { dst: BranchWrite::Named(br_a_b), reactive: false, voltage_src: false }
+  → v10   (the optbarrier-wrapped fdiv result)
+```
+
+This entry tells `sim_back` that `v10` is the resistive current contribution
+to branch `br_a_b`, not a reactive (capacitive) contribution and not a voltage
+source.  The `DaeSystem` uses this to set up the Jacobian entry
+`∂I(A,B)/∂V(A,B)`.
+
+---
+
+## Exercises
+
+1. **Before vs after opt.**  Count the number of instructions in the
+   unoptimised vs optimised MIR.  How many were eliminated?  (SCCP typically
+   folds away the `vres` intermediate variable.)
+
+2. **Set `zeta = 0`.**  Change the default `zeta = 0.0` to a literal `0` and
+   recompile with `--dump-mir`.  Does SCCP fold the `pow` call away?
+   (Hint: `pow(x, 0) = 1`.)
+
+3. **Find the `fdiv` Jacobian.**  Add `--dump-mir` to a full compile (without
+   `--dry-run`).  The second MIR function printed is the Jacobian kernel.
+   Find the `fdiv` instruction that computes `∂(I)/∂(V) = 1/R_t`.
+
+4. **Read the `HirInterner` dump.**  Add `-dump-mir` and look for the
+   "Evaluation HIR interner" section.  Match each `Param` index to the
+   `ParamKind` in the table above.
+
+---
+
+## What's next
+
+[T6 — Follow Type Inference for a Simple Model](t06-type-inference.qmd)
+goes back inside the compiler and shows the `InferenceResult` produced by
+`hir_ty`: specifically the `resolved_calls` entry for `V(br_a_b)` and the
+`assignment_destination` entry for the `<+` statement.

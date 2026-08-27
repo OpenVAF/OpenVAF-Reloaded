@@ -1,0 +1,115 @@
+---
+title: "T8 — Add a Simple Nonlinearity (Diode I–V)"
+---
+
+## Goal
+
+Write a minimal exponential diode model, compile it, and compare the MIR
+before and after `mir_opt`.  Observe how constant propagation and DCE reduce
+the instruction count, and how the Jacobian for `exp(V/Vt)` differs from the
+linear resistor Jacobian.
+
+---
+
+## Prerequisites
+
+- [T7](t07-autodiff.qmd) completed.
+
+---
+
+## Setup
+
+Create a new file `tutorials/models/diode_simple.va`:
+
+```verilog
+`include "disciplines.vams"
+`include "constants.vams"
+
+module diode_simple(A, C);
+    inout A, C;
+    electrical A, C;
+
+    (*desc="Saturation current", units="A"*) parameter real IS = 1e-14 from (0:inf);
+    (*desc="Emission coefficient"*)          parameter real N  = 1.0   from (0:inf);
+
+    real vd, id;
+
+    analog begin
+        vd = V(A, C);
+        id = IS * (exp(vd / (N * $vt)) - 1.0);
+        I(A, C) <+ id;
+    end
+endmodule
+```
+
+`$vt` is the thermal voltage `kT/q` (a system parameter, approximately
+25.85 mV at 300 K).
+
+---
+
+## Walkthrough
+
+### Step 1 — Compile and dump MIR
+
+```bash
+./target/release/openvaf-r tutorials/models/diode_simple.va \
+    --dump-unopt-mir --dump-mir --dry-run
+```
+
+### Step 2 — Count instructions before and after opt
+
+Paste the two MIR listings side-by-side.  `mir_opt` typically:
+
+- Folds `N * $vt` into a single `fmul` (if `N` is constant).
+- Eliminates the intermediate variable `vd` (replaced by its defining
+  expression directly into the `exp` argument).
+- Removes dead branches left by SCCP.
+
+### Step 3 — Find the Jacobian for `exp`
+
+The derivative of `IS * (exp(vd/Vt) − 1)` with respect to `vd` is
+`IS/Vt * exp(vd/Vt)`.  In the MIR this appears as a `fmul` of the `exp`
+result with `1/Vt` (or equivalently a `fdiv` by `Vt`).
+
+Because this Jacobian depends on `vd` (and therefore on the circuit voltage),
+the OSDI descriptor will **not** mark it as `JACOBIAN_ENTRY_REACT_CONST`.
+
+### Step 4 — Compare with the full diode model
+
+The integration test model at
+`openvaf/test_data/osdi/diode_lim.va` is a more complete diode with
+self-heating.  Compile it and compare its OSDI descriptor snap
+(`openvaf/test_data/osdi/diode_lim.snap` if it exists) with the minimal
+model you just built.
+
+---
+
+## Exercises
+
+1. **Measure instruction counts.**  Count instructions in the unoptimised vs
+   optimised MIR.  Which pass removes the most?
+
+2. **Add a series resistance.**  Add `parameter real RS = 0.0;` and a series
+   resistance term `I(A,C) <+ V(A,C) / RS;` (guarded by `if (RS > 0)`).
+   How does the MIR change?
+
+3. **`$vt` vs explicit formula.**  Replace `$vt` with
+   `\`P_K * $temperature / \`P_Q` (using the constants from `constants.vams`).
+   Do you get the same compiled output?
+
+4. **Inspect `resolved_calls` for `exp`.**  In your scratch crate, dump the
+   `InferenceResult` for this diode.  What does `resolved_calls` say about
+   the `exp` call?
+
+5. **Observe the `optbarrier`.**  In the optimised MIR, the output `id` is
+   wrapped in `optbarrier`.  Why?  Remove it mentally — what could LLVM do
+   that would break the simulation?
+
+---
+
+## What's next
+
+[T9 — Inspect the OSDI Descriptor](t09-osdi-descriptor.qmd) reads the
+compiled `.osdi` file directly using a small C or Rust harness to print the
+node names, parameter layout, Jacobian flags, and evaluation function
+pointers from `OSDI_DESCRIPTORS`.

@@ -1,0 +1,128 @@
+---
+title: "T14 — Custom Analog Function and the Function DefMap"
+---
+
+## Goal
+
+Write a Verilog-A `function real` that is called from the analog block.
+Trace name resolution through the function's own `DefMap`, inspect the lowered
+MIR, and observe whether the function call is inlined or preserved as a
+`Call` instruction.
+
+---
+
+## Prerequisites
+
+- [T3](t03-name-resolution.qmd) completed.
+- [T5](t05-mir-contribution.qmd) completed.
+
+**Background reading:** [`hir_def` INTERNALS §7 — `DefWithBodyId`](../docs/hir_def/INTERNALS.md) |
+[`hir_lower` INTERNALS](../docs/hir_lower/INTERNALS.md)
+
+---
+
+## Walkthrough
+
+### A model with an analog function
+
+```verilog
+`include "disciplines.vams"
+
+module diode_func(A, C);
+    inout A, C;
+    electrical A, C;
+
+    parameter real IS = 1e-14 from (0:inf);
+    parameter real N  = 1.0   from (0:inf);
+
+    // Custom clamping function
+    function real clamp;
+        input real x, lo, hi;
+        begin
+            if (x < lo) clamp = lo;
+            else if (x > hi) clamp = hi;
+            else clamp = x;
+        end
+    endfunction
+
+    real vd, id;
+
+    analog begin
+        vd = clamp(V(A,C), -1.0, 2.0);
+        id = IS * (exp(vd / (N * $vt)) - 1.0);
+        I(A, C) <+ id;
+    end
+endmodule
+```
+
+### The function DefMap
+
+In `hir_def`, a `function` gets its own `DefMap` built by
+`db.function_def_map(fun_id)`.  The function scope contains:
+
+- `x`, `lo`, `hi` → `FunctionArgId` entries (not `ParamId`)
+- `clamp` → `FunctionReturn` (the implicit output variable)
+
+Dump the function DefMap from the scratch crate:
+
+```rust
+use hir_def::db::HirDefDB;
+
+let fun_id = /* obtain FunctionId from the module DefMap */;
+let fn_def_map = db.function_def_map(fun_id);
+println!("{}", fn_def_map.dump(&db));
+```
+
+### The function Body
+
+```rust
+let fn_body_id = DefWithBodyId::FunctionId(fun_id);
+let fn_body = db.body(fn_body_id);
+println!("{}", fn_body.dump());
+```
+
+The body contains the `if`/`else` tree and the assignments to `clamp`
+(the function return variable).
+
+### Inlining in the MIR
+
+```bash
+./target/release/openvaf-r tutorials/models/diode_func.va \
+    --dump-mir --dry-run
+```
+
+OpenVAF inlines analog functions at the MIR level by default: the `clamp`
+call is replaced by its body's instructions directly in the caller's `Function`.
+You will see the `select` (ternary) instructions from the `if`/`else` tree
+inlined into the eval kernel, not a separate `call` instruction.
+
+---
+
+## Exercises
+
+1. **Find `FunctionReturn`.**  In the function body dump, identify the
+   `Stmt::Assignment` that writes to `clamp` (the implicit return).  In
+   `hir_ty`'s `assignment_destination`, what `AssignDst` variant does it map to?
+
+2. **Recursive call.**  Try a recursive function.  Does OpenVAF accept it?
+   What error (if any) is produced?
+
+3. **Multiple return paths.**  Add a fourth case to `clamp` that handles
+   `x == lo` specially.  Count the `select` instructions in the resulting MIR.
+
+4. **Integer function.**  Write `function integer sign` that returns `1`, `0`,
+   or `-1`.  Call it from the analog block.  Inspect the `casts` map in
+   `InferenceResult` — does the integer return need a cast before use in a
+   real expression?
+
+5. **Read `ctx.rs`.**  In `openvaf/hir_lower/src/ctx.rs`, find where function
+   calls are handled.  Does `LoweringCtx` have a dedicated "inline function"
+   method, or is it handled inline in the call lowering?
+
+---
+
+## What's next
+
+[T15 — Cross-Platform Compilation and the Target Spec](t15-cross-platform.qmd)
+shows how the `Target` spec affects code generation: the pointer width,
+`_hypot` vs `hypot` symbol selection, and the final object file ABI.

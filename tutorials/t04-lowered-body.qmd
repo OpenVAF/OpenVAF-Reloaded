@@ -1,0 +1,142 @@
+---
+title: "T4 — Examine the Lowered Body"
+---
+
+## Goal
+
+Print the `Body` for the resistor analog block and read the `entry_stmts`,
+`stmts`, and `exprs` arenas.  Match each `ExprId` to the corresponding
+fragment of `I(br_a_b) <+ vres / res` and confirm that paths are still
+unresolved name strings at this stage.
+
+---
+
+## Prerequisites
+
+- [T3](t03-name-resolution.qmd) completed.
+
+**Background reading:** [`hir_def` INTERNALS §7 — `DefWithBodyId` and `Body`](../docs/hir_def/INTERNALS.md)
+
+---
+
+## Setup
+
+The `Body` type has a `pretty` module at
+`openvaf/hir_def/src/body/pretty.rs` with a `dump()` method.  Use the scratch
+crate from T2.
+
+---
+
+## Walkthrough
+
+### What is the Body?
+
+The `Body` holds the expression and statement arenas for a single *definition
+with a body*: the analog block, the analog initial block, a function body,
+a parameter default expression, or a variable initialiser.
+
+```rust
+pub struct Body {
+    pub exprs:        Arena<Expr>,
+    pub stmts:        Arena<Stmt>,
+    pub entry_stmts:  Vec<StmtId>,
+    pub stmt_scopes:  ArenaMap<StmtId, ScopeId>,
+}
+```
+
+Crucially, paths in `Expr::Path { name, .. }` are raw `Name` strings.  They
+have **not** been resolved to `VarId`, `ParamId`, or `BranchId` yet — that
+resolution happens in type inference (`hir_ty`), not here.
+
+### Printing the Body
+
+```rust
+use hir_def::{DefWithBodyId, db::HirDefDB};
+use hir::Module;
+
+let modules = db.compilation_unit().modules(&db);
+let module = modules[0];   // resistor_va
+let body_id = DefWithBodyId::ModuleId { initial: false, module: module.id };
+let body = db.body(body_id);
+println!("{}", body.dump());
+```
+
+### Reading the output
+
+For the resistor analog block:
+
+```
+entry_stmts: [s0, s1, s2]
+
+stmts:
+  s0: Expr(e0)          -- vres = V(br_a_b)   → assignment
+  s1: Expr(e1)          -- res = R * pow(...)  → assignment
+  s2: Expr(e2)          -- I(br_a_b) <+ vres/res → assignment
+
+exprs:
+  e0: Assignment { lhs: Path("vres"), rhs: e3 }
+  e3: Call { callee: Path("V"), args: [e4] }
+  e4: Path("br_a_b")
+
+  e1: Assignment { lhs: Path("res"), rhs: e5 }
+  e5: BinaryOp(Mul) { lhs: e6, rhs: e7 }
+  e6: Path("R")
+  e7: Call { callee: Path("pow"), args: [e8, e9] }
+  e8: BinaryOp(Div) { lhs: Path("$temperature"), rhs: Path("tnom") }
+  e9: Path("zeta")
+
+  e2: Assignment { lhs: Path("I") with args [Path("br_a_b")],
+                   rhs: e10 }
+  e10: BinaryOp(Div) { lhs: Path("vres"), rhs: Path("res") }
+```
+
+Every identifier — `vres`, `V`, `br_a_b`, `R`, `pow`, `$temperature`,
+`tnom`, `zeta`, `I`, `res` — is a raw `Path` string.  At this stage the
+compiler has no idea whether `R` is a parameter, a variable, or a typo.
+
+### The contribution statement
+
+`I(br_a_b) <+` is lowered into the `Body` as a plain `Stmt::Assignment`.
+There is no distinction between a variable assignment (`=`) and a
+contribution (`<+`) in the `Body` — they both become `Stmt::Assignment`.
+The distinction is made later by `hir_ty`'s type inference, which determines
+the `assignment_destination` from the type of the left-hand side.  This is
+one of the most important things to remember about the `Body`: **it records
+syntax, not semantics**.
+
+### The `entry_stmts` field
+
+`entry_stmts` is the list of `StmtId` values at the top level of the body.
+For the resistor, the analog block has three sequential statements.  For a
+module with control flow (`if`, `for`, `while`, `case`), the tree structure
+is encoded in the `Stmt` variants, which contain child `StmtId` references.
+
+---
+
+## Exercises
+
+1. **Count the expressions.**  How many `ExprId` entries does the resistor
+   analog block have in total?  Which sub-expressions account for the most
+   entries?
+
+2. **Find the parameter default bodies.**  The parameters `R`, `zeta`, and
+   `tnom` each have a default expression.  Dump the bodies for
+   `DefWithBodyId::ParamId(param_id)` for each and confirm the literal
+   values (`0.0`, `0.0`, `300.0`) appear there.
+
+3. **Add an `if` statement.**  Add `if (res < 1e-9) res = 1e-9;` to the
+   analog block.  Dump the body again.  Identify the `Stmt::If` node and its
+   condition, then-branch, and else-branch `StmtId`s.
+
+4. **Inspect `stmt_scopes`.**  The `stmt_scopes` map records which scope each
+   statement lives in.  Dump it.  For the resistor with no named blocks, all
+   statements should map to the same scope ID.
+
+---
+
+## What's next
+
+[T5 — Trace a Contribution Through the MIR](t05-mir-contribution.qmd) skips
+ahead to the end of the pipeline and shows the SSA MIR produced after HIR
+lowering and optimisation — where `vres / res` finally becomes a concrete
+`fdiv` instruction and the contribution is represented as a `PlaceKind::Contribute` output.
