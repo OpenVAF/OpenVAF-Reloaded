@@ -1,0 +1,13 @@
+warning[L018]: 'timer' does not schedule an event yet
+   --> /vams2023_events.va:24:9
+   |  
+24 | /         @(timer(period)) begin
+25 | |             if (r > 100.0)
+26 | |                 -> sample_event;
+27 | |         end
+   | \-----------^ body is evaluated unconditionally
+   |  
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+

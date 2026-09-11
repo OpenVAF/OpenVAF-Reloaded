@@ -24,3 +24,23 @@ error: event triggers are not allowed in analog block
    |
    = help: in an analog block an event may only be triggered from an event statement such as '@(timer(1n)) -> ev;'
 
+warning[L018]: 'timer' does not schedule an event yet
+   --> /named_events_err.va:15:9
+   |
+15 |         @(timer(1n)) -> not_an_event;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'timer' does not schedule an event yet
+   --> /named_events_err.va:21:9
+   |
+21 |         @(timer(1n)) -> missing_event;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+

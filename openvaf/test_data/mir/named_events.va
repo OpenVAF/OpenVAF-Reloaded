@@ -1,7 +1,10 @@
 // VAMS-2023 5.10.4 (Mantis 7809): named events are declared with `event`,
 // triggered with `-> name;` from an analog event statement and detected with
 // `@(name)`.
-module named_events;
+// `@(timer(...))` is the only way to trigger a named event, and timer events are
+// not scheduled yet, so allow the warning: this test is about the named-event
+// lowering, not about the timer.
+(*openvaf_allow="unscheduled_event"*) module named_events;
     parameter real thresh = 0.5;
 
     event sampled;

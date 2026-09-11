@@ -183,5 +183,6 @@ pub mod builtin {
         pub const trivial_probe = LintData{default_lvl: Warn, documentation_id: 17};
         // off by default, enable with `--warn reserved_module_name`
         pub const reserved_module_name = LintData{default_lvl: Allow, documentation_id: 18};
+        pub const unscheduled_event = LintData{default_lvl: Warn, documentation_id: 19};
     }
 }
