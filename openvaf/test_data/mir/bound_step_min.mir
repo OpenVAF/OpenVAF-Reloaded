@@ -1,0 +1,29 @@
+function %(v16, v17, v20) {
+    v18 = fconst 0x1.0000000000000p-1
+                                block0:
+@0006                               v19 = fgt v17, v18
+                                    br v19, block2, block3
+
+                                block2:
+@0008                               v22 = flt v20, v16
+@0008                               br v22, block5, block6
+
+                                block5:
+@0008                               jmp block7
+
+                                block6:
+@0008                               jmp block7
+
+                                block7:
+@0008                               v23 = phi [v20, block5], [v16, block6]
+                                    jmp block4
+
+                                block3:
+                                    jmp block4
+
+                                block4:
+                                    v30 = optbarrier v17
+                                    jmp block1
+
+                                block1:
+}
