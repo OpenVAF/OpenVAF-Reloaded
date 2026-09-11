@@ -34,6 +34,56 @@ error: type mismatch: expected real value but found string literal
 27 |         @(above("a string")) y = 5.0;
    |                 ^^^^^^^^^^ expected real value
 
+warning[L018]: 'cross' does not schedule an event yet
+   --> /event_functions_err.va:17:9
+   |
+17 |         @(cross(V(d), 1, 1e-12, 1e-6, 1, 7, 8)) y = 1.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'cross' does not schedule an event yet
+   --> /event_functions_err.va:20:9
+   |
+20 |         @(cross()) y = 2.0;
+   |         ^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'absdelta' does not schedule an event yet
+   --> /event_functions_err.va:21:9
+   |
+21 |         @(absdelta(V(d))) y = 3.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'timer' does not schedule an event yet
+   --> /event_functions_err.va:24:9
+   |
+24 |         @(timer(nonexistent_name, also_bogus)) y = 4.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'above' does not schedule an event yet
+   --> /event_functions_err.va:27:9
+   |
+27 |         @(above("a string")) y = 5.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
 error: event function 'cross' is not allowed here
    --> /event_functions_err.va:30:13
    |
@@ -49,4 +99,14 @@ error: event function 'above' is not allowed here
    |                 ^^^^^^^^^^^ not allowed here
    |
    = help: 'above' may only be used as the event expression of an event control, as in `@(above(...))`
+
+warning[L018]: 'cross' does not schedule an event yet
+   --> /event_functions_err.va:33:9
+   |
+33 |         @(cross(above(V(d)))) y = 6.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
 
