@@ -813,6 +813,17 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
             BuiltIn::bound_step => {
                 let step_size = self.lower_expr(args[0]);
+                // Each call bounds the step, so the effective bound is the smallest of
+                // them -- `$bound_step` is not an assignment. The place is only read
+                // back once an earlier call has declared it, so a module with a single
+                // call (the common case) lowers exactly as it did before.
+                let step_size = if self.ctx.get_place(PlaceKind::BoundStep).is_some() {
+                    let prev = self.ctx.use_place(PlaceKind::BoundStep);
+                    let smaller = self.ctx.ins().flt(step_size, prev);
+                    self.lower_select_with(smaller, |_| step_size, |_| prev)
+                } else {
+                    step_size
+                };
                 self.ctx.def_place(PlaceKind::BoundStep, step_size);
                 GRAVESTONE
             }
