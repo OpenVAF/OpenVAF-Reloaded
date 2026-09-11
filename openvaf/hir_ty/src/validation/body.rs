@@ -63,6 +63,14 @@ pub enum BodyValidationDiagnostic {
         ctx: BodyCtx,
     },
 
+    /// VAMS-2023 5.10.3: an analog event function is name-resolved and type-checked
+    /// but takes no part in scheduling yet, so the guarded statement is evaluated on
+    /// every evaluation of the analog block instead of only when the event occurs.
+    UnscheduledEvent {
+        stmt: StmtId,
+        func: BuiltIn,
+    },
+
     WriteToInputArg {
         expr: ExprId,
         arg: FunctionArgLoc,
@@ -299,6 +307,19 @@ impl BodyValidator<'_> {
                     let old_call = replace(&mut self.event_call, Some(call));
                     self.validate_expr(call, stmt);
                     self.event_call = old_call;
+
+                    // The event condition does not take part in scheduling yet (see
+                    // `hir_lower`'s `EventControl`): the guarded statement runs on
+                    // every evaluation. Warn instead of silently accepting a model
+                    // whose behaviour is not the one it describes.
+                    if let Some(ResolvedFun::BuiltIn(func)) = self.infer.resolved_calls.get(&call) {
+                        if func.is_event_fun() {
+                            self.diagnostics.push(BodyValidationDiagnostic::UnscheduledEvent {
+                                stmt,
+                                func: *func,
+                            });
+                        }
+                    }
                 }
                 self.validate_stmt(body);
                 self.in_event_control = old_event;
