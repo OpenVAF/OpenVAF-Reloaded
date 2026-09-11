@@ -1,0 +1,26 @@
+`include "disciplines.vams"
+
+// VAMS-2023 A.6.5: only the analog event functions take null arguments, and only
+// in the positions the LRM spells as `analog_expression_or_null`. Every omitted
+// argument below is in a position that requires an expression.
+module event_null_args_err(a);
+    inout a;
+    electrical a;
+
+    parameter integer en = 1;
+
+    real x;
+
+    analog begin
+        // not an event function at all
+        x = min(, 1.0);
+        // cross: the monitored expression is required
+        @(cross(, 1)) x = 1.0;
+        // timer: `enable` is an analog_expression, not analog_expression_or_null
+        @(timer(0.0, 1.0, 1n, )) x = 2.0;
+        // absdelta: `delta` is required
+        @(absdelta(V(a), , 1n)) x = 3.0;
+
+        I(a) <+ x;
+    end
+endmodule

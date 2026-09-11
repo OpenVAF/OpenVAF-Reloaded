@@ -163,8 +163,14 @@ BinExpr =
 ParenExpr =
   '(' Expr ')'
 
+// An argument is wrapped in its own node so that a *null* argument
+// (`analog_expression_or_null`, A.6.5) keeps its position in the list:
+// `cross(V(d), dir, , , en)` has five arguments, the third and fourth empty.
 ArgList =
-  '(' args: (Expr (',' Expr)*)? ')'
+  '(' args: (Arg (',' Arg)*)? ')'
+
+Arg =
+  Expr
 
 Call =
   FunctionRef ArgList?

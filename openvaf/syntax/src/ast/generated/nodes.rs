@@ -339,8 +339,15 @@ pub struct ArgList {
 }
 impl ArgList {
     pub fn l_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['(']) }
-    pub fn args(&self) -> AstChildren<Expr> { support::children(&self.syntax) }
+    pub fn args(&self) -> AstChildren<Arg> { support::children(&self.syntax) }
     pub fn r_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![')']) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Arg {
+    pub(crate) syntax: SyntaxNode,
+}
+impl Arg {
+    pub fn expr(&self) -> Option<Expr> { support::child(&self.syntax) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SysFun {
@@ -1096,6 +1103,17 @@ impl AstNode for PortFlow {
 }
 impl AstNode for ArgList {
     fn can_cast(kind: SyntaxKind) -> bool { kind == ARG_LIST }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
+impl AstNode for Arg {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == ARG }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
         if Self::can_cast(syntax.kind()) {
             Some(Self { syntax })
@@ -2036,6 +2054,11 @@ impl std::fmt::Display for PortFlow {
     }
 }
 impl std::fmt::Display for ArgList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
+impl std::fmt::Display for Arg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
     }

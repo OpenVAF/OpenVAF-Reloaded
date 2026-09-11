@@ -71,7 +71,10 @@ impl LowerCtx<'_> {
                 });
 
                 let args = if let Some(args) = call.arg_list().map(|list| list.args()) {
-                    args.map(|arg| self.collect_expr(arg)).collect()
+                    // A null argument (`cross(V(d), dir, , , en)`) is collected as a
+                    // missing expression: it keeps its position, and inference leaves
+                    // the argument untyped instead of reporting a type mismatch.
+                    args.map(|arg| self.collect_opt_expr(arg.expr())).collect()
                 } else {
                     vec![]
                 };

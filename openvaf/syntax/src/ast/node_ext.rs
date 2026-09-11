@@ -264,8 +264,8 @@ pub enum BranchKind {
 impl ast::BranchDecl {
     pub fn branch_kind(&self) -> Option<BranchKind> {
         let nodes = self.arg_list()?;
-        let node1 = nodes.args().next()?;
-        let node2 = nodes.args().nth(1);
+        let node1 = nodes.args().next()?.expr()?;
+        let node2 = nodes.args().nth(1).and_then(|arg| arg.expr());
 
         let kind = match node2 {
             Some(node2) => BranchKind::Nodes(node1.as_path()?, node2.as_path()?),
