@@ -1,0 +1,190 @@
+warning[L018]: 'cross' does not schedule an event yet
+   --> /event_functions.va:32:9
+   |
+32 |         @(cross(V(d) - 0.5)) y = 1.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'cross' does not schedule an event yet
+   --> /event_functions.va:33:9
+   |
+33 |         @(cross(V(d) - 0.5, +1)) y = 2.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'cross' does not schedule an event yet
+   --> /event_functions.va:34:9
+   |
+34 |         @(cross(V(d) - 0.5, -1, ttol)) y = 3.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'cross' does not schedule an event yet
+   --> /event_functions.va:35:9
+   |
+35 |         @(cross(V(d) - 0.5, dir, ttol, etol)) y = 4.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'cross' does not schedule an event yet
+   --> /event_functions.va:36:9
+   |
+36 |         @(cross(V(d) - 0.5, dir, ttol, etol, enable)) y = 5.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'above' does not schedule an event yet
+   --> /event_functions.va:39:9
+   |
+39 |         @(above(V(d) - 2.5)) y = 6.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'above' does not schedule an event yet
+   --> /event_functions.va:40:9
+   |
+40 |         @(above(V(d) - 2.5, ttol)) y = 7.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'above' does not schedule an event yet
+   --> /event_functions.va:41:9
+   |
+41 |         @(above(V(d) - 2.5, ttol, etol)) y = 8.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'above' does not schedule an event yet
+   --> /event_functions.va:42:9
+   |
+42 |         @(above(V(d) - 2.5, ttol, etol, enable)) y = 9.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'timer' does not schedule an event yet
+   --> /event_functions.va:45:9
+   |
+45 |         @(timer(0.0)) y = 10.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'timer' does not schedule an event yet
+   --> /event_functions.va:46:9
+   |
+46 |         @(timer(0.0, period)) y = 11.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'timer' does not schedule an event yet
+   --> /event_functions.va:47:9
+   |
+47 |         @(timer(0.0, period, ttol)) y = 12.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'timer' does not schedule an event yet
+   --> /event_functions.va:48:9
+   |
+48 |         @(timer(0.0, period, ttol, enable)) y = 13.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'absdelta' does not schedule an event yet
+   --> /event_functions.va:51:9
+   |
+51 |         @(absdelta(V(d), delta)) y = 14.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'absdelta' does not schedule an event yet
+   --> /event_functions.va:52:9
+   |
+52 |         @(absdelta(V(d), delta, ttol)) y = 15.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'absdelta' does not schedule an event yet
+   --> /event_functions.va:53:9
+   |
+53 |         @(absdelta(V(d), delta, ttol, etol)) y = 16.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'absdelta' does not schedule an event yet
+   --> /event_functions.va:54:9
+   |
+54 |         @(absdelta(V(d), delta, ttol, etol, enable)) y = 17.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'cross' does not schedule an event yet
+   --> /event_functions.va:57:9
+   |
+57 |         @(cross(V(d), 0, 1, 1)) y = 18.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'timer' does not schedule an event yet
+   --> /event_functions.va:58:9
+   |
+58 |         @(timer(1, 2)) y = 19.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
