@@ -103,8 +103,12 @@ impl<'c1, 'c2> BodyLoweringCtx<'_, 'c1, 'c2> {
             | Stmt::Contribute { .. }
             | Stmt::EventTrigger { .. } => {}
             Stmt::Break | Stmt::Continue | Stmt::Return { .. } => {}
-            Stmt::EventControl { event, body } => {
-                let inner = in_cross || matches!(event, Event::Cross { .. });
+            Stmt::EventControl { events, body } => {
+                // A variable assigned under a monitored event is retained across
+                // timesteps; ORing events together (VAMS-2023 5.10.1) does not
+                // change that, so one monitored element is enough.
+                let inner =
+                    in_cross || events.iter().any(|event| matches!(event, Event::Cross { .. }));
                 self.collect_cross_assigned(body, inner, dst);
             }
             Stmt::Block { body } => {

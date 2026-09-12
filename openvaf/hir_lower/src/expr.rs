@@ -1019,6 +1019,12 @@ impl BodyLoweringCtx<'_, '_, '_> {
     /// Read the coefficient values of an array-valued argument (an array variable's
     /// elements or an array literal's entries), lowest index first.
     fn array_coeffs(&mut self, arg: ExprId) -> Vec<Value> {
+        // A null argument (`laplace_nd(V(in), , den)`, VAMS-2023 4.5.11) has no
+        // expression at all. It means an empty coefficient vector; lowering it as an
+        // expression would reach `get_expr`'s `invalid HIR` panic.
+        if self.body.is_missing(arg) {
+            return Vec::new();
+        }
         // Laplace coefficients feed real-valued state-space arithmetic, but an
         // anonymous array literal of integer constants (the LRM's own examples use
         // `'{-1,0,1}`) lowers to integer values. Widen each coefficient to real so
@@ -1073,9 +1079,21 @@ impl BodyLoweringCtx<'_, '_, '_> {
         let input = self.lower_expr(args[0]);
         let num = self.array_coeffs(args[1]);
         let den = self.array_coeffs(args[2]);
+        // A null numerator (`laplace_nd(V(in), , den)`, VAMS-2023 4.5.11) is the
+        // empty product of zeros, so the numerator is *unity* -- H(s) = 1/D(s) --
+        // not zero, which is what an empty coefficient list would otherwise produce.
+        let num = if num.is_empty() {
+            let one = self.ctx.fconst(1.0);
+            vec![one]
+        } else {
+            num
+        };
         let n = den.len().saturating_sub(1); // filter order
         if n == 0 {
-            if num.is_empty() || den.is_empty() {
+            // A null denominator likewise means D(s) = 1, so the filter is its
+            // numerator; only the constant case is realizable without differentiating
+            // the input, which is the same restriction as before.
+            if den.is_empty() {
                 return input;
             }
             let g = self.ctx.ins().fdiv(num[0], den[0]);

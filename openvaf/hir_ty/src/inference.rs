@@ -176,18 +176,38 @@ impl Ctx<'_> {
                     }
                 }
             }
-            // VAMS-2023 5.10.4: `-> ev;` and `@(ev)` both name a declared event
-            Stmt::EventTrigger { event }
-            | Stmt::EventControl { event: Event::Named { event }, .. } => {
+            // VAMS-2023 5.10.4: `-> ev;` names a declared event
+            Stmt::EventTrigger { event } => {
                 if let Some(ty) = self.infere_expr(stmt, event) {
                     self.expect::<false>(event, None, ty, Cow::Borrowed(&[TyRequirement::Event]));
                 }
             }
-            // VAMS-2023 5.10.3: `@(cross(...))` and friends. Inferring the call
-            // checks the event function's arguments; the result is discarded
-            // because the event expression is never lowered.
-            Stmt::EventControl { event: Event::Cross { call: Some(call) }, .. } => {
-                self.infere_expr(stmt, call);
+            // Every element of the event expression is checked on its own
+            // (VAMS-2023 5.10.1): `@(ev)` names a declared event, while
+            // `@(cross(...))` and friends have their arguments checked by
+            // inferring the call. The call's result is discarded because the event
+            // expression is never lowered.
+            Stmt::EventControl { ref events, .. } => {
+                // cloned so the body is no longer borrowed while inferring
+                let events = events.clone();
+                for event in events {
+                    match event {
+                        Event::Named { event } => {
+                            if let Some(ty) = self.infere_expr(stmt, event) {
+                                self.expect::<false>(
+                                    event,
+                                    None,
+                                    ty,
+                                    Cow::Borrowed(&[TyRequirement::Event]),
+                                );
+                            }
+                        }
+                        Event::Cross { call: Some(call) } => {
+                            self.infere_expr(stmt, call);
+                        }
+                        _ => (),
+                    }
+                }
             }
             Stmt::Return { value: Some(value) } => {
                 let dst_ty = self.fn_return_ty.clone();

@@ -108,6 +108,19 @@ pub enum SyntaxError {
         range: TextRange,
         ty: TextRange,
     },
+
+    /// VAMS-2023 A.6.5: a null argument (`analog_expression_or_null`) is only
+    /// legal in the analog event functions, and only in the positions the LRM
+    /// declares that way.
+    IllegalNullArgument {
+        /// Zero-width range where the omitted argument would have been.
+        range: TextRange,
+        arg_list: TextRange,
+        /// Name of the called function, if it is a plain identifier.
+        fun: Option<String>,
+        /// 1-based position of the null argument.
+        pos: usize,
+    },
 }
 
 use SyntaxError::*;
@@ -137,5 +150,9 @@ impl_display! {
         IllegalNetType{found,..} => "{} nets are currently not supported!",found;
         RangeConstraintForNonNumericParameter{param,..} => "non-numeric parameter '{}' has range bounds", param;
         PortNotDeclaredInModule{name,..} => "port '{name}' was not declared in the module head";
+        IllegalNullArgument{fun,pos,..} => "argument {} of {} may not be omitted", pos, match fun {
+            Some(fun) => format!("'{fun}'"),
+            None => "this function".to_owned(),
+        };
     }
 }

@@ -134,7 +134,9 @@ pub enum Stmt {
     Empty,
     Expr(ExprId),
     EventControl {
-        event: Event,
+        /// The event expressions ORed together with `or` (VAMS-2023 5.10.1); the
+        /// body runs when any of them occurs. Usually exactly one.
+        events: Vec<Event>,
         body: StmtId,
     },
     Assignment {
@@ -228,11 +230,15 @@ impl Stmt {
     pub fn walk_child_exprs(&self, mut f: impl FnMut(ExprId)) {
         match *self {
             Stmt::Empty | Stmt::Missing | Stmt::Block { .. } | Stmt::Break | Stmt::Continue => (),
-            Stmt::EventControl { ref event, .. } => match *event {
-                Event::Named { event } => f(event),
-                Event::Cross { call: Some(call) } => f(call),
-                _ => (),
-            },
+            Stmt::EventControl { ref events, .. } => {
+                for event in events {
+                    match *event {
+                        Event::Named { event } => f(event),
+                        Event::Cross { call: Some(call) } => f(call),
+                        _ => (),
+                    }
+                }
+            }
             Stmt::EventTrigger { event } => f(event),
             Stmt::If { cond: expr, .. }
             | Stmt::ForLoop { cond: expr, .. }
