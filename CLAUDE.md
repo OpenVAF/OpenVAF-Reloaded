@@ -12,16 +12,28 @@ The project is a fork of Pascal Kuthe's original OpenVAF compiler, maintained by
 
 ### Prerequisites
 - **Rust toolchain**: Install with profile "complete"
-- **LLVM 18.1.8**: Must be built from source
-- **Environment variable**: Set `LLVM_SYS_181_PREFIX` to LLVM installation directory
+- **LLVM 18 to 21**: A distribution package is enough — no source build required.
+  Ubuntu 24.04 and later ship LLVM 18 (`apt-get install llvm-18 llvm-18-dev
+  libclang-18-dev clang-18`); see README.md for other versions.
+- **Environment**: Set `LLVM_SYS_1XX_PREFIX` for the version you build against and
+  put its `bin` on `PATH` — `openvaf/target`'s build script invokes `clang` by name:
+  ```bash
+  export LLVM_SYS_181_PREFIX=/usr/lib/llvm-18
+  export PATH=/usr/lib/llvm-18/bin:$PATH
+  ```
+
+**There is no default LLVM version**: every build and test command that touches
+`mir_llvm`, `osdi` or `openvaf` needs `--features llvmXX` (or run `./configure` to
+auto-detect and use `./build.sh`). Without it the build fails with several hundred
+`cannot find module or crate llvm_sys` errors.
 
 ### Building the Compiler
 ```bash
 # Build release version (recommended)
-cargo build --release --bin openvaf-r
+cargo build --release --features llvm18 --bin openvaf-r
 
 # Build debug version
-cargo build --bin openvaf-r
+cargo build --features llvm18 --bin openvaf-r
 
 # The binaries are output to:
 # - target/release/openvaf-r (release)
@@ -31,15 +43,29 @@ cargo build --bin openvaf-r
 ### Testing
 ```bash
 # Run fast tests only (default)
-cargo test
-cargo test --release  # On release build
+cargo test --features llvm18
+cargo test --release --features llvm18  # On release build
 
 # Run all tests including slow ones
-RUN_SLOW_TESTS=1 cargo test
+RUN_SLOW_TESTS=1 cargo test --features llvm18
 
 # Update test snapshots (when you've intentionally changed MIR/IR generation)
-UPDATE_EXPECT=1 cargo test
+UPDATE_EXPECT=1 cargo test --features llvm18
 ```
+
+The front-end crates (`parser`, `syntax`, `hir*`, `mir*`, `basedb`, `sourcegen`)
+need neither LLVM nor the feature flag, but `openvaf/target`'s build script still
+wants `clang`. `RUST_CHECK=1` makes it emit stubs instead, so front-end work can be
+built and tested without any LLVM present:
+```bash
+RUST_CHECK=1 cargo test -p hir_ty -p hir_lower -p basedb
+```
+
+`cargo test -p openvaf --test integration` compiles models to OSDI and runs them
+against a mock simulator (`openvaf/openvaf/tests/mock_sim/`), which is the only
+harness that lowers *with* equations — the place to test analog operators
+numerically. It enumerates `external/vacask/devices`, so create that directory
+(empty is fine) if you do not have the VACASK model library checked out.
 
 **Note**: Some expected test results are in `.snap` files in `openvaf/test_data/`, while others are hard-coded in test source files (e.g., `openvaf/mir_autodiff/src/builder/tests.rs`) and must be updated manually.
 
