@@ -351,10 +351,26 @@ fn validate_call(call: ast::Call, errors: &mut Vec<SyntaxError>) {
     // 5.10.3.2: above     ( expr [ , time_tol [ , expr_tol [ , enable ] ] ] )
     // 5.10.3.3: timer     ( start [ , period [ , time_tol [ , enable ] ] ] )
     // 5.10.3.4: absdelta  ( expr , delta [ , time_tol [ , expr_tol [ , enable ] ] ] )
+    //
+    // The Laplace and Z-transform filters take their two coefficient/root vectors as
+    // `[ analog_filter_function_arg ]`, which A.6.4 spells out as optional and
+    // `constant_assignment_pattern_or_null`. 4.5.11 says so in prose as well: "The
+    // zeros argument may be represented as a null argument. The null argument is
+    // characterized by two adjacent commas".
     let nullable: &[usize] = match fun {
         Some(kw::raw::cross) => &[2, 3, 4],
         Some(kw::raw::above) | Some(kw::raw::timer) => &[2, 3],
         Some(kw::raw::absdelta) => &[3, 4],
+        Some(
+            kw::raw::laplace_zp
+            | kw::raw::laplace_zd
+            | kw::raw::laplace_np
+            | kw::raw::laplace_nd
+            | kw::raw::zi_zp
+            | kw::raw::zi_zd
+            | kw::raw::zi_np
+            | kw::raw::zi_nd,
+        ) => &[2, 3],
         _ => &[],
     };
 

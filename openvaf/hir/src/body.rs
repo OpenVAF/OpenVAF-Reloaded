@@ -150,6 +150,13 @@ impl<'a> BodyRef<'a> {
         Branch { id }
     }
 
+    /// Whether `expr` is a missing expression: a null argument (VAMS-2023 A.6.4 /
+    /// A.6.5) or a piece the parser could not recover. `get_expr` panics on one, so
+    /// anything that may be handed a nullable argument checks this first.
+    pub fn is_missing(&self, expr: ExprId) -> bool {
+        matches!(self.body.exprs[expr], hir_def::Expr::Missing)
+    }
+
     pub fn get_expr(&self, expr: ExprId) -> Expr<'a> {
         match self.body.exprs[expr] {
             hir_def::Expr::Path { .. } => Expr::Read(self.resolve_path(expr)),
