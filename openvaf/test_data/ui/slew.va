@@ -1,0 +1,26 @@
+`include "disciplines.vams"
+
+// VAMS-2023 4.5.9: `slew` is an analog operator, not an unsupported function.
+// All three forms are accepted, the rates may be dynamic expressions, and the
+// operator restrictions that apply to every analog operator still apply to it.
+module slew_ui(in, out);
+    input in;
+    output out;
+    electrical in, out;
+
+    parameter real max_pos = 1e6 from (0:inf);
+    parameter real max_neg = -1e6 from (-inf:0);
+
+    real rate;
+
+    analog begin
+        rate = max_pos * (1.0 + 0.1 * V(in));
+
+        V(out) <+ slew(V(in));
+        V(out) <+ slew(V(in), max_pos);
+        V(out) <+ slew(V(in), max_pos, max_neg);
+        // the rates are ordinary expressions, so they may vary during the
+        // simulation
+        V(out) <+ slew(V(in), rate);
+    end
+endmodule

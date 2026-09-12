@@ -505,6 +505,78 @@ fn test_adc() -> Result<()> {
     Ok(())
 }
 
+/// VAMS-2023 4.5.9: the rate-limited form of `slew` is realized as an implicit
+/// equation, the path the `mir` snapshot (lowered without equations) cannot reach.
+/// The equation is `dx/dt = clamp((expr - x)/eps, max_neg, max_pos)`, lowered as
+/// `react = x`, `resist = -rate`, so the resistive residual of the equation node
+/// *is* the negated slew rate and can be read directly. See `slew.va`.
+fn test_slew() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+
+    const MAX_POS: f64 = 1e6;
+    const MAX_NEG: f64 = -2e6;
+    // the gain the lowering chases the target with
+    const EPS: f64 = 1e-12;
+
+    let desc = test_descriptor(&openvaf_test_data("osdi").join("slew.va"))?;
+    let model = desc.new_model();
+    model.process_params()?;
+    let mut instance = model.new_instance();
+    let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+
+    // Evaluate with the input at `v_in` and the slew state at `x`, and return the
+    // (resistive, reactive) residual of the slew equation.
+    let eval = |instance: &OsdiInstance,
+                model: &OsdiModel,
+                sim: &mut MockSimulation,
+                v_in: f64,
+                x: f64,
+                first: bool| {
+        if !first {
+            sim.next_iter();
+        }
+        sim.set_voltage("in", v_in);
+        sim.set_voltage("out", 0.0);
+        sim.set_voltage("thru", 0.0);
+        sim.set_voltage("implicit_equation_0", x);
+        instance.eval(model, sim, EvalFlags::empty());
+        instance.load_dae(model, sim);
+        sim.read_residual("implicit_equation_0")
+    };
+
+    // Input far above the state: the rate saturates at max_pos, and the reactive
+    // residual is the state itself (the d/dt term).
+    let (resist, react) = eval(&instance, &model, &mut sim, 1.0, 0.0, true);
+    float_cmp::assert_approx_eq!(f64, resist, -MAX_POS, epsilon = 1e-6);
+    float_cmp::assert_approx_eq!(f64, react, 0.0, epsilon = 1e-9);
+
+    // Input far below the state: it saturates at max_neg, which is a different
+    // magnitude, so this also pins that the two limits are not interchanged.
+    let (resist, _) = eval(&instance, &model, &mut sim, -1.0, 0.0, false);
+    float_cmp::assert_approx_eq!(f64, resist, -MAX_NEG, epsilon = 1e-6);
+
+    // State already at the input: nothing to chase, so the rate is zero.
+    let (resist, react) = eval(&instance, &model, &mut sim, 0.5, 0.5, false);
+    float_cmp::assert_approx_eq!(f64, resist, 0.0, epsilon = 1e-9);
+    float_cmp::assert_approx_eq!(f64, react, 0.5, epsilon = 1e-9);
+
+    // Below the limits the rate is not clamped but follows the difference, which is
+    // what makes the state track the input rather than ramp at a fixed slope.
+    let delta = 1e-7;
+    let (resist, _) = eval(&instance, &model, &mut sim, delta, 0.0, false);
+    float_cmp::assert_approx_eq!(f64, resist, -delta / EPS, epsilon = 1e-3);
+
+    // The form with no rates is a plain pass-through. A voltage contribution puts
+    // its equation on the branch flow unknown, where it reads as
+    // `slew(V(in)) - V(thru)`, and `thru` gets no equation of its own: with
+    // `V(thru)` held at 0 the residual is the input itself.
+    float_cmp::assert_approx_eq!(f64, sim.read_residual("flow(thru)").0, delta, epsilon = 1e-12);
+
+    Ok(())
+}
+
 harness! {
     // TODO: run this in CI, somehow this test is flakey tough regarding the linker invocation (and really slow)
     Test::from_dir("integration", &integration_test, &ignore_dev_tests, &project_root().join("integration_tests")),
@@ -514,5 +586,5 @@ harness! {
     Test::from_dir_filtered("vacask_spice", &vacask_spice_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice")),
     // VACASK simplified SPICE models
     Test::from_dir_filtered("vacask_spice_sn", &vacask_spice_sn_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice/sn")),
-    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp)]
+    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("slew", &test_slew)]
 }

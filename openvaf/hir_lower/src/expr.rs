@@ -940,7 +940,54 @@ impl BodyLoweringCtx<'_, '_, '_> {
                     x
                 }
             }
-            BuiltIn::slew | BuiltIn::limit => self.lower_expr(args[0]),
+            BuiltIn::slew => {
+                // VAMS-2023 4.5.9: `slew` bounds the rate of change of its argument.
+                //
+                //   slew ( expr [ , max_pos_slew_rate [ , max_neg_slew_rate ] ] )
+                //
+                // With no rates given the LRM passes the signal through unchanged,
+                // and in DC it passes the value through as well.
+                let target = self.lower_expr(args[0]);
+                if self.ctx.no_equations || args.len() == 1 {
+                    target
+                } else {
+                    let max_pos = self.lower_expr(args[1]);
+                    // "If the max_neg_slew_rate is not specified, it defaults to the
+                    // opposite of the max_pos_slew_rate."
+                    let max_neg = if args.len() > 2 {
+                        self.lower_expr(args[2])
+                    } else {
+                        self.ctx.ins().fneg(max_pos)
+                    };
+
+                    // Realized as a continuous rate limiter, the same shape as the
+                    // `transition` lag below: a state whose derivative chases the
+                    // target with a very large gain, clamped to the two rates. While
+                    // the input changes more slowly than the limits the state follows
+                    // it to within `eps * rate`, which is what the LRM asks for
+                    // ("returns the value of expr"); once a limit is reached the state
+                    // moves at exactly that rate. A clamped derivative is continuous
+                    // in time, so the transient integrator can step across it.
+                    let eps = self.ctx.fconst(1e-12);
+                    let (eq, x) =
+                        self.ctx.implicit_equation(ImplicitEquationKind::Idt(IdtKind::Basic));
+                    let diff = self.ctx.ins().fsub(target, x);
+                    let rate = self.ctx.ins().fdiv(diff, eps);
+                    // rate = min(max(rate, max_neg), max_pos)
+                    let too_fast = self.ctx.ins().fgt(rate, max_pos);
+                    let rate =
+                        self.ctx.make_select(too_fast, |_s, b| if b { max_pos } else { rate });
+                    let too_slow = self.ctx.ins().flt(rate, max_neg);
+                    let rate =
+                        self.ctx.make_select(too_slow, |_s, b| if b { max_neg } else { rate });
+                    // dx/dt = rate  ->  react = x, resist = -rate.
+                    let resist = self.ctx.ins().fneg(rate);
+                    self.ctx.def_resist_residual(resist, eq);
+                    self.ctx.def_react_residual(x, eq);
+                    x
+                }
+            }
+            BuiltIn::limit => self.lower_expr(args[0]),
 
             // `ac_stim` is an AC small-signal stimulus: it is defined to be zero in the
             // large-signal (DC/transient) domain, which is what a contribution lowers.

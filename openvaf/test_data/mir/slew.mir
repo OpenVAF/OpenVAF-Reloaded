@@ -1,0 +1,9 @@
+function %(v16, v17, v18) {
+block0:
+    v19 = optbarrier v16
+    v20 = optbarrier v17
+    v21 = optbarrier v18
+    jmp block1
+
+block1:
+}
