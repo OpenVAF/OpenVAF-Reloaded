@@ -505,6 +505,65 @@ fn test_adc() -> Result<()> {
     Ok(())
 }
 
+/// VAMS-2023 4.5.11.1-4.5.11.3: the root forms of the Laplace filter. Each one is
+/// paired in the model with a `laplace_nd` call whose coefficients spell out the
+/// same transfer function, so expanding the roots must reproduce them exactly --
+/// including a zero *at* zero, whose factor is a bare `s` rather than `1 - s/r`,
+/// and a conjugate pole pair, whose imaginary parts have to cancel. See
+/// `laplace_roots.va`.
+fn test_laplace_roots() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+
+    let desc = test_descriptor(&openvaf_test_data("osdi").join("laplace_roots.va"))?;
+    let model = desc.new_model();
+    model.process_params()?;
+    let mut instance = model.new_instance();
+    let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+
+    sim.set_voltage("in", 1.0);
+    for out in ["o1", "o2", "o3", "o4", "o5", "o6", "o7", "o8"] {
+        sim.set_voltage(out, 0.0);
+    }
+    // (root form, coefficient form) equation pairs, in source order: one state each
+    // for the two first-order filters, then two each for the second-order pair.
+    const PAIRS: [(usize, usize); 6] = [(0, 1), (2, 3), (4, 6), (5, 7), (8, 10), (9, 11)];
+
+    // The two equations of a pair have to hold the same state to be comparable, but
+    // the values differ *between* pairs so that a mix-up between the two states of
+    // the second-order filter cannot pass by coincidence.
+    for (i, (root_eq, coeff_eq)) in PAIRS.iter().enumerate() {
+        let x = 0.25 + 0.125 * i as f64;
+        sim.set_voltage(&format!("implicit_equation_{root_eq}"), x);
+        sim.set_voltage(&format!("implicit_equation_{coeff_eq}"), x);
+    }
+
+    instance.eval(&model, &mut sim, EvalFlags::empty());
+    instance.load_dae(&model, &mut sim);
+
+    for (root_eq, coeff_eq) in PAIRS {
+        let (root_resist, root_react) = sim.read_residual(&format!("implicit_equation_{root_eq}"));
+        let (coeff_resist, coeff_react) =
+            sim.read_residual(&format!("implicit_equation_{coeff_eq}"));
+        // The two sides compute the same coefficients by different routes -- one
+        // expands roots, the other reads them out -- so they agree to rounding
+        // rather than bit for bit. The residuals reach 1e12, which makes a relative
+        // comparison the only meaningful one.
+        float_cmp::assert_approx_eq!(f64, root_resist, coeff_resist, ulps = 8);
+        float_cmp::assert_approx_eq!(f64, root_react, coeff_react, ulps = 8);
+    }
+
+    // The outputs themselves must agree too, not just the internal equations.
+    for (root_out, coeff_out) in [("o1", "o2"), ("o3", "o4"), ("o5", "o6"), ("o7", "o8")] {
+        let root = sim.read_residual(&format!("flow({root_out})")).0;
+        let coeff = sim.read_residual(&format!("flow({coeff_out})")).0;
+        float_cmp::assert_approx_eq!(f64, root, coeff, ulps = 8);
+    }
+
+    Ok(())
+}
+
 harness! {
     // TODO: run this in CI, somehow this test is flakey tough regarding the linker invocation (and really slow)
     Test::from_dir("integration", &integration_test, &ignore_dev_tests, &project_root().join("integration_tests")),
@@ -514,5 +573,5 @@ harness! {
     Test::from_dir_filtered("vacask_spice", &vacask_spice_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice")),
     // VACASK simplified SPICE models
     Test::from_dir_filtered("vacask_spice_sn", &vacask_spice_sn_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice/sn")),
-    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp)]
+    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_roots", &test_laplace_roots)]
 }
