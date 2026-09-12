@@ -141,14 +141,8 @@ impl ast::AttrsOwner for EventStmt {}
 impl EventStmt {
     pub fn at_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![@]) }
     pub fn l_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['(']) }
-    pub fn initial_step_token(&self) -> Option<SyntaxToken> {
-        support::token(&self.syntax, T![initial_step])
-    }
-    pub fn final_step_token(&self) -> Option<SyntaxToken> {
-        support::token(&self.syntax, T![final_step])
-    }
+    pub fn events(&self) -> AstChildren<EventExpr> { support::children(&self.syntax) }
     pub fn r_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![')']) }
-    pub fn event(&self) -> Option<Expr> { support::child(&self.syntax) }
     pub fn stmt(&self) -> Option<Stmt> { support::child(&self.syntax) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -216,6 +210,21 @@ impl Case {
     pub fn default_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![default]) }
     pub fn colon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![:]) }
     pub fn stmt(&self) -> Option<Stmt> { support::child(&self.syntax) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EventExpr {
+    pub(crate) syntax: SyntaxNode,
+}
+impl EventExpr {
+    pub fn initial_step_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![initial_step])
+    }
+    pub fn final_step_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![final_step])
+    }
+    pub fn l_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['(']) }
+    pub fn r_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![')']) }
+    pub fn event(&self) -> Option<Expr> { support::child(&self.syntax) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BlockScope {
@@ -949,6 +958,17 @@ impl AstNode for Assign {
 }
 impl AstNode for Case {
     fn can_cast(kind: SyntaxKind) -> bool { kind == CASE }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
+impl AstNode for EventExpr {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == EVENT_EXPR }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
         if Self::can_cast(syntax.kind()) {
             Some(Self { syntax })
@@ -1984,6 +2004,11 @@ impl std::fmt::Display for Assign {
     }
 }
 impl std::fmt::Display for Case {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
+impl std::fmt::Display for EventExpr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
     }

@@ -195,8 +195,8 @@ impl<'a> BodyRef<'a> {
         match self.body.stmts[stmnt] {
             hir_def::Stmt::Empty | hir_def::Stmt::Missing => None,
             hir_def::Stmt::Expr(e) => Some(Stmt::Expr(e)),
-            hir_def::Stmt::EventControl { ref event, body } => {
-                Some(Stmt::EventControl { event, body })
+            hir_def::Stmt::EventControl { ref events, body } => {
+                Some(Stmt::EventControl { events, body })
             }
             // an unresolved event was already diagnosed; drop the statement
             hir_def::Stmt::EventTrigger { event } => {
@@ -287,7 +287,8 @@ pub enum ContributeKind {
 pub enum Stmt<'a> {
     Expr(ExprId),
     EventControl {
-        event: &'a Event,
+        /// The event expressions ORed together (VAMS-2023 5.10.1).
+        events: &'a [Event],
         body: StmtId,
     },
     /// VAMS-2023 5.10.4: `-> ev;`

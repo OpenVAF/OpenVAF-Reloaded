@@ -286,16 +286,21 @@ impl BodyValidator<'_> {
 
                 return;
             }
-            Stmt::EventControl { ref event, body } => {
-                let call = match *event {
-                    Event::Cross { call } => call,
-                    _ => None,
-                };
+            Stmt::EventControl { ref events, body } => {
+                // Each element of the event expression is validated on its own
+                // (VAMS-2023 5.10.1).
+                let calls: Vec<_> = events
+                    .iter()
+                    .filter_map(|event| match *event {
+                        Event::Cross { call } => call,
+                        _ => None,
+                    })
+                    .collect();
                 let old = replace(&mut self.ctx, BodyCtx::EventControl);
                 let old_event = replace(&mut self.in_event_control, true);
                 // The event expression is validated in the event context too: it may
                 // read natures (`@(cross(V(a)))`) but not use analog operators.
-                if let Some(call) = call {
+                for call in calls {
                     let old_call = replace(&mut self.event_call, Some(call));
                     self.validate_expr(call, stmt);
                     self.event_call = old_call;

@@ -6,7 +6,7 @@ use std::iter::successors;
 use stdx::impl_debug;
 
 use super::{
-    AnalogBehaviour, ArgListOwner, Assign, AstChildTokens, AstChildren, Constraint, EventStmt,
+    AnalogBehaviour, ArgListOwner, Assign, AstChildTokens, AstChildren, Constraint, EventExpr,
     Expr, ForStmt, Function, ModulePortKind, Path, PortFlow, ProceduralBlock, Range, Stmt, StrLit,
 };
 use crate::ast::{self, support, AstNode};
@@ -248,7 +248,7 @@ impl ForStmt {
     }
 }
 
-impl EventStmt {
+impl EventExpr {
     pub fn sim_phases(&self) -> AstChildTokens<StrLit> {
         support::child_token(self.syntax())
     }
