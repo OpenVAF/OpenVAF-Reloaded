@@ -195,7 +195,6 @@ impl BuiltIn {
             | BuiltIn::laplace_zd
             | BuiltIn::laplace_zp
             | BuiltIn::last_crossing
-            | BuiltIn::slew
             | BuiltIn::fclose
             | BuiltIn::fopen
             | BuiltIn::fdisplay
