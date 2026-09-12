@@ -702,8 +702,20 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
 
             // Without equation lowering (e.g. op-var contexts) a filter is a no-op.
-            BuiltIn::laplace_nd if self.ctx.no_equations => F_ZERO,
+            BuiltIn::laplace_nd
+            | BuiltIn::laplace_zp
+            | BuiltIn::laplace_zd
+            | BuiltIn::laplace_np
+                if self.ctx.no_equations =>
+            {
+                F_ZERO
+            }
             BuiltIn::laplace_nd => self.lower_laplace_nd(args),
+            // VAMS-2023 4.5.11.1-4.5.11.3: the same filter with its numerator,
+            // denominator or both given as roots instead of coefficients.
+            BuiltIn::laplace_zp => self.lower_laplace_roots(args, true, true),
+            BuiltIn::laplace_zd => self.lower_laplace_roots(args, true, false),
+            BuiltIn::laplace_np => self.lower_laplace_roots(args, false, true),
 
             BuiltIn::idt => {
                 let kind = match_signature! {
@@ -1073,6 +1085,104 @@ impl BodyLoweringCtx<'_, '_, '_> {
         let input = self.lower_expr(args[0]);
         let num = self.array_coeffs(args[1]);
         let den = self.array_coeffs(args[2]);
+        self.lower_laplace_state_space(input, num, den)
+    }
+
+    /// Lower the root forms of the Laplace filter (VAMS-2023 4.5.11.1-4.5.11.3) by
+    /// expanding each root vector into polynomial coefficients and reusing the
+    /// `laplace_nd` realization. The number of roots is fixed at compile time (array
+    /// lengths are static), so only the coefficient arithmetic is emitted.
+    fn lower_laplace_roots(&mut self, args: &[ExprId], zeros: bool, poles: bool) -> Value {
+        let input = self.lower_expr(args[0]);
+        let num = if zeros {
+            let roots = self.array_coeffs(args[1]);
+            self.expand_roots(&roots)
+        } else {
+            self.array_coeffs(args[1])
+        };
+        let den = if poles {
+            let roots = self.array_coeffs(args[2]);
+            self.expand_roots(&roots)
+        } else {
+            self.array_coeffs(args[2])
+        };
+        self.lower_laplace_state_space(input, num, den)
+    }
+
+    /// Expand a flat vector of (real, imaginary) root pairs into the real polynomial
+    /// coefficients of `prod_k (1 - s/r_k)`, ascending powers of `s`.
+    ///
+    /// A root of zero contributes a bare `s` factor instead of `1 - s/r`, as
+    /// 4.5.11.1 requires. The LRM also requires a complex root's conjugate to be
+    /// present, which is what makes the product real: the expansion carries the
+    /// imaginary parts through and drops them at the end, so no case analysis on
+    /// whether a given root is real is needed -- which matters because the roots are
+    /// runtime values.
+    fn expand_roots(&mut self, roots: &[Value]) -> Vec<Value> {
+        let one = self.ctx.fconst(1.0);
+        // running polynomial, real and imaginary parts, ascending powers of s
+        let mut re = vec![one];
+        let mut im = vec![F_ZERO];
+
+        for pair in roots.chunks(2) {
+            let sigma = pair[0];
+            // an odd-length vector is malformed; treat the missing part as zero
+            let omega = pair.get(1).copied().unwrap_or(F_ZERO);
+
+            // |r|^2 decides both the reciprocal and whether the root is zero
+            let s2 = self.ctx.ins().fmul(sigma, sigma);
+            let w2 = self.ctx.ins().fmul(omega, omega);
+            let mag2 = self.ctx.ins().fadd(s2, w2);
+            let is_zero = self.ctx.ins().feq(mag2, F_ZERO);
+            // divide by 1 instead of 0 in the branch the select discards
+            let denom = self.ctx.make_select(is_zero, |_ctx, b| if b { one } else { mag2 });
+
+            // 1/r = conj(r)/|r|^2, so the s coefficient of (1 - s/r) is
+            // (-sigma + j*omega)/|r|^2; a zero root makes the factor a bare s.
+            let inv_re = self.ctx.ins().fdiv(sigma, denom);
+            let c1_re_nonzero = self.ctx.ins().fneg(inv_re);
+            let c1_im_nonzero = self.ctx.ins().fdiv(omega, denom);
+
+            let c0 = self.ctx.make_select(is_zero, |_ctx, b| if b { F_ZERO } else { one });
+            let c1_re =
+                self.ctx.make_select(is_zero, |_ctx, b| if b { one } else { c1_re_nonzero });
+            let c1_im =
+                self.ctx.make_select(is_zero, |_ctx, b| if b { F_ZERO } else { c1_im_nonzero });
+
+            // multiply the running polynomial by [c0, c1]
+            let mut next_re = vec![F_ZERO; re.len() + 1];
+            let mut next_im = vec![F_ZERO; re.len() + 1];
+            for i in 0..re.len() {
+                // times c0, whose imaginary part is always zero
+                let t_re = self.ctx.ins().fmul(re[i], c0);
+                let t_im = self.ctx.ins().fmul(im[i], c0);
+                next_re[i] = self.ctx.ins().fadd(next_re[i], t_re);
+                next_im[i] = self.ctx.ins().fadd(next_im[i], t_im);
+
+                // times c1, shifted up one power of s
+                let rr = self.ctx.ins().fmul(re[i], c1_re);
+                let ii = self.ctx.ins().fmul(im[i], c1_im);
+                let ri = self.ctx.ins().fmul(re[i], c1_im);
+                let ir = self.ctx.ins().fmul(im[i], c1_re);
+                let real = self.ctx.ins().fsub(rr, ii);
+                let imag = self.ctx.ins().fadd(ri, ir);
+                next_re[i + 1] = self.ctx.ins().fadd(next_re[i + 1], real);
+                next_im[i + 1] = self.ctx.ins().fadd(next_im[i + 1], imag);
+            }
+            re = next_re;
+            im = next_im;
+        }
+
+        // The conjugate pairs the LRM requires cancel the imaginary parts.
+        re
+    }
+
+    fn lower_laplace_state_space(
+        &mut self,
+        input: Value,
+        num: Vec<Value>,
+        den: Vec<Value>,
+    ) -> Value {
         let n = den.len().saturating_sub(1); // filter order
         if n == 0 {
             if num.is_empty() || den.is_empty() {
