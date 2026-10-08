@@ -1,4 +1,5 @@
-use hir::{AssignmentLhs, BodyRef, Event, ExprId, Node, Stmt, StmtId, Type, Variable};
+use ahash::AHashSet;
+use hir::{AssignmentLhs, BodyRef, CaseCond, Event, ExprId, Node, Stmt, StmtId, Type, Variable};
 use mir::builder::InstBuilder;
 use mir::{Block, Value};
 use stdx::iter::zip;
@@ -14,27 +15,29 @@ pub struct BodyLoweringCtx<'a, 'c1, 'c2> {
 
 impl<'c1, 'c2> BodyLoweringCtx<'_, 'c1, 'c2> {
     pub fn lower_entry_stmts(&mut self) {
-        // Pre-pass: find variables assigned inside `@(cross)` handlers. Each is backed
-        // by retained limit-state slots so it holds its value across timesteps (true
-        // latch/event semantics, e.g. a Schmitt trigger). The variable starts each
-        // evaluation at its previous accepted value. An array variable retains every
-        // element (one slot each), so e.g. an ADC's sampled bit vector survives.
+        // Pre-pass: find the variables whose value has to survive to the next
+        // evaluation, i.e. those that can be read before they are written. Each is
+        // backed by retained slots and starts every evaluation at its previous
+        // accepted value, which is what makes an `@(cross)` latch a latch and lets an
+        // event handler accumulate. An array variable retains every element (one slot
+        // each), so e.g. an ADC's sampled bit vector survives.
         let mut retained: Vec<Variable> = Vec::new();
+        let mut assigned = ahash::AHashSet::new();
         for &stmnt in self.body.entry() {
-            self.collect_cross_assigned(stmnt, false, &mut retained);
+            self.collect_retained(stmnt, &mut assigned, &mut retained);
         }
         let mut seen = ahash::AHashSet::new();
         retained.retain(|v| seen.insert(*v));
 
         // (place, state, element type) for every retained slot, in store order.
-        let mut slots: Vec<(PlaceKind, crate::LimitState, Type)> = Vec::new();
+        let mut slots: Vec<(PlaceKind, crate::RetainedState, Type)> = Vec::new();
 
         if !self.ctx.no_equations {
             for &var in &retained {
                 let (elem_ty, places) = self.retained_layout(var);
                 let mut states = Vec::with_capacity(places.len());
                 for place in places {
-                    let state = self.ctx.alloc_retained_state();
+                    let state = self.ctx.alloc_retained_state(0.0);
                     let init = self.retained_load(state, &elem_ty);
                     self.ctx.def_place(place, init);
                     states.push(state);
@@ -69,7 +72,7 @@ impl<'c1, 'c2> BodyLoweringCtx<'_, 'c1, 'c2> {
 
     /// Read a retained slot's previous-timestep value (stored as real) back into the
     /// variable's element type. A real element needs no cast.
-    fn retained_load(&mut self, state: crate::LimitState, elem_ty: &Type) -> Value {
+    fn retained_load(&mut self, state: crate::RetainedState, elem_ty: &Type) -> Value {
         let prev = self.ctx.retained_prev(state);
         match elem_ty {
             Type::Real => prev,
@@ -78,7 +81,7 @@ impl<'c1, 'c2> BodyLoweringCtx<'_, 'c1, 'c2> {
     }
 
     /// Store a retained slot's final value (cast to real) for the next timestep.
-    fn retained_save(&mut self, state: crate::LimitState, val: Value, elem_ty: &Type) {
+    fn retained_save(&mut self, state: crate::RetainedState, val: Value, elem_ty: &Type) {
         let as_real = match elem_ty {
             Type::Real => val,
             _ => self.ctx.insert_cast(val, elem_ty, &Type::Real),
@@ -86,45 +89,181 @@ impl<'c1, 'c2> BodyLoweringCtx<'_, 'c1, 'c2> {
         self.ctx.store_retained(state, as_real);
     }
 
-    /// Recursively collect variables assigned inside `@(cross)` event handlers.
-    fn collect_cross_assigned(&self, stmnt: StmtId, in_cross: bool, dst: &mut Vec<Variable>) {
+    /// Collect the variables whose value has to survive from one evaluation of the
+    /// analog block to the next: those whose read can be reached without a write.
+    ///
+    /// VAMS-2023 re-executes the analog block from the top on every evaluation while
+    /// its variables keep what they held, so `n = n + 1` under an event accumulates
+    /// (5.10.2's bit-error counter) and 4.5.10's period example can read a value that
+    /// is assigned further down the block. A variable that is always written before
+    /// it is read needs none of that -- its value comes from this evaluation -- so
+    /// retention is granted exactly where a read can come first.
+    ///
+    /// Definite assignment, conservatively. A write settles a variable for what
+    /// follows only if it is certain to have happened, so anything that may not run
+    /// -- one arm of an `if`, a loop body, an event handler -- leaves the variable
+    /// unsettled afterwards. That is also what gives `@(cross)` latches their
+    /// retention: the handler may not fire, so a later read can come first.
+    ///
+    /// Writing one element of an array does not settle the whole array.
+    fn collect_retained(
+        &self,
+        stmnt: StmtId,
+        assigned: &mut AHashSet<Variable>,
+        dst: &mut Vec<Variable>,
+    ) {
         let stmt = match self.body.get_stmt(stmnt) {
             Some(stmt) => stmt,
             None => return,
         };
+
         match stmt {
-            Stmt::Assignment { lhs, .. } if in_cross => match lhs {
-                AssignmentLhs::Variable(var) => dst.push(var),
-                AssignmentLhs::ArrayElement { var, .. } => dst.push(var),
-                _ => {}
-            },
-            Stmt::Assignment { .. }
-            | Stmt::Expr(_)
-            | Stmt::Contribute { .. }
-            | Stmt::EventTrigger { .. } => {}
-            Stmt::Break | Stmt::Continue | Stmt::Return { .. } => {}
-            Stmt::EventControl { event, body } => {
-                let inner = in_cross || matches!(event, Event::Cross { .. });
-                self.collect_cross_assigned(body, inner, dst);
+            Stmt::Assignment { lhs, rhs } => {
+                self.collect_reads(rhs, assigned, dst);
+                match lhs {
+                    AssignmentLhs::Variable(var) => {
+                        assigned.insert(var);
+                    }
+                    // A partial write leaves the rest of the array unsettled, and an
+                    // array is retained whole or not at all.
+                    AssignmentLhs::ArrayElement { index, .. } => {
+                        self.collect_reads(index, assigned, dst)
+                    }
+                    _ => {}
+                }
+            }
+            Stmt::Expr(expr) => self.collect_reads(expr, assigned, dst),
+            Stmt::Contribute { rhs, .. } => self.collect_reads(rhs, assigned, dst),
+            Stmt::EventTrigger { .. } | Stmt::Break | Stmt::Continue => {}
+            Stmt::Return { value } => {
+                if let Some(value) = value {
+                    self.collect_reads(value, assigned, dst)
+                }
+            }
+            Stmt::EventControl { events, body } => {
+                // The event expression is evaluated every time; the body is not.
+                for event in events {
+                    match *event {
+                        Event::Named { event } => self.collect_reads(event, assigned, dst),
+                        Event::Cross { call: Some(call) } => {
+                            self.collect_reads(call, assigned, dst)
+                        }
+                        _ => {}
+                    }
+                }
+                self.collect_maybe(body, assigned, dst);
             }
             Stmt::Block { body } => {
                 for &s in body {
-                    self.collect_cross_assigned(s, in_cross, dst);
+                    self.collect_retained(s, assigned, dst);
                 }
             }
-            Stmt::If { then_branch, else_branch, .. } => {
-                self.collect_cross_assigned(then_branch, in_cross, dst);
-                self.collect_cross_assigned(else_branch, in_cross, dst);
+            Stmt::If { cond, then_branch, else_branch } => {
+                self.collect_reads(cond, assigned, dst);
+                let then_set = self.collect_maybe(then_branch, assigned, dst);
+                let else_set = self.collect_maybe(else_branch, assigned, dst);
+                // Settled afterwards only if both arms settled it.
+                for var in then_set.intersection(&else_set) {
+                    assigned.insert(*var);
+                }
             }
-            Stmt::ForLoop { body, .. } | Stmt::WhileLoop { body, .. } => {
-                self.collect_cross_assigned(body, in_cross, dst);
-            }
-            Stmt::Case { case_arms, .. } => {
+            Stmt::Case { discr, case_arms } => {
+                self.collect_reads(discr, assigned, dst);
+                // Without knowing that some arm is always taken, nothing is settled.
                 for arm in case_arms {
-                    self.collect_cross_assigned(arm.body, in_cross, dst);
+                    if let CaseCond::Vals(vals) = &arm.cond {
+                        for &val in vals {
+                            self.collect_reads(val, assigned, dst);
+                        }
+                    }
+                    self.collect_maybe(arm.body, assigned, dst);
+                }
+            }
+            Stmt::ForLoop { init, cond, incr, body } => {
+                // The initializer runs exactly once, before anything else.
+                self.collect_retained(init, assigned, dst);
+                self.collect_reads(cond, assigned, dst);
+                let mut inner = self.collect_maybe(body, assigned, dst);
+                self.collect_retained(incr, &mut inner, dst);
+            }
+            Stmt::WhileLoop { cond, body } => {
+                self.collect_reads(cond, assigned, dst);
+                self.collect_maybe(body, assigned, dst);
+            }
+        }
+    }
+
+    /// Analyse a statement that may or may not run: its reads count, but its writes
+    /// settle nothing for what comes after it. Returns what it would have settled.
+    fn collect_maybe(
+        &self,
+        stmnt: StmtId,
+        assigned: &AHashSet<Variable>,
+        dst: &mut Vec<Variable>,
+    ) -> AHashSet<Variable> {
+        let mut inner = assigned.clone();
+        self.collect_retained(stmnt, &mut inner, dst);
+        inner
+    }
+
+    /// Record every variable this expression reads that is not settled yet.
+    fn collect_reads(&self, expr: ExprId, assigned: &AHashSet<Variable>, dst: &mut Vec<Variable>) {
+        if self.body.is_missing(expr) {
+            return;
+        }
+        // `try_get_expr`, not `get_expr`: this walks into every sub-expression,
+        // including the node arguments of `V()` and `I()`, which name no value.
+        let expr = match self.body.try_get_expr(expr) {
+            Some(expr) => expr,
+            None => return,
+        };
+        match expr {
+            hir::Expr::Read(hir::Ref::Variable(var)) => {
+                if !assigned.contains(&var) {
+                    dst.push(var);
+                }
+            }
+            hir::Expr::Read(_) | hir::Expr::Literal(_) => {}
+            hir::Expr::BinaryOp { lhs, rhs, .. } => {
+                self.collect_reads(lhs, assigned, dst);
+                self.collect_reads(rhs, assigned, dst);
+            }
+            hir::Expr::UnaryOp { expr, .. } => self.collect_reads(expr, assigned, dst),
+            hir::Expr::Select { cond, then_val, else_val } => {
+                self.collect_reads(cond, assigned, dst);
+                self.collect_reads(then_val, assigned, dst);
+                self.collect_reads(else_val, assigned, dst);
+            }
+            hir::Expr::Index { base, index } => {
+                self.collect_reads(base, assigned, dst);
+                self.collect_reads(index, assigned, dst);
+            }
+            hir::Expr::Call { args, .. } => {
+                for &arg in args {
+                    self.collect_reads(arg, assigned, dst);
+                }
+            }
+            hir::Expr::Array(vals) => {
+                for &val in vals {
+                    self.collect_reads(val, assigned, dst);
                 }
             }
         }
+    }
+
+    /// Bound the next timestep (VAMS-2023 9.17.2). Each call bounds it, so the
+    /// effective bound is the smallest of them -- `$bound_step` is not an assignment.
+    /// The place is only read back once an earlier call has declared it, so a module
+    /// with a single call (the common case) lowers exactly as it did before.
+    pub fn bound_step(&mut self, step_size: Value) {
+        let step_size = if self.ctx.get_place(PlaceKind::BoundStep).is_some() {
+            let prev = self.ctx.use_place(PlaceKind::BoundStep);
+            let smaller = self.ctx.ins().flt(step_size, prev);
+            self.lower_select_with(smaller, |_| step_size, |_| prev)
+        } else {
+            step_size
+        };
+        self.ctx.def_place(PlaceKind::BoundStep, step_size);
     }
 
     pub fn nodes_from_args(

@@ -64,6 +64,36 @@ impl<'a> BodyRef<'a> {
         }
     }
 
+    /// The [`Ref`] a path expression names, or `None` when it names something the
+    /// MIR carries no value for -- the node arguments of `V()` and `I()`, a branch,
+    /// a discipline. [`Self::resolve_path`] panics on those, which is right where the
+    /// caller already knows the shape it is looking at, but a walk over arbitrary
+    /// sub-expressions does not.
+    pub fn try_resolve_path(&self, expr: ExprId) -> Option<Ref> {
+        match self.infere.expr_types[expr] {
+            Ty::Var(_, id) => Some(Ref::Variable(Variable { id })),
+            Ty::Param(_, id) => Some(Ref::Parameter(Parameter { id })),
+            Ty::FunctionVar { fun, arg: Some(arg), .. } => {
+                Some(Ref::FunctionArg(FunctionArg { fun_id: fun, arg_id: arg }))
+            }
+            Ty::FunctionVar { fun, .. } => Some(Ref::FunctionReturn(Function { id: fun })),
+            Ty::NatureAttr(_, id) => Some(Ref::NatureAttr(NatureAttribute { id })),
+            _ => self.infere.resolved_calls.get(&expr).and_then(|resolved| match resolved {
+                inference::ResolvedFun::Param(param) => Some(Ref::ParamSysFun(*param)),
+                _ => None,
+            }),
+        }
+    }
+
+    /// Like [`Self::get_expr`], but `None` rather than a panic when the expression is
+    /// a path naming something with no MIR value. See [`Self::try_resolve_path`].
+    pub fn try_get_expr(&self, expr: ExprId) -> Option<Expr<'a>> {
+        if let hir_def::Expr::Path { .. } = self.body.exprs[expr] {
+            return self.try_resolve_path(expr).map(Expr::Read);
+        }
+        Some(self.get_expr(expr))
+    }
+
     fn resolve_path(&self, expr: ExprId) -> Ref {
         match self.infere.expr_types[expr] {
             Ty::Var(_, id) => Ref::Variable(Variable { id }),
@@ -150,6 +180,13 @@ impl<'a> BodyRef<'a> {
         Branch { id }
     }
 
+    /// Whether `expr` is a missing expression: a null argument (VAMS-2023 A.6.4 /
+    /// A.6.5) or a piece the parser could not recover. `get_expr` panics on one, so
+    /// anything that may be handed a nullable argument checks this first.
+    pub fn is_missing(&self, expr: ExprId) -> bool {
+        matches!(self.body.exprs[expr], hir_def::Expr::Missing)
+    }
+
     pub fn get_expr(&self, expr: ExprId) -> Expr<'a> {
         match self.body.exprs[expr] {
             hir_def::Expr::Path { .. } => Expr::Read(self.resolve_path(expr)),
@@ -195,8 +232,8 @@ impl<'a> BodyRef<'a> {
         match self.body.stmts[stmnt] {
             hir_def::Stmt::Empty | hir_def::Stmt::Missing => None,
             hir_def::Stmt::Expr(e) => Some(Stmt::Expr(e)),
-            hir_def::Stmt::EventControl { ref event, body } => {
-                Some(Stmt::EventControl { event, body })
+            hir_def::Stmt::EventControl { ref events, body } => {
+                Some(Stmt::EventControl { events, body })
             }
             // an unresolved event was already diagnosed; drop the statement
             hir_def::Stmt::EventTrigger { event } => {
@@ -287,7 +324,8 @@ pub enum ContributeKind {
 pub enum Stmt<'a> {
     Expr(ExprId),
     EventControl {
-        event: &'a Event,
+        /// The event expressions ORed together (VAMS-2023 5.10.1).
+        events: &'a [Event],
         body: StmtId,
     },
     /// VAMS-2023 5.10.4: `-> ev;`

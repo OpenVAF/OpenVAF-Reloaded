@@ -1,0 +1,12 @@
+warning[L018]: 'cross' does not schedule an event yet
+   --> /event_or.va:16:9
+   |  
+16 | /         @(initial_step or cross(V(smpl) - 2.5, +1)) begin
+17 | |             vout = (V(in) > 2.5);
+18 | |         end
+   | \-----------^ body is evaluated unconditionally
+   |  
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+

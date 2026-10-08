@@ -209,6 +209,52 @@ int analysis(void *sim_info_, char *name) {
          ((flags & ANALYSIS_NODESET) && !strcmp(name, "nodeset"));
 }
 
+/* Retained state: values that must survive from one accepted timestep to the
+ * next, such as the latch behind an `@(cross)` variable or the previous value of
+ * a monitored expression.
+ *
+ * These deliberately do NOT live in the OSDI state array. `prev_state` and
+ * `next_state` are the *limiting* state array: they carry a value between Newton
+ * iterations, and a simulator is free to alias them (ngspice points both at
+ * `CKTstates[0]`, which its integrator also rotates per accepted step, so a model
+ * reads back a slot it wrote several steps earlier). That is harmless for
+ * `$limit`, where the state only steers the Newton path and never the converged
+ * answer, but a retained value *is* the answer.
+ *
+ * So each slot is a pair of doubles in the instance data, which no simulator
+ * rotates, plus one timestamp per instance:
+ *
+ *   vals[2*i]     committed -- what the model reads as "the previous timestep"
+ *   vals[2*i + 1] pending   -- what this timestep's evaluations have written
+ *
+ * `commit_retained` runs once at the top of every eval and uses `$abstime` to
+ * decide what happened since the last call:
+ *
+ *   abstime >  *time   time moved on, so the evaluations at *time were accepted:
+ *                      promote pending to committed.
+ *   abstime == *time   another Newton iteration of the same step: leave committed
+ *                      alone, so every iteration sees the same previous value.
+ *   abstime <  *time   the step at *time was rejected and is being retried with a
+ *                      smaller delta: drop pending (the retry overwrites it) and
+ *                      keep committed, which still holds the last accepted value.
+ *
+ * Recording `abstime` unconditionally covers all three. A dc, ac or noise
+ * analysis reports abstime = 0 throughout, so nothing is ever committed there.
+ */
+double store_retained(double *dst, double val) {
+  *dst = val;
+  return val;
+}
+
+void commit_retained(double *vals, double *time, uint32_t num, double abstime) {
+  if (abstime > *time) {
+    for (uint32_t i = 0; i < num; i++) {
+      vals[2 * i] = vals[2 * i + 1];
+    }
+  }
+  *time = abstime;
+}
+
 double store_delay(void *sim_info_, double *dst, double val) {
   OsdiSimInfo *sim_info = (OsdiSimInfo *)sim_info_;
   if (sim_info->flags & ANALYSIS_IC) {

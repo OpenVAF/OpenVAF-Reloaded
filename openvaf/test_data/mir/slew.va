@@ -1,0 +1,26 @@
+`include "disciplines.vams"
+
+// VAMS-2023 4.5.9: `slew` bounds the rate of change of its argument.
+//
+//   slew ( expr [ , max_pos_slew_rate [ , max_neg_slew_rate ] ] )
+//
+// This harness lowers without equations, which is the domain the LRM describes
+// as "in DC analysis, slew() simply passes the value of the destination to its
+// output": every form below lowers to its first argument. The rate-limiting
+// realization is the DAE path, which needs `with_equations`.
+module slew_test(a, b, c);
+    inout a, b, c;
+    electrical a, b, c;
+
+    parameter real max_pos = 1e6;
+    parameter real max_neg = -2e6;
+
+    analog begin
+        // no rates: passes through in every domain
+        V(a) <+ slew(V(b));
+        // symmetric limit: max_neg defaults to -max_pos
+        V(b) <+ slew(V(c), max_pos);
+        // separate rise and fall limits
+        V(c) <+ slew(V(a), max_pos, max_neg);
+    end
+endmodule

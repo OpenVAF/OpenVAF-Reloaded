@@ -1,0 +1,20 @@
+warning[L018]: 'absdelta' does not schedule an event yet
+   --> /vams2023_event_funs.va:44:9
+   |
+44 |         @(absdelta(V(d), vdelta, ttol, vtol, enable)) state = state + 8.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'absdelta' does not schedule an event yet
+   --> /vams2023_event_funs.va:50:9
+   |
+50 |         @(absdelta(V(d), vdelta)) state = state + 128.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+

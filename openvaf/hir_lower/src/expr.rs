@@ -702,8 +702,20 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
 
             // Without equation lowering (e.g. op-var contexts) a filter is a no-op.
-            BuiltIn::laplace_nd if self.ctx.no_equations => F_ZERO,
+            BuiltIn::laplace_nd
+            | BuiltIn::laplace_zp
+            | BuiltIn::laplace_zd
+            | BuiltIn::laplace_np
+                if self.ctx.no_equations =>
+            {
+                F_ZERO
+            }
             BuiltIn::laplace_nd => self.lower_laplace_nd(args),
+            // VAMS-2023 4.5.11.1-4.5.11.3: the same filter with its numerator,
+            // denominator or both given as roots instead of coefficients.
+            BuiltIn::laplace_zp => self.lower_laplace_roots(args, true, true),
+            BuiltIn::laplace_zd => self.lower_laplace_roots(args, true, false),
+            BuiltIn::laplace_np => self.lower_laplace_roots(args, false, true),
 
             BuiltIn::idt => {
                 let kind = match_signature! {
@@ -813,7 +825,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
             BuiltIn::bound_step => {
                 let step_size = self.lower_expr(args[0]);
-                self.ctx.def_place(PlaceKind::BoundStep, step_size);
+                self.bound_step(step_size);
                 GRAVESTONE
             }
 
@@ -940,7 +952,140 @@ impl BodyLoweringCtx<'_, '_, '_> {
                     x
                 }
             }
-            BuiltIn::slew | BuiltIn::limit => self.lower_expr(args[0]),
+            BuiltIn::slew => {
+                // VAMS-2023 4.5.9: `slew` bounds the rate of change of its argument.
+                //
+                //   slew ( expr [ , max_pos_slew_rate [ , max_neg_slew_rate ] ] )
+                //
+                // With no rates given the LRM passes the signal through unchanged,
+                // and in DC it passes the value through as well.
+                let target = self.lower_expr(args[0]);
+                if self.ctx.no_equations || args.len() == 1 {
+                    target
+                } else {
+                    let max_pos = self.lower_expr(args[1]);
+                    // "If the max_neg_slew_rate is not specified, it defaults to the
+                    // opposite of the max_pos_slew_rate."
+                    let max_neg = if args.len() > 2 {
+                        self.lower_expr(args[2])
+                    } else {
+                        self.ctx.ins().fneg(max_pos)
+                    };
+
+                    // Realized as a continuous rate limiter, the same shape as the
+                    // `transition` lag below: a state whose derivative chases the
+                    // target with a very large gain, clamped to the two rates. While
+                    // the input changes more slowly than the limits the state follows
+                    // it to within `eps * rate`, which is what the LRM asks for
+                    // ("returns the value of expr"); once a limit is reached the state
+                    // moves at exactly that rate. A clamped derivative is continuous
+                    // in time, so the transient integrator can step across it.
+                    let eps = self.ctx.fconst(1e-12);
+                    let (eq, x) =
+                        self.ctx.implicit_equation(ImplicitEquationKind::Idt(IdtKind::Basic));
+                    let diff = self.ctx.ins().fsub(target, x);
+                    let rate = self.ctx.ins().fdiv(diff, eps);
+                    // rate = min(max(rate, max_neg), max_pos)
+                    let too_fast = self.ctx.ins().fgt(rate, max_pos);
+                    let rate =
+                        self.ctx.make_select(too_fast, |_s, b| if b { max_pos } else { rate });
+                    let too_slow = self.ctx.ins().flt(rate, max_neg);
+                    let rate =
+                        self.ctx.make_select(too_slow, |_s, b| if b { max_neg } else { rate });
+                    // dx/dt = rate  ->  react = x, resist = -rate.
+                    let resist = self.ctx.ins().fneg(rate);
+                    self.ctx.def_resist_residual(resist, eq);
+                    self.ctx.def_react_residual(x, eq);
+                    x
+                }
+            }
+            BuiltIn::last_crossing => {
+                // VAMS-2023 4.5.10: the simulation time at which `expr` last crossed
+                // zero, in the requested direction.
+                //
+                //   last_crossing ( expr [ , direction ] )
+                //
+                // "does not control the timestep to get accurate results; it uses
+                // linear interpolation to estimate the time of the last crossing",
+                // so this needs no breakpoint machinery -- only the expression and
+                // the time at the previous accepted timestep, both of which the
+                // retained-state slots already provide.
+                let cur = self.lower_expr(args[0]);
+                if self.ctx.no_equations {
+                    // Nothing steps time here, so nothing can have crossed.
+                    return self.ctx.fconst(-1.0);
+                }
+                let now = self.ctx.use_param(ParamKind::Abstime);
+
+                let s_prev = self.ctx.alloc_retained_state(0.0);
+                let s_time = self.ctx.alloc_retained_state(0.0);
+                // "Before the expression crosses zero (0) for the first time, the
+                // last_crossing() function returns a negative value."
+                let s_last = self.ctx.alloc_retained_state(-1.0);
+
+                let prev = self.ctx.retained_prev(s_prev);
+                let t_prev = self.ctx.retained_prev(s_time);
+                let last = self.ctx.retained_prev(s_last);
+
+                self.ctx.store_retained(s_prev, cur);
+                self.ctx.store_retained(s_time, now);
+
+                let cur_ge = self.ctx.ins().fge(cur, F_ZERO);
+                let cur_le = self.ctx.ins().fle(cur, F_ZERO);
+                let prev_lt = self.ctx.ins().flt(prev, F_ZERO);
+                let prev_gt = self.ctx.ins().fgt(prev, F_ZERO);
+                let rising = self.and(prev_lt, cur_ge);
+                let falling = self.and(prev_gt, cur_le);
+
+                // "If it is set to 0, the last_crossing() will return the most
+                // recent time the input expression had either a rise or falling edge
+                // transition. If direction is +1 (-1), [...] rising (falling)."
+                // Omitted behaves as 0.
+                let crossed = match args.get(1) {
+                    Some(&dir) if !self.body.is_missing(dir) => {
+                        let dir = self.lower_expr(dir);
+                        let zero = self.ctx.iconst(0);
+                        let one = self.ctx.iconst(1);
+                        let minus_one = self.ctx.iconst(-1);
+                        let both = self.ctx.ins().ieq(dir, zero);
+                        let up = self.ctx.ins().ieq(dir, one);
+                        let down = self.ctx.ins().ieq(dir, minus_one);
+                        let want_rising = self.or(up, both);
+                        let want_falling = self.or(down, both);
+                        let up = self.and(want_rising, rising);
+                        let down = self.and(want_falling, falling);
+                        self.or(up, down)
+                    }
+                    _ => self.or(rising, falling),
+                };
+
+                // Two distinct time points are needed to interpolate between, so
+                // nothing is detected until time has moved. This also keeps dc, ac
+                // and noise -- where `$abstime` stands still -- returning the
+                // initial negative value.
+                let advanced = self.ctx.ins().fgt(now, t_prev);
+                let crossed = self.and(crossed, advanced);
+
+                // Linear interpolation between the two straddling points:
+                //   t = t_prev + (now - t_prev) * (0 - prev) / (cur - prev)
+                // A crossing implies `cur != prev`, but the division is evaluated
+                // either way, so pin the denominator to 1 when it is not.
+                let dt = self.ctx.ins().fsub(now, t_prev);
+                let den = self.ctx.ins().fsub(cur, prev);
+                let one = self.ctx.fconst(1.0);
+                let den = self.ctx.make_select(crossed, |_s, taken| if taken { den } else { one });
+                let frac = self.ctx.ins().fdiv(prev, den);
+                let step = self.ctx.ins().fmul(dt, frac);
+                // t_prev + dt * (-prev / den), written as a subtraction to keep the
+                // negation out of the way.
+                let t_cross = self.ctx.ins().fsub(t_prev, step);
+
+                let last =
+                    self.ctx.make_select(crossed, |_s, taken| if taken { t_cross } else { last });
+                self.ctx.store_retained(s_last, last);
+                last
+            }
+            BuiltIn::limit => self.lower_expr(args[0]),
 
             // `ac_stim` is an AC small-signal stimulus: it is defined to be zero in the
             // large-signal (DC/transient) domain, which is what a contribution lowers.
@@ -1019,6 +1164,12 @@ impl BodyLoweringCtx<'_, '_, '_> {
     /// Read the coefficient values of an array-valued argument (an array variable's
     /// elements or an array literal's entries), lowest index first.
     fn array_coeffs(&mut self, arg: ExprId) -> Vec<Value> {
+        // A null argument (`laplace_nd(V(in), , den)`, VAMS-2023 4.5.11) has no
+        // expression at all. It means an empty coefficient vector; lowering it as an
+        // expression would reach `get_expr`'s `invalid HIR` panic.
+        if self.body.is_missing(arg) {
+            return Vec::new();
+        }
         // Laplace coefficients feed real-valued state-space arithmetic, but an
         // anonymous array literal of integer constants (the LRM's own examples use
         // `'{-1,0,1}`) lowers to integer values. Widen each coefficient to real so
@@ -1073,9 +1224,120 @@ impl BodyLoweringCtx<'_, '_, '_> {
         let input = self.lower_expr(args[0]);
         let num = self.array_coeffs(args[1]);
         let den = self.array_coeffs(args[2]);
+        self.lower_laplace_state_space(input, num, den)
+    }
+
+    /// Lower the root forms of the Laplace filter (VAMS-2023 4.5.11.1-4.5.11.3) by
+    /// expanding each root vector into polynomial coefficients and reusing the
+    /// `laplace_nd` realization. The number of roots is fixed at compile time (array
+    /// lengths are static), so only the coefficient arithmetic is emitted.
+    fn lower_laplace_roots(&mut self, args: &[ExprId], zeros: bool, poles: bool) -> Value {
+        let input = self.lower_expr(args[0]);
+        let num = if zeros {
+            let roots = self.array_coeffs(args[1]);
+            self.expand_roots(&roots)
+        } else {
+            self.array_coeffs(args[1])
+        };
+        let den = if poles {
+            let roots = self.array_coeffs(args[2]);
+            self.expand_roots(&roots)
+        } else {
+            self.array_coeffs(args[2])
+        };
+        self.lower_laplace_state_space(input, num, den)
+    }
+
+    /// Expand a flat vector of (real, imaginary) root pairs into the real polynomial
+    /// coefficients of `prod_k (1 - s/r_k)`, ascending powers of `s`.
+    ///
+    /// A root of zero contributes a bare `s` factor instead of `1 - s/r`, as
+    /// 4.5.11.1 requires. The LRM also requires a complex root's conjugate to be
+    /// present, which is what makes the product real: the expansion carries the
+    /// imaginary parts through and drops them at the end, so no case analysis on
+    /// whether a given root is real is needed -- which matters because the roots are
+    /// runtime values.
+    fn expand_roots(&mut self, roots: &[Value]) -> Vec<Value> {
+        let one = self.ctx.fconst(1.0);
+        // running polynomial, real and imaginary parts, ascending powers of s
+        let mut re = vec![one];
+        let mut im = vec![F_ZERO];
+
+        for pair in roots.chunks(2) {
+            let sigma = pair[0];
+            // an odd-length vector is malformed; treat the missing part as zero
+            let omega = pair.get(1).copied().unwrap_or(F_ZERO);
+
+            // |r|^2 decides both the reciprocal and whether the root is zero
+            let s2 = self.ctx.ins().fmul(sigma, sigma);
+            let w2 = self.ctx.ins().fmul(omega, omega);
+            let mag2 = self.ctx.ins().fadd(s2, w2);
+            let is_zero = self.ctx.ins().feq(mag2, F_ZERO);
+            // divide by 1 instead of 0 in the branch the select discards
+            let denom = self.ctx.make_select(is_zero, |_ctx, b| if b { one } else { mag2 });
+
+            // 1/r = conj(r)/|r|^2, so the s coefficient of (1 - s/r) is
+            // (-sigma + j*omega)/|r|^2; a zero root makes the factor a bare s.
+            let inv_re = self.ctx.ins().fdiv(sigma, denom);
+            let c1_re_nonzero = self.ctx.ins().fneg(inv_re);
+            let c1_im_nonzero = self.ctx.ins().fdiv(omega, denom);
+
+            let c0 = self.ctx.make_select(is_zero, |_ctx, b| if b { F_ZERO } else { one });
+            let c1_re =
+                self.ctx.make_select(is_zero, |_ctx, b| if b { one } else { c1_re_nonzero });
+            let c1_im =
+                self.ctx.make_select(is_zero, |_ctx, b| if b { F_ZERO } else { c1_im_nonzero });
+
+            // multiply the running polynomial by [c0, c1]
+            let mut next_re = vec![F_ZERO; re.len() + 1];
+            let mut next_im = vec![F_ZERO; re.len() + 1];
+            for i in 0..re.len() {
+                // times c0, whose imaginary part is always zero
+                let t_re = self.ctx.ins().fmul(re[i], c0);
+                let t_im = self.ctx.ins().fmul(im[i], c0);
+                next_re[i] = self.ctx.ins().fadd(next_re[i], t_re);
+                next_im[i] = self.ctx.ins().fadd(next_im[i], t_im);
+
+                // times c1, shifted up one power of s
+                let rr = self.ctx.ins().fmul(re[i], c1_re);
+                let ii = self.ctx.ins().fmul(im[i], c1_im);
+                let ri = self.ctx.ins().fmul(re[i], c1_im);
+                let ir = self.ctx.ins().fmul(im[i], c1_re);
+                let real = self.ctx.ins().fsub(rr, ii);
+                let imag = self.ctx.ins().fadd(ri, ir);
+                next_re[i + 1] = self.ctx.ins().fadd(next_re[i + 1], real);
+                next_im[i + 1] = self.ctx.ins().fadd(next_im[i + 1], imag);
+            }
+            re = next_re;
+            im = next_im;
+        }
+
+        // The conjugate pairs the LRM requires cancel the imaginary parts.
+        re
+    }
+
+    fn lower_laplace_state_space(
+        &mut self,
+        input: Value,
+        num: Vec<Value>,
+        den: Vec<Value>,
+    ) -> Value {
+        // A null numerator (`laplace_nd(V(in), , den)`, VAMS-2023 4.5.11) is the
+        // empty product of zeros, so the numerator is *unity* -- H(s) = 1/D(s) --
+        // not zero, which is what an empty coefficient list would otherwise produce.
+        // The root forms need no such case: an empty product of factors is already 1.
+        let num = if num.is_empty() {
+            let one = self.ctx.fconst(1.0);
+            vec![one]
+        } else {
+            num
+        };
         let n = den.len().saturating_sub(1); // filter order
         if n == 0 {
-            if num.is_empty() || den.is_empty() {
+            // A null denominator likewise means D(s) = 1, so the filter is its
+            // numerator; only the constant case is realizable without differentiating
+            // the input, which is the same restriction as before.
+            if den.is_empty() {
                 return input;
             }
             let g = self.ctx.ins().fdiv(num[0], den[0]);

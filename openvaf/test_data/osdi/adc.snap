@@ -68,5 +68,5 @@ jacobian (implicit_equation_4, implicit_equation_4) JacobianFlags(JACOBIAN_ENTRY
 jacobian (implicit_equation_5, implicit_equation_5) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT | JACOBIAN_ENTRY_REACT_CONST)
 jacobian (implicit_equation_6, implicit_equation_6) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT | JACOBIAN_ENTRY_REACT_CONST)
 jacobian (implicit_equation_7, implicit_equation_7) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT | JACOBIAN_ENTRY_REACT_CONST)
-10 states
-has bound_step false
+0 states
+has bound_step true
