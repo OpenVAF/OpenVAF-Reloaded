@@ -15,6 +15,8 @@ use crate::load::{
 
 #[derive(Debug, Default)]
 pub struct MockSimulation {
+    /// reported to the model as `$abstime`
+    pub time: f64,
     pub nodes: IndexSet<&'static str>,
     pub residual_resist: Vec<f64>,
     pub residual_react: Vec<f64>,
@@ -47,6 +49,7 @@ impl MockSimulation {
             state_1: Vec::new(),
             state_2: Vec::new(),
             noise_dense: Vec::new(),
+            time: 0.0,
         }
     }
 
@@ -116,6 +119,13 @@ impl MockSimulation {
         self.solve.fill(0.0);
         swap(&mut self.state_1, &mut self.state_2);
         self.clear();
+    }
+
+    /// Advance the simulation time reported to the model as `$abstime`. Anything
+    /// that only happens once time has moved -- a monitored event, for one -- needs
+    /// this as well as `next_iter`.
+    pub(crate) fn advance_time(&mut self, dt: f64) {
+        self.time += dt;
     }
 }
 
@@ -256,7 +266,7 @@ impl OsdiInstance {
         };
         let mut sim_info = OsdiSimInfo {
             paras: sim_params,
-            abstime: 0.0,
+            abstime: sim.time,
             prev_solve: sim.solve.as_ptr() as *mut f64,
             prev_state: sim.state_1.as_mut_ptr(),
             next_state: sim.state_2.as_mut_ptr(),

@@ -1,0 +1,20 @@
+`include "disciplines.vams"
+
+// VAMS-2023 5.10.3.1, the LRM's own sample-and-hold, written verbatim.
+//
+// Per the LRM `state` is updated only when V(smpl) crosses `thresh` upwards, so
+// `out` is a staircase that holds each sampled value until the next crossing.
+module sample_hold(in, out, smpl);
+    parameter real thresh = 2.5;
+    parameter integer dir = +1 from [-1:+1] exclude 0;
+    output out;
+    input in, smpl;
+    electrical in, out, smpl;
+    real state;
+
+    analog begin
+        @(cross(V(smpl) - thresh, dir))
+            state = V(in);
+        V(out) <+ transition(state, 0, 10n);
+    end
+endmodule

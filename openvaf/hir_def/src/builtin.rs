@@ -191,11 +191,6 @@ impl BuiltIn {
             | BuiltIn::zi_np
             | BuiltIn::zi_zd
             | BuiltIn::zi_zp
-            | BuiltIn::laplace_np
-            | BuiltIn::laplace_zd
-            | BuiltIn::laplace_zp
-            | BuiltIn::last_crossing
-            | BuiltIn::slew
             | BuiltIn::fclose
             | BuiltIn::fopen
             | BuiltIn::fdisplay
@@ -213,23 +208,7 @@ impl BuiltIn {
             | BuiltIn::fflush
             | BuiltIn::ferror
             | BuiltIn::feof
-            | BuiltIn::fdebug
-            | BuiltIn::dist_chi_square
-            | BuiltIn::dist_exponential
-            | BuiltIn::dist_poisson
-            | BuiltIn::dist_uniform
-            | BuiltIn::dist_erlang
-            | BuiltIn::dist_normal
-            | BuiltIn::dist_t
-            | BuiltIn::random
-            | BuiltIn::arandom
-            | BuiltIn::rdist_chi_square
-            | BuiltIn::rdist_exponential
-            | BuiltIn::rdist_poisson
-            | BuiltIn::rdist_uniform
-            | BuiltIn::rdist_erlang
-            | BuiltIn::rdist_normal
-            | BuiltIn::rdist_t => true,
+            | BuiltIn::fdebug => true,
             _ => false,
         }
     }
@@ -239,6 +218,17 @@ impl BuiltIn {
     pub fn is_event_fun(self) -> bool {
         match self {
             BuiltIn::cross | BuiltIn::above | BuiltIn::timer | BuiltIn::absdelta => true,
+            _ => false,
+        }
+    }
+    #[doc = r" Whether this event function takes part in scheduling, i.e. decides"]
+    #[doc = r" whether the body of its event control runs. The other event"]
+    #[doc = r" functions are accepted and type-checked but leave the body"]
+    #[doc = r" unconditional, which `unscheduled_event` warns about."]
+    #[allow(clippy::match_like_matches_macro)]
+    pub fn schedules_event(self) -> bool {
+        match self {
+            BuiltIn::cross | BuiltIn::above | BuiltIn::timer => true,
             _ => false,
         }
     }
