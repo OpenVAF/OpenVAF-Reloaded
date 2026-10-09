@@ -64,8 +64,9 @@ impl Printer<'_> {
                 self.pretty_print_expr(e);
                 wln!(self, ";");
             }
-            Stmt::EventControl { ref event, body } => {
-                wln!(self, "@({:?})", event);
+            Stmt::EventControl { ref events, body } => {
+                let events: Vec<_> = events.iter().map(|event| format!("{event:?}")).collect();
+                wln!(self, "@({})", events.join(" or "));
                 self.pretty_print_stmt(body)
             }
             Stmt::EventTrigger { event } => {

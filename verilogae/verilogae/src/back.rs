@@ -70,6 +70,7 @@ pub fn stub_callbacks<'ll>(
                 | CallBackKind::ParamInfo(_, _)
                 | CallBackKind::BuiltinLimit { .. }
                 | CallBackKind::StoreLimit(_)
+                | CallBackKind::StoreRetained(_)
                 | CallBackKind::LimDiscontinuity
                 | CallBackKind::CollapseHint(_, _)
                 | CallBackKind::SetRetFlag { .. } => return None,
@@ -378,7 +379,8 @@ impl CodegenCtx<'_, '_> {
                     ParamKind::ImplicitUnknown(_)
                     | ParamKind::Abstime
                     | ParamKind::PrevState(_)
-                    | ParamKind::NewState(_) => codegen.builder.cx.const_real(0.0),
+                    | ParamKind::NewState(_)
+                    | ParamKind::PrevRetained(_) => codegen.builder.cx.const_real(0.0),
                     ParamKind::EnableIntegration | ParamKind::EnableLim => {
                         codegen.builder.cx.const_bool(false)
                     }
@@ -724,7 +726,8 @@ impl CodegenCtx<'_, '_> {
                     ParamKind::ImplicitUnknown(_)
                     | ParamKind::Abstime
                     | ParamKind::PrevState(_)
-                    | ParamKind::NewState(_) => builder.cx.const_real(0.0),
+                    | ParamKind::NewState(_)
+                    | ParamKind::PrevRetained(_) => builder.cx.const_real(0.0),
                     ParamKind::EnableIntegration | ParamKind::EnableLim => {
                         builder.cx.const_bool(false)
                     }

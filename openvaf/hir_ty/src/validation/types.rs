@@ -93,16 +93,15 @@ impl TypeValidationCtx<'_> {
         match node {
             Ok(node) => Some(node),
             Err(err) => {
-                let src = SyntaxNodePtr::new(
-                    branch
-                        .source(self.db.upcast())
-                        .arg_list()
-                        .unwrap()
-                        .args()
-                        .next()
-                        .unwrap()
-                        .syntax(),
-                );
+                let arg =
+                    branch.source(self.db.upcast()).arg_list().unwrap().args().next().unwrap();
+                // Point at the node itself, not at the argument wrapper, so the
+                // diagnostic keeps highlighting just the offending node name.
+                let node = match arg.expr() {
+                    Some(expr) => expr.syntax().clone(),
+                    None => arg.syntax().clone(),
+                };
+                let src = SyntaxNodePtr::new(&node);
                 self.report(TypeValidationDiagnostic::PathError { err, src });
                 None
             }

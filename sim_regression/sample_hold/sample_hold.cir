@@ -1,0 +1,17 @@
+* Sample and hold, VAMS-2023 5.10.3.1
+* in   : a ramp from 0 V to 5 V over 10 us
+* smpl : a 2 us clock, so rising crossings of 2.5 V at ~1 us, 3 us, 5 us, 7 us, 9 us
+* out  : per the LRM a staircase holding the input at each crossing
+
+Vin   in   0 PWL(0 0 10u 5)
+Vsmpl smpl 0 PULSE(0 5 1u 1n 1n 0.5u 2u)
+Nsh   in   out smpl shmod
+.model shmod sample_hold()
+
+.control
+pre_osdi sample_hold.osdi
+tran 10n 10u
+wrdata sh_out.txt v(in) v(out) v(smpl)
+.endc
+
+.end

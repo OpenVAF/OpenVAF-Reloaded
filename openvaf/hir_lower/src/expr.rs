@@ -702,8 +702,20 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
 
             // Without equation lowering (e.g. op-var contexts) a filter is a no-op.
-            BuiltIn::laplace_nd if self.ctx.no_equations => F_ZERO,
+            BuiltIn::laplace_nd
+            | BuiltIn::laplace_zp
+            | BuiltIn::laplace_zd
+            | BuiltIn::laplace_np
+                if self.ctx.no_equations =>
+            {
+                F_ZERO
+            }
             BuiltIn::laplace_nd => self.lower_laplace_nd(args),
+            // VAMS-2023 4.5.11.1-4.5.11.3: the same filter with its numerator,
+            // denominator or both given as roots instead of coefficients.
+            BuiltIn::laplace_zp => self.lower_laplace_roots(args, true, true),
+            BuiltIn::laplace_zd => self.lower_laplace_roots(args, true, false),
+            BuiltIn::laplace_np => self.lower_laplace_roots(args, false, true),
 
             BuiltIn::idt => {
                 let kind = match_signature! {
@@ -813,7 +825,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
             BuiltIn::bound_step => {
                 let step_size = self.lower_expr(args[0]);
-                self.ctx.def_place(PlaceKind::BoundStep, step_size);
+                self.bound_step(step_size);
                 GRAVESTONE
             }
 
@@ -908,39 +920,143 @@ impl BodyLoweringCtx<'_, '_, '_> {
                     // No DAE context (AC/noise setup, op-vars): pass the target through.
                     target
                 } else {
-                    // Continuous (slew-limited) realization. The ideal `transition` is a
-                    // piecewise-linear ramp from the old value to the new one over the
-                    // rise/fall time; emitting it as an instantaneous jump produces a
-                    // time discontinuity the transient integrator cannot step across
-                    // ("timestep too small"). We realize it as a first-order lag whose
-                    // time constant is the rise time when the target is increasing and
-                    // the fall time when decreasing — a continuous output the solver
-                    // integrates through, with the requested transition speed.
-                    //
-                    // `transition(expr, td, rise_time, fall_time, time_tol)`: the
-                    // delay and the (dynamic, VAMS-2023 Table 4-20) `time_tol` do not
-                    // affect this continuous realization and are ignored - `time_tol`
-                    // bounds how precisely a simulator places the time point of the
-                    // transition, which a lag has no notion of.
+                    self.lower_transition(target, args)
+                }
+            }
+            BuiltIn::slew => {
+                // VAMS-2023 4.5.9: `slew` bounds the rate of change of its argument.
+                //
+                //   slew ( expr [ , max_pos_slew_rate [ , max_neg_slew_rate ] ] )
+                //
+                // With no rates given the LRM passes the signal through unchanged,
+                // and in DC it passes the value through as well.
+                let target = self.lower_expr(args[0]);
+                if self.ctx.no_equations || args.len() == 1 {
+                    target
+                } else {
+                    let max_pos = self.lower_expr(args[1]);
+                    // "If the max_neg_slew_rate is not specified, it defaults to the
+                    // opposite of the max_pos_slew_rate."
+                    let max_neg = if args.len() > 2 {
+                        self.lower_expr(args[2])
+                    } else {
+                        self.ctx.ins().fneg(max_pos)
+                    };
+
+                    // Realized as a continuous rate limiter, the same shape as the
+                    // `transition` lag below: a state whose derivative chases the
+                    // target with a very large gain, clamped to the two rates. While
+                    // the input changes more slowly than the limits the state follows
+                    // it to within `eps * rate`, which is what the LRM asks for
+                    // ("returns the value of expr"); once a limit is reached the state
+                    // moves at exactly that rate. A clamped derivative is continuous
+                    // in time, so the transient integrator can step across it.
                     let eps = self.ctx.fconst(1e-12);
-                    let rise = if args.len() > 2 { self.lower_expr(args[2]) } else { eps };
-                    let fall = if args.len() > 3 { self.lower_expr(args[3]) } else { rise };
                     let (eq, x) =
                         self.ctx.implicit_equation(ImplicitEquationKind::Idt(IdtKind::Basic));
-                    // tau = (target >= x) ? rise : fall, floored to eps to avoid /0.
-                    let rising = self.ctx.ins().fge(target, x);
-                    let tau = self.ctx.make_select(rising, |_s, b| if b { rise } else { fall });
-                    let tau_ok = self.ctx.ins().fge(tau, eps);
-                    let tau = self.ctx.make_select(tau_ok, |_s, b| if b { tau } else { eps });
-                    // dx/dt = (target - x)/tau  ->  react = x, resist = (x - target)/tau.
-                    let diff = self.ctx.ins().fsub(x, target);
-                    let resist = self.ctx.ins().fdiv(diff, tau);
+                    let diff = self.ctx.ins().fsub(target, x);
+                    let rate = self.ctx.ins().fdiv(diff, eps);
+                    // rate = min(max(rate, max_neg), max_pos)
+                    let too_fast = self.ctx.ins().fgt(rate, max_pos);
+                    let rate =
+                        self.ctx.make_select(too_fast, |_s, b| if b { max_pos } else { rate });
+                    let too_slow = self.ctx.ins().flt(rate, max_neg);
+                    let rate =
+                        self.ctx.make_select(too_slow, |_s, b| if b { max_neg } else { rate });
+                    // dx/dt = rate  ->  react = x, resist = -rate.
+                    let resist = self.ctx.ins().fneg(rate);
                     self.ctx.def_resist_residual(resist, eq);
                     self.ctx.def_react_residual(x, eq);
                     x
                 }
             }
-            BuiltIn::slew | BuiltIn::limit => self.lower_expr(args[0]),
+            BuiltIn::last_crossing => {
+                // VAMS-2023 4.5.10: the simulation time at which `expr` last crossed
+                // zero, in the requested direction.
+                //
+                //   last_crossing ( expr [ , direction ] )
+                //
+                // "does not control the timestep to get accurate results; it uses
+                // linear interpolation to estimate the time of the last crossing",
+                // so this needs no breakpoint machinery -- only the expression and
+                // the time at the previous accepted timestep, both of which the
+                // retained-state slots already provide.
+                let cur = self.lower_expr(args[0]);
+                if self.ctx.no_equations {
+                    // Nothing steps time here, so nothing can have crossed.
+                    return self.ctx.fconst(-1.0);
+                }
+                let now = self.ctx.use_param(ParamKind::Abstime);
+
+                let s_prev = self.ctx.alloc_retained_state(0.0);
+                let s_time = self.ctx.alloc_retained_state(0.0);
+                // "Before the expression crosses zero (0) for the first time, the
+                // last_crossing() function returns a negative value."
+                let s_last = self.ctx.alloc_retained_state(-1.0);
+
+                let prev = self.ctx.retained_prev(s_prev);
+                let t_prev = self.ctx.retained_prev(s_time);
+                let last = self.ctx.retained_prev(s_last);
+
+                self.ctx.store_retained(s_prev, cur);
+                self.ctx.store_retained(s_time, now);
+
+                let cur_ge = self.ctx.ins().fge(cur, F_ZERO);
+                let cur_le = self.ctx.ins().fle(cur, F_ZERO);
+                let prev_lt = self.ctx.ins().flt(prev, F_ZERO);
+                let prev_gt = self.ctx.ins().fgt(prev, F_ZERO);
+                let rising = self.and(prev_lt, cur_ge);
+                let falling = self.and(prev_gt, cur_le);
+
+                // "If it is set to 0, the last_crossing() will return the most
+                // recent time the input expression had either a rise or falling edge
+                // transition. If direction is +1 (-1), [...] rising (falling)."
+                // Omitted behaves as 0.
+                let crossed = match args.get(1) {
+                    Some(&dir) if !self.body.is_missing(dir) => {
+                        let dir = self.lower_expr(dir);
+                        let zero = self.ctx.iconst(0);
+                        let one = self.ctx.iconst(1);
+                        let minus_one = self.ctx.iconst(-1);
+                        let both = self.ctx.ins().ieq(dir, zero);
+                        let up = self.ctx.ins().ieq(dir, one);
+                        let down = self.ctx.ins().ieq(dir, minus_one);
+                        let want_rising = self.or(up, both);
+                        let want_falling = self.or(down, both);
+                        let up = self.and(want_rising, rising);
+                        let down = self.and(want_falling, falling);
+                        self.or(up, down)
+                    }
+                    _ => self.or(rising, falling),
+                };
+
+                // Two distinct time points are needed to interpolate between, so
+                // nothing is detected until time has moved. This also keeps dc, ac
+                // and noise -- where `$abstime` stands still -- returning the
+                // initial negative value.
+                let advanced = self.ctx.ins().fgt(now, t_prev);
+                let crossed = self.and(crossed, advanced);
+
+                // Linear interpolation between the two straddling points:
+                //   t = t_prev + (now - t_prev) * (0 - prev) / (cur - prev)
+                // A crossing implies `cur != prev`, but the division is evaluated
+                // either way, so pin the denominator to 1 when it is not.
+                let dt = self.ctx.ins().fsub(now, t_prev);
+                let den = self.ctx.ins().fsub(cur, prev);
+                let one = self.ctx.fconst(1.0);
+                let den = self.ctx.make_select(crossed, |_s, taken| if taken { den } else { one });
+                let frac = self.ctx.ins().fdiv(prev, den);
+                let step = self.ctx.ins().fmul(dt, frac);
+                // t_prev + dt * (-prev / den), written as a subtraction to keep the
+                // negation out of the way.
+                let t_cross = self.ctx.ins().fsub(t_prev, step);
+
+                let last =
+                    self.ctx.make_select(crossed, |_s, taken| if taken { t_cross } else { last });
+                self.ctx.store_retained(s_last, last);
+                last
+            }
+            BuiltIn::limit => self.lower_expr(args[0]),
 
             // `ac_stim` is an AC small-signal stimulus: it is defined to be zero in the
             // large-signal (DC/transient) domain, which is what a contribution lowers.
@@ -951,6 +1067,328 @@ impl BodyLoweringCtx<'_, '_, '_> {
 
             _ => unreachable!(),
         }
+    }
+
+    /// An optional analog-operator argument. Absent and written as a null argument
+    /// (`transition(x, , 1n)`) are the same thing: the clause's default applies.
+    fn opt_arg(&mut self, args: &[ExprId], idx: usize) -> Option<Value> {
+        match args.get(idx) {
+            Some(&arg) if !self.body.is_missing(arg) => Some(self.lower_expr(arg)),
+            _ => None,
+        }
+    }
+
+    /// `min(a, b)` on reals. The MIR has no intrinsic for it.
+    fn fmin(&mut self, a: Value, b: Value) -> Value {
+        let lt = self.ctx.ins().flt(a, b);
+        self.ctx.make_select(lt, |_s, t| if t { a } else { b })
+    }
+
+    /// `max(a, b)` on reals.
+    fn fmax(&mut self, a: Value, b: Value) -> Value {
+        let gt = self.ctx.ins().fgt(a, b);
+        self.ctx.make_select(gt, |_s, t| if t { a } else { b })
+    }
+
+    /// VAMS-2023 4.5.8: the piecewise-linear realization of
+    ///
+    ///   transition ( expr [ , td [ , rise_time [ , fall_time [ , time_tol ] ] ] ] )
+    ///
+    /// `expr` is expected to evaluate to a piecewise constant waveform. Each change
+    /// of it schedules a transition `td` later, which then ramps linearly to the new
+    /// value, taking `rise_time` upwards and `fall_time` downwards: "td models
+    /// transport delay and rise_time and fall_time model inertial delay". The clause
+    /// is explicit that the result "describes a piecewise linear function over time".
+    ///
+    /// This used to be a first-order lag with the rise time as its time constant,
+    /// which left the output 1/e short at the instant the ramp should have arrived,
+    /// never arrived at all, and dropped `td` on the floor (issue #42). A lag is the
+    /// easier continuous function to write as a DAE residual, but it is not this
+    /// operator: a model transitioning a logic level into a charge pump got the wrong
+    /// charge per pulse out of it, and no `td` could give it a propagation delay.
+    ///
+    /// The ramp needs no unknown of its own. It is an explicit function of `$abstime`
+    /// and of state carried from one accepted timestep to the next, so there is no
+    /// equation here any more and no Jacobian entry to go with it.
+    ///
+    /// # Transport delay
+    ///
+    /// `td` is a transport delay, not an inertial one, so a change arriving while an
+    /// earlier one is still inside the delay window must not cancel it: 4.5.8 says a
+    /// transition function "can have an arbitrary number of transitions pending" and
+    /// that this "can be used to implement transport delay for discrete-valued
+    /// signals". Pending transitions therefore sit in a queue, earliest first, and
+    /// one is taken per evaluation.
+    ///
+    /// A fixed lowering cannot offer an arbitrary number of slots, so `PENDING` is
+    /// the bound. It is reached only when `expr` changes more than that many times
+    /// within one `td`; past it the newest two changes coalesce, which keeps the
+    /// value the output eventually reaches correct and loses a glitch. The other half
+    /// of the clause, "deleting any transitions which would follow a newly scheduled
+    /// transition", is implemented too, and is reachable only when `td` shrinks
+    /// during the simulation -- with a constant delay a new transition is always
+    /// scheduled after the pending ones.
+    ///
+    /// # Interrupted transitions
+    ///
+    /// When a transition starts while another is still in flight, 4.5.8 does not ramp
+    /// from the current value at the current slope. It "computes the slope which
+    /// completes the transition from the origin (not the current value) in the
+    /// specified transition time", where the origin is the old destination if the new
+    /// destination is below the current value, and the *first* origin if it is above.
+    /// The ramp then runs from the current value at that slope, so an interrupted
+    /// transition finishes early rather than taking the full time again. That is what
+    /// turns a pulse shorter than `rise_time` into a reduced-amplitude glitch instead
+    /// of a full-swing one, which is the behaviour a phase detector depends on.
+    ///
+    /// # Timepoints
+    ///
+    /// "The transition function causes the simulator to place time-points at both
+    /// corners of a transition", so `$bound_step` is capped at the distance to each
+    /// pending start instant and to the arrival of the ramp in progress. The trailing
+    /// corner is deliberately *not* requested when the transition time is the
+    /// negligible default, which is the clause's own exemption: forcing it "would
+    /// result in poor performance".
+    ///
+    /// That is also why `time_tol` is accepted and then not used. It asks for a point
+    /// within `time_tol` of a corner, and landing on the corner exactly satisfies any
+    /// tolerance -- the same reasoning `timer` is lowered with.
+    ///
+    /// What stays step-dependent is *when a change is noticed*: `expr` steps, so
+    /// there is no crossing to interpolate. In practice the change is driven by a
+    /// `cross` or `timer` event in the same module, and those already steer the
+    /// solver onto the instant it happens.
+    fn lower_transition(&mut self, target: Value, args: &[ExprId]) -> Value {
+        // 4.5.8: with `rise_time`/`fall_time` unspecified or zero they "default to the
+        // value defined by `default_transition"; without that directive -- which this
+        // compiler does not implement -- "a negligible, but non-zero, transition time
+        // is used", because "forcing a zero-duration transition is undesirable" for
+        // convergence. This is that negligible time, and the floor the lag
+        // realization used as its time constant, so a bare `transition(x)` keeps its
+        // character.
+        const MIN_RAMP: f64 = 1e-12;
+        // How many transitions may be in flight through `td` at once. Each slot costs
+        // two retained values.
+        const PENDING: usize = 4;
+        // An empty queue slot: a time no simulation reaches, kept far enough below
+        // `f64::MAX` that `NEVER + td` is still finite.
+        const NEVER: f64 = 1e300;
+
+        let now = self.ctx.use_param(ParamKind::Abstime);
+
+        let td = self.opt_arg(args, 1).unwrap_or(F_ZERO);
+        let rise = self.opt_arg(args, 2).unwrap_or(F_ZERO);
+        // "If only a positive rise_time value is specified, the simulator uses it for
+        // both rise and fall times."
+        let fall = self.opt_arg(args, 3).unwrap_or(rise);
+        let min_ramp = self.ctx.fconst(MIN_RAMP);
+        let rise = self.fmax(rise, min_ramp);
+        let fall = self.fmax(fall, min_ramp);
+
+        let one = self.ctx.fconst(1.0);
+        let unset = self.ctx.fconst(NEVER);
+        // Half the marker, so a slot reads as empty however `NEVER` was arrived at.
+        let unset_test = self.ctx.fconst(NEVER / 2.0);
+        // `$bound_step`'s "no opinion", matching how `timer` spells it.
+        let no_bound = self.ctx.fconst(f64::MAX);
+
+        // -- state ------------------------------------------------------------
+        // The input value last seen, so a change can be detected.
+        let s_tgt = self.ctx.alloc_retained_state(0.0);
+        // Transitions scheduled but not yet started, earliest first.
+        let mut queue = Vec::with_capacity(PENDING);
+        for _ in 0..PENDING {
+            let at = self.ctx.alloc_retained_state(NEVER);
+            let to = self.ctx.alloc_retained_state(0.0);
+            queue.push((at, to));
+        }
+        // The transition in progress: when it started and from what value, where it
+        // is going, the origin its slope was computed from, that slope, and the
+        // transition time the slope was computed over.
+        let s_t0 = self.ctx.alloc_retained_state(0.0);
+        let s_v0 = self.ctx.alloc_retained_state(0.0);
+        let s_dest = self.ctx.alloc_retained_state(0.0);
+        let s_origin = self.ctx.alloc_retained_state(0.0);
+        let s_slope = self.ctx.alloc_retained_state(0.0);
+        let s_span = self.ctx.alloc_retained_state(0.0);
+
+        let tgt_prev = self.ctx.retained_prev(s_tgt);
+        let mut at_prev = Vec::with_capacity(PENDING);
+        let mut to_prev = Vec::with_capacity(PENDING);
+        for k in 0..PENDING {
+            at_prev.push(self.ctx.retained_prev(queue[k].0));
+            to_prev.push(self.ctx.retained_prev(queue[k].1));
+        }
+        let t0 = self.ctx.retained_prev(s_t0);
+        let v0 = self.ctx.retained_prev(s_v0);
+        let dest = self.ctx.retained_prev(s_dest);
+        let origin = self.ctx.retained_prev(s_origin);
+        let slope = self.ctx.retained_prev(s_slope);
+
+        // -- where the transition in progress has got to ----------------------
+        // A line from `v0` at `t0` at `slope`, clamped to the interval it travels.
+        // The clamp also covers `now < t0`, where the line runs backwards away from
+        // `dest` and is pinned at `v0`.
+        let elapsed = self.ctx.ins().fsub(now, t0);
+        let travelled = self.ctx.ins().fmul(slope, elapsed);
+        let raw = self.ctx.ins().fadd(v0, travelled);
+        let lo = self.fmin(v0, dest);
+        let hi = self.fmax(v0, dest);
+        let cur = self.fmax(raw, lo);
+        let cur = self.fmin(cur, hi);
+
+        // 4.5.8: "In DC analysis, transition() passes the value of the expr directly
+        // to its output", and the first point of a transient has no history to ramp
+        // from either. Retained state commits only once time moves, so this reads
+        // true for every point of a dc sweep and for the operating point, and false
+        // from the first accepted transient step onwards.
+        let first = self.ctx.first_eval();
+        let cur = self.ctx.make_select(first, |_s, b| if b { target } else { cur });
+
+        // -- schedule a transition for each change of the input ---------------
+        // `expr` is piecewise constant, so an exact comparison is the change test:
+        // there is no tolerance to apply to a signal that steps.
+        let changed = self.ctx.ins().fne(target, tgt_prev);
+        let changed = self.lower_select_with(first, |_| FALSE, |_| changed);
+        let starts = self.ctx.ins().fadd(now, td);
+
+        // "deleting any transitions which would follow a newly scheduled transition"
+        let mut kept_at = Vec::with_capacity(PENDING);
+        for k in 0..PENDING {
+            let at = at_prev[k];
+            let after = self.ctx.ins().fge(at, starts);
+            let drop = self.and(changed, after);
+            kept_at.push(self.ctx.make_select(drop, |_s, b| if b { unset } else { at }));
+        }
+
+        // Push into the first slot that is free. The last slot also catches a push
+        // that found none, so the queue degrades by coalescing its newest two
+        // entries rather than by dropping the change and losing the final value.
+        let mut empty = Vec::with_capacity(PENDING);
+        for k in 0..PENDING {
+            empty.push(self.ctx.ins().fge(kept_at[k], unset_test));
+        }
+        let mut push = Vec::with_capacity(PENDING);
+        let mut placed = FALSE;
+        for k in 0..PENDING - 1 {
+            let here = match k {
+                0 => empty[0],
+                _ => {
+                    let prev_taken = self.lower_select_with(empty[k - 1], |_| FALSE, |_| TRUE);
+                    self.and(empty[k], prev_taken)
+                }
+            };
+            let here = self.and(changed, here);
+            placed = self.or(placed, here);
+            push.push(here);
+        }
+        let spill = self.lower_select_with(placed, |_| FALSE, |_| TRUE);
+        push.push(self.and(changed, spill));
+
+        let mut pushed_at = Vec::with_capacity(PENDING);
+        let mut pushed_to = Vec::with_capacity(PENDING);
+        for k in 0..PENDING {
+            let (at, to, p) = (kept_at[k], to_prev[k], push[k]);
+            pushed_at.push(self.ctx.make_select(p, |_s, b| if b { starts } else { at }));
+            pushed_to.push(self.ctx.make_select(p, |_s, b| if b { target } else { to }));
+        }
+
+        // -- start the head of the queue once its instant arrives -------------
+        // Pushing before testing is what makes `td` of zero start the ramp in this
+        // evaluation rather than the next one.
+        let head_at = pushed_at[0];
+        let head_set = self.ctx.ins().flt(head_at, unset_test);
+        let head_due = self.ctx.ins().fle(head_at, now);
+        let due = self.and(head_set, head_due);
+        let new_dest = pushed_to[0];
+
+        // The interrupt rules. "If the new final value level is below the value level
+        // at the point of the interruption (the current value), transition() uses the
+        // old destination as the origin. If the new destination is above the current
+        // level, the first origin is retained." A transition that has already arrived
+        // has no origin to retain and starts from where it is.
+        let in_flight = self.ctx.ins().fne(cur, dest);
+        let below = self.ctx.ins().flt(new_dest, cur);
+        let kept_origin = self.ctx.make_select(below, |_s, b| if b { dest } else { origin });
+        let new_origin = self.ctx.make_select(in_flight, |_s, b| if b { kept_origin } else { cur });
+        // Retaining the first origin assumes the new destination lies beyond the
+        // current value, which is the case the clause is written for. A destination
+        // *between* the origin and the current value would otherwise be given a slope
+        // pointing away from it, so fall back to a fresh transition there.
+        let from_origin = self.ctx.ins().fsub(cur, new_origin);
+        let to_dest = self.ctx.ins().fsub(new_dest, cur);
+        let spanned = self.ctx.ins().fmul(from_origin, to_dest);
+        let usable = self.ctx.ins().fge(spanned, F_ZERO);
+        let new_origin = self.ctx.make_select(usable, |_s, b| if b { new_origin } else { cur });
+
+        // "forces all positive transitions of expr to occur over rise_time and all
+        // negative transitions to occur in fall_time", positive measured from the
+        // origin. Both have been floored, so the slope needs no divisor guard.
+        let up = self.ctx.ins().fgt(new_dest, new_origin);
+        let new_span = self.ctx.make_select(up, |_s, b| if b { rise } else { fall });
+        let swing = self.ctx.ins().fsub(new_dest, new_origin);
+        let new_slope = self.ctx.ins().fdiv(swing, new_span);
+
+        let t0_next = self.ctx.make_select(due, |_s, b| if b { now } else { t0 });
+        let v0_next = self.ctx.make_select(due, |_s, b| if b { cur } else { v0 });
+        let dest_next = self.ctx.make_select(due, |_s, b| if b { new_dest } else { dest });
+        let origin_next = self.ctx.make_select(due, |_s, b| if b { new_origin } else { origin });
+        let slope_next = self.ctx.make_select(due, |_s, b| if b { new_slope } else { slope });
+        let span_prev = self.ctx.retained_prev(s_span);
+        let span_next = self.ctx.make_select(due, |_s, b| if b { new_span } else { span_prev });
+
+        // The first evaluation sits at the target with nothing in flight.
+        let t0_next = self.ctx.make_select(first, |_s, b| if b { now } else { t0_next });
+        let v0_next = self.ctx.make_select(first, |_s, b| if b { target } else { v0_next });
+        let dest_next = self.ctx.make_select(first, |_s, b| if b { target } else { dest_next });
+        let origin_next = self.ctx.make_select(first, |_s, b| if b { target } else { origin_next });
+        let slope_next = self.ctx.make_select(first, |_s, b| if b { F_ZERO } else { slope_next });
+        let span_next = self.ctx.make_select(first, |_s, b| if b { F_ZERO } else { span_next });
+
+        // Taking the head shifts the rest of the queue up.
+        for k in 0..PENDING {
+            let next_at = if k + 1 < PENDING { pushed_at[k + 1] } else { unset };
+            let next_to = if k + 1 < PENDING { pushed_to[k + 1] } else { F_ZERO };
+            let (at, to) = (pushed_at[k], pushed_to[k]);
+            let at = self.ctx.make_select(due, |_s, b| if b { next_at } else { at });
+            let to = self.ctx.make_select(due, |_s, b| if b { next_to } else { to });
+            self.ctx.store_retained(queue[k].0, at);
+            self.ctx.store_retained(queue[k].1, to);
+
+            // A leading corner: every instant still pending wants a timepoint.
+            let togo = self.ctx.ins().fsub(at, now);
+            let ahead = self.ctx.ins().fgt(togo, F_ZERO);
+            let set = self.ctx.ins().flt(at, unset_test);
+            let want = self.and(ahead, set);
+            let bound = self.ctx.make_select(want, |_s, b| if b { togo } else { no_bound });
+            self.bound_step(bound);
+        }
+
+        self.ctx.store_retained(s_tgt, target);
+        self.ctx.store_retained(s_t0, t0_next);
+        self.ctx.store_retained(s_v0, v0_next);
+        self.ctx.store_retained(s_dest, dest_next);
+        self.ctx.store_retained(s_origin, origin_next);
+        self.ctx.store_retained(s_slope, slope_next);
+        self.ctx.store_retained(s_span, span_next);
+
+        // The trailing corner: where the ramp in progress arrives. Skipped when the
+        // transition time is the negligible default, per the clause's own exemption
+        // against forcing very small timesteps for it.
+        let remaining = self.ctx.ins().fsub(dest_next, v0_next);
+        let moving = self.ctx.ins().fne(slope_next, F_ZERO);
+        let divisor = self.ctx.make_select(moving, |_s, b| if b { slope_next } else { one });
+        let duration = self.ctx.ins().fdiv(remaining, divisor);
+        let arrival = self.ctx.ins().fadd(t0_next, duration);
+        let togo = self.ctx.ins().fsub(arrival, now);
+        let ahead = self.ctx.ins().fgt(togo, F_ZERO);
+        let resolved = self.ctx.ins().fgt(span_next, min_ramp);
+        let want = self.and(ahead, moving);
+        let want = self.and(want, resolved);
+        let bound = self.ctx.make_select(want, |_s, b| if b { togo } else { no_bound });
+        self.bound_step(bound);
+
+        cur
     }
 
     fn lower_integral(&mut self, kind: IdtKind, args: &[ExprId]) -> Value {
@@ -1019,6 +1457,12 @@ impl BodyLoweringCtx<'_, '_, '_> {
     /// Read the coefficient values of an array-valued argument (an array variable's
     /// elements or an array literal's entries), lowest index first.
     fn array_coeffs(&mut self, arg: ExprId) -> Vec<Value> {
+        // A null argument (`laplace_nd(V(in), , den)`, VAMS-2023 4.5.11) has no
+        // expression at all. It means an empty coefficient vector; lowering it as an
+        // expression would reach `get_expr`'s `invalid HIR` panic.
+        if self.body.is_missing(arg) {
+            return Vec::new();
+        }
         // Laplace coefficients feed real-valued state-space arithmetic, but an
         // anonymous array literal of integer constants (the LRM's own examples use
         // `'{-1,0,1}`) lowers to integer values. Widen each coefficient to real so
@@ -1073,9 +1517,120 @@ impl BodyLoweringCtx<'_, '_, '_> {
         let input = self.lower_expr(args[0]);
         let num = self.array_coeffs(args[1]);
         let den = self.array_coeffs(args[2]);
+        self.lower_laplace_state_space(input, num, den)
+    }
+
+    /// Lower the root forms of the Laplace filter (VAMS-2023 4.5.11.1-4.5.11.3) by
+    /// expanding each root vector into polynomial coefficients and reusing the
+    /// `laplace_nd` realization. The number of roots is fixed at compile time (array
+    /// lengths are static), so only the coefficient arithmetic is emitted.
+    fn lower_laplace_roots(&mut self, args: &[ExprId], zeros: bool, poles: bool) -> Value {
+        let input = self.lower_expr(args[0]);
+        let num = if zeros {
+            let roots = self.array_coeffs(args[1]);
+            self.expand_roots(&roots)
+        } else {
+            self.array_coeffs(args[1])
+        };
+        let den = if poles {
+            let roots = self.array_coeffs(args[2]);
+            self.expand_roots(&roots)
+        } else {
+            self.array_coeffs(args[2])
+        };
+        self.lower_laplace_state_space(input, num, den)
+    }
+
+    /// Expand a flat vector of (real, imaginary) root pairs into the real polynomial
+    /// coefficients of `prod_k (1 - s/r_k)`, ascending powers of `s`.
+    ///
+    /// A root of zero contributes a bare `s` factor instead of `1 - s/r`, as
+    /// 4.5.11.1 requires. The LRM also requires a complex root's conjugate to be
+    /// present, which is what makes the product real: the expansion carries the
+    /// imaginary parts through and drops them at the end, so no case analysis on
+    /// whether a given root is real is needed -- which matters because the roots are
+    /// runtime values.
+    fn expand_roots(&mut self, roots: &[Value]) -> Vec<Value> {
+        let one = self.ctx.fconst(1.0);
+        // running polynomial, real and imaginary parts, ascending powers of s
+        let mut re = vec![one];
+        let mut im = vec![F_ZERO];
+
+        for pair in roots.chunks(2) {
+            let sigma = pair[0];
+            // an odd-length vector is malformed; treat the missing part as zero
+            let omega = pair.get(1).copied().unwrap_or(F_ZERO);
+
+            // |r|^2 decides both the reciprocal and whether the root is zero
+            let s2 = self.ctx.ins().fmul(sigma, sigma);
+            let w2 = self.ctx.ins().fmul(omega, omega);
+            let mag2 = self.ctx.ins().fadd(s2, w2);
+            let is_zero = self.ctx.ins().feq(mag2, F_ZERO);
+            // divide by 1 instead of 0 in the branch the select discards
+            let denom = self.ctx.make_select(is_zero, |_ctx, b| if b { one } else { mag2 });
+
+            // 1/r = conj(r)/|r|^2, so the s coefficient of (1 - s/r) is
+            // (-sigma + j*omega)/|r|^2; a zero root makes the factor a bare s.
+            let inv_re = self.ctx.ins().fdiv(sigma, denom);
+            let c1_re_nonzero = self.ctx.ins().fneg(inv_re);
+            let c1_im_nonzero = self.ctx.ins().fdiv(omega, denom);
+
+            let c0 = self.ctx.make_select(is_zero, |_ctx, b| if b { F_ZERO } else { one });
+            let c1_re =
+                self.ctx.make_select(is_zero, |_ctx, b| if b { one } else { c1_re_nonzero });
+            let c1_im =
+                self.ctx.make_select(is_zero, |_ctx, b| if b { F_ZERO } else { c1_im_nonzero });
+
+            // multiply the running polynomial by [c0, c1]
+            let mut next_re = vec![F_ZERO; re.len() + 1];
+            let mut next_im = vec![F_ZERO; re.len() + 1];
+            for i in 0..re.len() {
+                // times c0, whose imaginary part is always zero
+                let t_re = self.ctx.ins().fmul(re[i], c0);
+                let t_im = self.ctx.ins().fmul(im[i], c0);
+                next_re[i] = self.ctx.ins().fadd(next_re[i], t_re);
+                next_im[i] = self.ctx.ins().fadd(next_im[i], t_im);
+
+                // times c1, shifted up one power of s
+                let rr = self.ctx.ins().fmul(re[i], c1_re);
+                let ii = self.ctx.ins().fmul(im[i], c1_im);
+                let ri = self.ctx.ins().fmul(re[i], c1_im);
+                let ir = self.ctx.ins().fmul(im[i], c1_re);
+                let real = self.ctx.ins().fsub(rr, ii);
+                let imag = self.ctx.ins().fadd(ri, ir);
+                next_re[i + 1] = self.ctx.ins().fadd(next_re[i + 1], real);
+                next_im[i + 1] = self.ctx.ins().fadd(next_im[i + 1], imag);
+            }
+            re = next_re;
+            im = next_im;
+        }
+
+        // The conjugate pairs the LRM requires cancel the imaginary parts.
+        re
+    }
+
+    fn lower_laplace_state_space(
+        &mut self,
+        input: Value,
+        num: Vec<Value>,
+        den: Vec<Value>,
+    ) -> Value {
+        // A null numerator (`laplace_nd(V(in), , den)`, VAMS-2023 4.5.11) is the
+        // empty product of zeros, so the numerator is *unity* -- H(s) = 1/D(s) --
+        // not zero, which is what an empty coefficient list would otherwise produce.
+        // The root forms need no such case: an empty product of factors is already 1.
+        let num = if num.is_empty() {
+            let one = self.ctx.fconst(1.0);
+            vec![one]
+        } else {
+            num
+        };
         let n = den.len().saturating_sub(1); // filter order
         if n == 0 {
-            if num.is_empty() || den.is_empty() {
+            // A null denominator likewise means D(s) = 1, so the filter is its
+            // numerator; only the constant case is realizable without differentiating
+            // the input, which is the same restriction as before.
+            if den.is_empty() {
                 return input;
             }
             let g = self.ctx.ins().fdiv(num[0], den[0]);

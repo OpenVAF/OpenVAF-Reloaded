@@ -1,0 +1,19 @@
+* transition, VAMS-2023 4.5.8
+* ramp   : td=2n tr=3n tf=1n over a 0 -> 1 -> 0 input at 10 ns and 30 ns
+* glitch : the same filter on a 1 ns pulse at 50 ns, shorter than both td and tr
+* raw    : the undelayed input, for reference
+
+Nt ramp glitch raw trmod
+.model trmod trfilter(td=2n tr=3n tf=1n)
+
+Rr ramp   0 1e12
+Rg glitch 0 1e12
+Rw raw    0 1e12
+
+.control
+pre_osdi trfilter.osdi
+tran 500p 60n
+wrdata tr_out.txt v(ramp) v(glitch) v(raw)
+.endc
+
+.end

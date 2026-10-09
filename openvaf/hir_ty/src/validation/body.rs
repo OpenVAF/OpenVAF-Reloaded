@@ -7,7 +7,7 @@ use hir_def::{
     Literal, Lookup, ModuleBodyKind, NatureId, NodeId, ParamId, Path, Stmt, StmtId, VarId,
 };
 use stdx::impl_display;
-use syntax::ast::AssignOp;
+use syntax::ast::{AssignOp, UnaryOp};
 use syntax::name::{AsIdent, Name};
 
 use crate::builtin::{
@@ -61,6 +61,22 @@ pub enum BodyValidationDiagnostic {
     IllegalEventTrigger {
         stmt: StmtId,
         ctx: BodyCtx,
+    },
+
+    /// VAMS-2023 5.10.3: an analog event function is name-resolved and type-checked
+    /// but takes no part in scheduling yet, so the guarded statement is evaluated on
+    /// every evaluation of the analog block instead of only when the event occurs.
+    UnscheduledEvent {
+        stmt: StmtId,
+        func: BuiltIn,
+    },
+
+    /// VAMS-2023 9.17.1: `$discontinuity(n)` for a non-negative degree is accepted
+    /// but announces nothing, because OSDI has no channel for it. Only the
+    /// `$discontinuity(-1)` form that pairs with `$limit` (9.17.3) does anything.
+    IgnoredDiscontinuity {
+        stmt: StmtId,
+        expr: ExprId,
     },
 
     WriteToInputArg {
@@ -286,19 +302,58 @@ impl BodyValidator<'_> {
 
                 return;
             }
-            Stmt::EventControl { ref event, body } => {
-                let call = match *event {
-                    Event::Cross { call } => call,
-                    _ => None,
-                };
+            Stmt::EventControl { ref events, body } => {
+                // Each element of the event expression is validated on its own
+                // (VAMS-2023 5.10.1).
+                let calls: Vec<_> = events
+                    .iter()
+                    .filter_map(|event| match *event {
+                        Event::Cross { call } => call,
+                        _ => None,
+                    })
+                    .collect();
+                // Mirror `hir_lower`'s `EventControl`: the body is guarded only if
+                // *every* element of the event expression carries a runtime
+                // condition -- a named event its flag, `cross` its crossing. One
+                // element without one (a global event, `timer`, ...) leaves the whole
+                // body unconditional, however well the others schedule.
+                let all_scheduled = !events.is_empty()
+                    && events.iter().all(|event| match *event {
+                        Event::Named { event } => {
+                            matches!(self.infer.expr_types[event], Ty::Event(_))
+                        }
+                        Event::Cross { call: Some(call) } => matches!(
+                            self.infer.resolved_calls.get(&call),
+                            Some(ResolvedFun::BuiltIn(func)) if func.schedules_event()
+                        ),
+                        _ => false,
+                    });
+
                 let old = replace(&mut self.ctx, BodyCtx::EventControl);
                 let old_event = replace(&mut self.in_event_control, true);
                 // The event expression is validated in the event context too: it may
                 // read natures (`@(cross(V(a)))`) but not use analog operators.
-                if let Some(call) = call {
+                for call in calls {
                     let old_call = replace(&mut self.event_call, Some(call));
                     self.validate_expr(call, stmt);
                     self.event_call = old_call;
+
+                    // `cross` decides whether the body runs (VAMS-2023 5.10.3.1),
+                    // so on its own it no longer warns; `above`, `timer` and
+                    // `absdelta` still take no part in scheduling. Either way the
+                    // warning stands if some other element of the same event
+                    // expression leaves the body unconditional, because then this
+                    // function does not end up scheduling anything either. Warn
+                    // instead of silently accepting a model whose behaviour is not
+                    // the one it describes.
+                    if let Some(ResolvedFun::BuiltIn(func)) = self.infer.resolved_calls.get(&call) {
+                        if func.is_event_fun() && !(func.schedules_event() && all_scheduled) {
+                            self.diagnostics.push(BodyValidationDiagnostic::UnscheduledEvent {
+                                stmt,
+                                func: *func,
+                            });
+                        }
+                    }
                 }
                 self.validate_stmt(body);
                 self.in_event_control = old_event;
@@ -681,6 +736,19 @@ impl ExprValidator<'_, '_> {
         self.parent.body.exprs[expr].walk_child_exprs(|child| self.validate_expr(child))
     }
 
+    /// An integer literal, or a negated one. Mirrors `hir::Body::as_literalsignedint`,
+    /// which is not reachable from validation.
+    fn as_signed_int(&self, expr: ExprId) -> Option<i32> {
+        match &self.parent.body.exprs[expr] {
+            Expr::Literal(Literal::Int(val)) => Some(*val),
+            Expr::UnaryOp { expr, op: UnaryOp::Neg } => match &self.parent.body.exprs[*expr] {
+                Expr::Literal(Literal::Int(val)) => Some(-val),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn validate_builtin(
         &mut self,
         name: &Option<Path>,
@@ -694,6 +762,19 @@ impl ExprValidator<'_, '_> {
                 .parent
                 .diagnostics
                 .push(BodyValidationDiagnostic::UnsupportedFunction { expr, func: call }),
+            BuiltIn::discontinuity => {
+                // The `$discontinuity(-1)` form is part of `$limit` (9.17.3) and is
+                // lowered; every other degree is dropped, so say so rather than let
+                // a model claim a discontinuity that never reaches the integrator.
+                let is_limit_form =
+                    args.first().is_some_and(|&arg| self.as_signed_int(arg) == Some(-1));
+                if !is_limit_form {
+                    self.parent.diagnostics.push(BodyValidationDiagnostic::IgnoredDiscontinuity {
+                        stmt: self.stmt,
+                        expr,
+                    });
+                }
+            }
             BuiltIn::potential | BuiltIn::flow => self.check_access(
                 |_| IllegalCtxAccessKind::NatureAccess,
                 expr,

@@ -92,11 +92,20 @@ pub enum ParamKind {
     EnableLim,
     PrevState(LimitState),
     NewState(LimitState),
-    Voltage { hi: Node, lo: Option<Node> },
+    /// The value a retained slot held at the end of the previous accepted timestep.
+    PrevRetained(RetainedState),
+    Voltage {
+        hi: Node,
+        lo: Option<Node>,
+    },
     Current(CurrentKind),
     Temperature,
-    ParamGiven { param: Parameter },
-    PortConnected { port: Node },
+    ParamGiven {
+        param: Parameter,
+    },
+    PortConnected {
+        port: Node,
+    },
     ParamSysFun(ParamSysFun),
     HiddenState(Variable),
     ImplicitUnknown(ImplicitEquation),
@@ -121,6 +130,7 @@ impl ParamKind {
                 | ParamKind::HiddenState(_)
                 | ParamKind::PrevState(_)
                 | ParamKind::NewState(_)
+                | ParamKind::PrevRetained(_)
                 | ParamKind::EnableLim
         )
     }
@@ -246,6 +256,22 @@ impl_debug_display! {
     match LimitState {LimitState(i) => "lim_state{}", i;}
 }
 
+/// A value that has to survive from one accepted timestep to the next: the latch
+/// behind an `@(cross)` variable, or the previous value of a monitored expression.
+///
+/// Distinct from [`LimitState`]. Both are "state" in the loose sense, but a limit
+/// state is a node voltage carried between *Newton iterations* and lives in the
+/// simulator's OSDI state array, whereas a retained slot is a value carried between
+/// *accepted timesteps* and lives in the instance data (see the retained-state note
+/// at the top of `openvaf/osdi/stdlib.c`). Keeping them apart also keeps retained
+/// slots out of the limit-specific derivative and limit-rhs passes.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RetainedState(u32);
+impl_idx_from!(RetainedState(u32));
+impl_debug_display! {
+    match RetainedState {RetainedState(i) => "retained_state{}", i;}
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum AbsDelayInput {
     Voltage { hi: Node, lo: Option<Node> },
@@ -272,11 +298,10 @@ pub struct HirInterner {
     pub tagged_reads: IndexMap<Value, Variable, BuildHasherDefault<FxHasher>>,
     pub implicit_equations: TiVec<ImplicitEquation, ImplicitEquationKind>,
     pub lim_state: TiMap<LimitState, Value, Vec<(Value, bool)>>,
-    /// Limit-state slots that actually back `@(cross)` retained variables (latch
-    /// state stored across timesteps). They reuse the limit state-array machinery
-    /// but carry no limit function, so the limit-specific derivative/value passes
-    /// must skip them.
-    pub retained_lim_states: ahash::AHashSet<LimitState>,
+    /// The value each retained slot holds before anything has written to it, in slot
+    /// order. The length is the number of slots; the backend turns each into a pair
+    /// of instance-data fields initialized to this value. See [`RetainedState`].
+    pub retained_init: TiVec<RetainedState, f64>,
 }
 
 pub type LiveParams<'a> = FilterMap<
@@ -295,7 +320,7 @@ impl Default for HirInterner {
             tagged_reads: IndexMap::with_hasher(BuildHasherDefault::<FxHasher>::default()),
             implicit_equations: TiVec::default(),
             lim_state: TiMap::default(),
-            retained_lim_states: ahash::AHashSet::default(),
+            retained_init: TiVec::new(),
         }
     }
 }
@@ -367,12 +392,7 @@ impl HirInterner {
             }
         }
 
-        for (state, (param, vals)) in self.lim_state.iter_enumerated() {
-            // Retained `@(cross)` slots are not limited node voltages; their key is a
-            // synthetic constant, so skip the limit derivative handling for them.
-            if self.retained_lim_states.contains(&state) {
-                continue;
-            }
+        for (param, vals) in self.lim_state.raw.iter() {
             for &(val, neg) in vals {
                 let param = func.dfg.value_def(*param).unwrap_param();
 

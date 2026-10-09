@@ -259,6 +259,8 @@ bultins! {
         fn ABSDELAY_MAX(Val(Real), Val(Real), Val(Real)) -> Real;
     }
 
+    // VAMS-2023 4.5.9:
+    //   slew ( expr [ , max_pos_slew_rate [ , max_neg_slew_rate ] ] )
     SLEW = const {
         fn SLEW_NO_MAX(Val(Real)) -> Real;
         fn SLEW_POS_MAX(Val(Real),Val(Real)) -> Real;
@@ -266,7 +268,7 @@ bultins! {
     }
 
 
-    // VAMS-2023 4.5.9:
+    // VAMS-2023 4.5.8:
     //   transition ( expr [ , td [ , rise_time [ , fall_time [ , time_tol ] ] ] ] )
     // Every argument is a dynamic expression (Table 4-20, Mantis 7810).
     TRANSITION = const {

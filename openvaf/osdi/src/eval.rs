@@ -132,6 +132,30 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
         let ret_flags = builder.ret_allocated.unwrap();
         unsafe { builder.store(ret_flags, cx.const_int(0)) };
 
+        // Promote the values retained from the previous accepted timestep before
+        // anything reads them. See the retained-state note at the top of
+        // `openvaf/osdi/stdlib.c` for why these do not live in
+        // `prev_state`/`next_state`.
+        if inst_data.num_retained != 0 {
+            unsafe {
+                let abstime = {
+                    let ptr = builder.struct_gep(sim_info_ty, sim_info, ABSTIME_OFFSET);
+                    builder.load(cx.ty_double(), ptr)
+                };
+                let vals = inst_data.retained_vals_ptr(cx, instance, builder.llbuilder);
+                let time = inst_data.retained_time_ptr(instance, builder.llbuilder);
+                let num = cx.const_unsigned_int(inst_data.num_retained);
+                let fun = cx
+                    .get_func_by_name("commit_retained")
+                    .expect("stdlib function commit_retained is missing");
+                let fun_ty = cx.ty_func(
+                    &[cx.ty_ptr(), cx.ty_ptr(), cx.ty_int(), cx.ty_double()],
+                    cx.ty_void(),
+                );
+                builder.call(fun_ty, fun, &[vals, time, num, abstime]);
+            }
+        }
+
         let connected_ports = unsafe { inst_data.load_connected_ports(&mut builder, instance) };
         let prev_solve: TiVec<_, _> = module
             .dae_system
@@ -270,6 +294,23 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                             }
                             .into();
                         }
+                        ParamKind::PrevRetained(state) => {
+                            let ptr = inst_data.retained_committed_ptr(
+                                cx,
+                                state,
+                                instance,
+                                builder.llbuilder,
+                            );
+                            // `ptr` already points at the slot, so no further
+                            // indexing is needed.
+                            return MemLoc {
+                                ptr,
+                                ptr_ty: cx.ty_double(),
+                                ty: cx.ty_double(),
+                                indices: Box::new([]),
+                            }
+                            .into();
+                        }
                         ParamKind::NewState(state) => {
                             let idx =
                                 inst_data.read_state_idx(cx, state, instance, builder.llbuilder);
@@ -321,6 +362,22 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                         fun_ty,
                         fun,
                         state: Box::new([sim_info, state_idx[state]]),
+                        num_state: 0,
+                    })
+                }
+                CallBackKind::StoreRetained(state) => {
+                    let fun = builder
+                        .cx
+                        .get_func_by_name("store_retained")
+                        .expect("stdlib function store_retained is missing");
+                    let fun_ty = cx.ty_func(&[cx.ty_ptr(), cx.ty_double()], cx.ty_double());
+                    let ptr = unsafe {
+                        inst_data.retained_pending_ptr(cx, state, instance, builder.llbuilder)
+                    };
+                    CallbackFun::Prebuilt(BuiltCallbackFun {
+                        fun_ty,
+                        fun,
+                        state: Box::new([ptr]),
                         num_state: 0,
                     })
                 }
