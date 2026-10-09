@@ -9,7 +9,7 @@ use typed_indexmap::TiSet;
 
 use crate::{
     CallBackKind, HirInterner, ImplicitEquation, ImplicitEquationKind, LimitState, ParamKind,
-    PlaceKind,
+    PlaceKind, RetainedState,
 };
 
 pub struct LoweringCtx<'a, 'c> {
@@ -25,16 +25,13 @@ pub struct LoweringCtx<'a, 'c> {
     /// but necessary to avoid accidental correlation/opimization.
     /// For example white_noise(x) - white_noise(x) is not zero.
     pub num_noise_sources: u32,
-    /// Variables assigned inside `@(cross)` handlers, each mapped to the limit-state
-    /// slot that stores its value across timesteps (latch / event retention).
-    /// Variables assigned inside `@(cross)` handlers that must retain their value
-    /// across timesteps. Each is backed by one retained limit-state slot per scalar,
-    /// or one per element for an array variable (in element order).
-    pub retained_states: AHashMap<Variable, Vec<LimitState>>,
-    /// True while lowering an `@(initial_step)` body: resets of retained variables
-    /// there are their initial value (read from the retained state), not a
-    /// per-evaluation reset.
-    pub in_initial_step: bool,
+    /// Variables that must keep their value from one evaluation to the next, because
+    /// they can be read before they are written. Each is backed by one retained slot
+    /// for a scalar, or one per element for an array variable (in element order).
+    pub retained_states: AHashMap<Variable, Vec<RetainedState>>,
+    /// Retained flag marking that the first evaluation is behind us, allocated the
+    /// first time an `@(initial_step)` body needs it. See [`Self::first_eval`].
+    pub initial_step_flag: Option<RetainedState>,
     /// Stack of enclosing loops for `break`/`continue` (innermost last).
     pub loop_stack: Vec<LoopTargets>,
     /// Exit block of the analog function currently being lowered, if any.
@@ -51,10 +48,6 @@ pub struct LoopTargets {
     /// Where `break` jumps.
     pub break_to: Block,
 }
-
-/// Synthetic constant base used as the (non-parameter) `lim_state` key for retained
-/// `@(cross)` slots, chosen to not collide with ordinary integer literals.
-const RETAINED_STATE_KEY_BASE: i32 = 0x5E7A_0000;
 
 impl<'a, 'c> LoweringCtx<'a, 'c> {
     pub fn new(
@@ -73,7 +66,7 @@ impl<'a, 'c> LoweringCtx<'a, 'c> {
             intern,
             num_noise_sources: 0,
             retained_states: AHashMap::default(),
-            in_initial_step: false,
+            initial_step_flag: None,
             loop_stack: Vec::new(),
             function_exit: None,
             function_return: None,
@@ -259,28 +252,52 @@ impl<'a, 'c> LoweringCtx<'a, 'c> {
         val
     }
 
-    /// Allocate a limit-state slot used purely to retain a value across timesteps
-    /// (the latch state of an `@(cross)` variable). It reuses the limit state-array
-    /// machinery (`prev_state`/`next_state`) but is keyed on a synthetic constant and
-    /// marked retained, so the limit-specific passes skip it.
-    pub fn alloc_retained_state(&mut self) -> LimitState {
-        let idx = self.intern.lim_state.len() as i32;
-        let key = self.iconst(RETAINED_STATE_KEY_BASE.wrapping_add(idx));
-        let dst = self.intern.lim_state.raw.entry(key);
-        let state = LimitState::from(dst.index());
-        dst.or_default().push((F_ZERO, false));
-        self.intern.retained_lim_states.insert(state);
-        state
+    /// Allocate a slot that retains a value from one accepted timestep to the next
+    /// (the latch state of an `@(cross)` variable, or a monitored expression's
+    /// previous value). The backend gives each slot a pair of instance-data fields,
+    /// both starting at `init` -- which is not always zero: `last_crossing` has to
+    /// read back negative until its expression has actually crossed (VAMS-2023
+    /// 4.5.10).
+    pub fn alloc_retained_state(&mut self, init: f64) -> RetainedState {
+        self.intern.retained_init.push_and_get_key(init)
+    }
+
+    /// Whether this is still the first evaluation, for guarding an `@(initial_step)`
+    /// body (VAMS-2023 5.10.2: "active during the solution of the first point ... of
+    /// every analysis").
+    ///
+    /// A retained flag, not an analysis flag: the flags are not stable across the
+    /// Newton iterations of one step, and retained state commits only once time
+    /// moves, so the flag reads false for every iteration of the first point and
+    /// true from the next accepted step onwards -- which is exactly the window the
+    /// clause describes. In an analysis where time never moves at all, dc or ac, it
+    /// stays false and the body runs at every point.
+    pub fn first_eval(&mut self) -> Value {
+        let state = match self.initial_step_flag {
+            Some(state) => state,
+            None => {
+                let state = self.alloc_retained_state(0.0);
+                self.initial_step_flag = Some(state);
+                state
+            }
+        };
+        let seen = self.retained_prev(state);
+        // Written unconditionally, so it is set from the first evaluation onwards
+        // whether or not the guarded body ran.
+        let one = self.fconst(1.0);
+        self.store_retained(state, one);
+        let half = self.fconst(0.5);
+        self.ins().flt(seen, half)
     }
 
     /// Read the value retained from the previous accepted timestep.
-    pub fn retained_prev(&mut self, state: LimitState) -> Value {
-        self.use_param(ParamKind::PrevState(state))
+    pub fn retained_prev(&mut self, state: RetainedState) -> Value {
+        self.use_param(ParamKind::PrevRetained(state))
     }
 
     /// Store `val` as the retained value for the next timestep.
-    pub fn store_retained(&mut self, state: LimitState, val: Value) {
-        self.call1(CallBackKind::StoreLimit(state), &[val]);
+    pub fn store_retained(&mut self, state: RetainedState, val: Value) {
+        self.call1(CallBackKind::StoreRetained(state), &[val]);
     }
 
     pub fn implicit_equation(&mut self, kind: ImplicitEquationKind) -> (ImplicitEquation, Value) {

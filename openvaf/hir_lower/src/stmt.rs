@@ -1,12 +1,324 @@
-use hir::{BranchWrite, Case, CaseCond, ContributeKind, Expr, ExprId, Node, Stmt, StmtId, Type};
+use hir::{
+    BranchWrite, BuiltIn, Case, CaseCond, ContributeKind, Expr, ExprId, Node, ResolvedFun, Stmt,
+    StmtId, Type,
+};
 use mir::builder::InstBuilder;
-use mir::{Opcode, Value, F_ZERO};
+use mir::{Opcode, Value, FALSE, F_ZERO, TRUE};
 use syntax::ast::BinaryOp;
 
 use crate::body::BodyLoweringCtx;
 use crate::{CallBackKind, CurrentKind, ImplicitEquationKind, ParamKind, PlaceKind};
 
 impl BodyLoweringCtx<'_, '_, '_> {
+    /// `a && b`, lowered the way `BinaryOp::BooleanAnd` is.
+    pub(crate) fn and(&mut self, a: Value, b: Value) -> Value {
+        self.lower_select_with(a, |_| b, |_| FALSE)
+    }
+
+    /// `a || b`, lowered the way `BinaryOp::BooleanOr` is.
+    pub(crate) fn or(&mut self, a: Value, b: Value) -> Value {
+        self.lower_select_with(a, |_| TRUE, |_| b)
+    }
+
+    /// VAMS-2023 5.10.3.3: whether `timer(start_time, period, time_tol, enable)`
+    /// fires in this evaluation.
+    ///
+    /// Unlike `cross`, this one gets to *ask* for the timepoint. `$bound_step` is
+    /// capped at the distance remaining to the next event, which lands ngspice on it
+    /// exactly -- measured, not assumed: `$abstime - t_event` comes back as
+    /// identically zero. A step the solver shortens for its own reasons costs
+    /// nothing, since the cap is recomputed, closer, on the next evaluation.
+    ///
+    /// That is also why `time_tol` is accepted and then ignored. The clause asks the
+    /// simulator to place a point "within time_tol of an event"; placing it exactly
+    /// on the event satisfies any tolerance.
+    fn lower_timer(&mut self, args: &[ExprId]) -> Option<Value> {
+        let start = *args.first()?;
+        if self.body.is_missing(start) {
+            return None;
+        }
+        let start = self.lower_expr(start);
+        let period = match args.get(1) {
+            Some(&p) if !self.body.is_missing(p) => self.lower_expr(p),
+            _ => F_ZERO,
+        };
+        let now = self.ctx.use_param(ParamKind::Abstime);
+
+        // The next scheduled event. Negative means "not scheduled yet", which no real
+        // event time can be, so the first evaluation picks up `start_time`.
+        let state = self.ctx.alloc_retained_state(-1.0);
+        let prev = self.ctx.retained_prev(state);
+        let unscheduled = self.ctx.ins().flt(prev, F_ZERO);
+        let next = self.ctx.make_select(unscheduled, |_s, taken| if taken { start } else { prev });
+
+        let reached = self.ctx.ins().fge(now, next);
+
+        // "If the period expression evaluates to a value less than or equal to 0.0,
+        // the timer shall trigger only once at the specified start_time." A
+        // non-periodic timer that has fired is parked beyond any simulation time.
+        let periodic = self.ctx.ins().fgt(period, F_ZERO);
+        let never = self.ctx.fconst(f64::MAX);
+        let one = self.ctx.fconst(1.0);
+        // Pin the divisor when there is no period: the division is evaluated either
+        // way and only the `periodic` arm keeps its result.
+        let divisor = self.ctx.make_select(periodic, |_s, taken| if taken { period } else { one });
+        // Skip whole periods in case the solver got past several at once:
+        //   next + period * (floor((now - next) / period) + 1)
+        let elapsed = self.ctx.ins().fsub(now, next);
+        let periods = self.ctx.ins().fdiv(elapsed, divisor);
+        let periods = self.ctx.ins().floor(periods);
+        let periods = self.ctx.ins().fadd(periods, one);
+        let advance = self.ctx.ins().fmul(period, periods);
+        let after = self.ctx.ins().fadd(next, advance);
+        let after = self.ctx.make_select(periodic, |_s, taken| if taken { after } else { never });
+
+        // The schedule advances whether or not `enable` lets the event through: "it
+        // will start generating events once enable returns to being nonzero as if it
+        // had never been disabled."
+        let new_next = self.ctx.make_select(reached, |_s, taken| if taken { after } else { next });
+        self.ctx.store_retained(state, new_next);
+
+        // "If enable argument is specified and it is zero, then timer() is inactive,
+        // meaning that it does not generate events as long as enable is zero."
+        let enabled = match args.get(3) {
+            Some(&en) if !self.body.is_missing(en) => {
+                let en = self.lower_expr(en);
+                let zero = self.ctx.iconst(0);
+                Some(self.ctx.ins().ine(en, zero))
+            }
+            _ => None,
+        };
+
+        // Ask for a timepoint on the next event, but not while inactive -- a disabled
+        // timer should not be steering the timestep either.
+        let remaining = self.ctx.ins().fsub(new_next, now);
+        let due = self.ctx.ins().fgt(remaining, F_ZERO);
+        let due = match enabled {
+            Some(en) => self.and(due, en),
+            None => due,
+        };
+        let bound = self.ctx.make_select(due, |_s, taken| if taken { remaining } else { never });
+        self.bound_step(bound);
+
+        let fired = match enabled {
+            Some(en) => self.and(reached, en),
+            None => reached,
+        };
+        Some(fired)
+    }
+
+    /// VAMS-2023 5.10.3.1/5.10.3.2: whether `cross` or `above` fires in this
+    /// evaluation.
+    ///
+    /// The crossing is detected between the previous *accepted* timestep and this
+    /// one: the expression's value is kept in a retained state (the same mechanism
+    /// that gives `@(cross)` variables their cross-timestep memory), and the event
+    /// fires when the two straddle zero in the requested direction.
+    ///
+    /// `above` differs from `cross` in two ways the LRM is explicit about: it takes
+    /// no `dir` argument and triggers only from below, and it also fires during
+    /// initialization and dc -- "if the expression is positive at the conclusion of
+    /// the initial condition analysis that precedes a transient analysis, the
+    /// above() function shall generate an event", where `cross` stays quiet until
+    /// time has advanced from zero.
+    ///
+    /// Neither yet controls the timestep, so the event lands on the first accepted
+    /// point *after* the crossing rather than inside the `time_tol` / `expr_tol` box
+    /// the LRM asks for -- see the tracking issue. Ordering is right, accuracy is
+    /// bounded by the step the simulator happened to take.
+    ///
+    /// Returns `None` for an event function that is still unscheduled, which leaves
+    /// its body unconditional as before.
+    fn lower_monitored_event(&mut self, call: ExprId) -> Option<Value> {
+        let (fun, args) = match self.body.get_expr(call) {
+            Expr::Call { fun: ResolvedFun::BuiltIn(fun), args } => (fun, args),
+            _ => return None,
+        };
+        // Argument layout per function: `cross(expr, dir, time_tol, expr_tol,
+        // enable)` against `above(expr, time_tol, expr_tol, enable)` -- `above` has
+        // no direction, so `enable` sits one place earlier. `timer` schedules on
+        // absolute time instead of a crossing and has its own lowering; `absdelta`
+        // stays unscheduled.
+        let (dir_arg, tol_arg, enable_arg) = match fun {
+            BuiltIn::cross => (Some(1), 2, 4),
+            BuiltIn::above => (None, 1, 3),
+            BuiltIn::timer => return self.lower_timer(args),
+            _ => return None,
+        };
+
+        let expr = *args.first()?;
+        if self.body.is_missing(expr) {
+            return None;
+        }
+        let cur = self.lower_expr(expr);
+
+        // The previous accepted value of the expression. Stored unconditionally, so
+        // the comparison always refers to the last accepted timestep.
+        let state = self.ctx.alloc_retained_state(0.0);
+        let prev = self.ctx.retained_prev(state);
+        self.ctx.store_retained(state, cur);
+
+        let cur_ge = self.ctx.ins().fge(cur, F_ZERO);
+        let prev_lt = self.ctx.ins().flt(prev, F_ZERO);
+        let rising = self.and(prev_lt, cur_ge);
+
+        let fired = match dir_arg {
+            // `dir` is optional and defaults to "either direction". A value other
+            // than -1, 0 or +1 generates no event at all, which falls out of the
+            // comparisons.
+            Some(dir_arg) => {
+                let cur_le = self.ctx.ins().fle(cur, F_ZERO);
+                let prev_gt = self.ctx.ins().fgt(prev, F_ZERO);
+                let falling = self.and(prev_gt, cur_le);
+                match args.get(dir_arg) {
+                    Some(&dir) if !self.body.is_missing(dir) => {
+                        let dir = self.lower_expr(dir);
+                        let zero = self.ctx.iconst(0);
+                        let one = self.ctx.iconst(1);
+                        let minus_one = self.ctx.iconst(-1);
+                        let both = self.ctx.ins().ieq(dir, zero);
+                        let up = self.ctx.ins().ieq(dir, one);
+                        let down = self.ctx.ins().ieq(dir, minus_one);
+                        let want_rising = self.or(up, both);
+                        let want_falling = self.or(down, both);
+                        let up = self.and(want_rising, rising);
+                        let down = self.and(want_falling, falling);
+                        self.or(up, down)
+                    }
+                    _ => self.or(rising, falling),
+                }
+            }
+            // `above` "generates a monitored analog event ... when the expression
+            // crosses zero (0) from below" and takes no direction argument.
+            None => rising,
+        };
+
+        let time = self.ctx.use_param(ParamKind::Abstime);
+        let advanced = self.ctx.ins().fgt(time, F_ZERO);
+
+        // Ask the solver to put the next point on the crossing. Nothing to steer
+        // without equations (verilogae, the init function), where `$bound_step` has
+        // no simulator to reach.
+        if !self.ctx.no_equations {
+            self.bound_step_to_crossing(args, tol_arg, cur, prev, time);
+        }
+
+        // `above` also fires wherever the expression is *already* positive before
+        // time has moved, which is 5.10.3.2's whole point: "if the expression is
+        // positive at the conclusion of the initial condition analysis that precedes
+        // a transient analysis, the above() function shall generate an event".
+        //
+        // The test is on `$abstime`, not on the analysis flags, because those are not
+        // stable across the Newton iterations of one timestep -- ngspice reports
+        // ANALYSIS_STATIC only on the first iteration of the initial step and
+        // ANALYSIS_TRAN on the rest, so a flag-gated event fires on one iteration and
+        // is then overwritten by the others. `$abstime` is fixed for the whole step.
+        //
+        // In a dc sweep this fires at every point where the expression is positive
+        // rather than only where it crosses, since nothing commits retained state
+        // while time stands still. 5.10.3.2 asks for crossings there and does not
+        // control the sweep step to resolve them; over-firing samples the same value
+        // a crossing would.
+        let fired = match fun {
+            BuiltIn::above => {
+                let not_advanced = self.ctx.ins().fle(time, F_ZERO);
+                let positive = self.ctx.ins().fgt(cur, F_ZERO);
+                let at_init = self.and(not_advanced, positive);
+                self.or(fired, at_init)
+            }
+            _ => fired,
+        };
+
+        // "If enable is specified and it is zero, then cross()/above() is inactive",
+        // which covers the initialization event too.
+        let fired = match args.get(enable_arg) {
+            Some(&en) if !self.body.is_missing(en) => {
+                let en = self.lower_expr(en);
+                let zero = self.ctx.iconst(0);
+                let enabled = self.ctx.ins().ine(en, zero);
+                self.and(fired, enabled)
+            }
+            _ => fired,
+        };
+
+        match fun {
+            // "The cross() function can only generate an event after the simulation
+            // time has advanced from zero", and it generates none for dc, ac or
+            // noise. Both follow from requiring a positive time.
+            BuiltIn::cross => Some(self.and(fired, advanced)),
+            BuiltIn::above => Some(fired),
+            _ => unreachable!("only cross and above take part in scheduling"),
+        }
+    }
+
+    /// Steer the timestep towards a threshold crossing, so the event lands inside
+    /// the box 5.10.3.1 Figure 5-6 draws around it rather than wherever the solver
+    /// happened to step next. "In addition, cross() controls the timestep to
+    /// accurately resolve the crossing", and 5.10.3.2 says the same of `above`.
+    ///
+    /// Detection alone cannot do this: by the time two accepted points straddle
+    /// zero, the crossing is already behind us, and a model cannot ask for a step to
+    /// be rejected. So this predicts instead. The expression's rate of change over
+    /// the last accepted step extrapolates to the time it reaches zero, and
+    /// `$bound_step` caps the next step there. Overshoot stops being a fraction of
+    /// the solver's step and becomes the curvature error of that extrapolation, and
+    /// since each capped step lands closer the estimate sharpens as it approaches.
+    ///
+    /// `time_tol` is the floor: never propose a step below it, which is both what
+    /// stops the refinement and what "within time_tol of the crossing" buys. With
+    /// none given the tool picks one, as the clause allows -- here a thousandth of
+    /// the step already being taken, which is relative to whatever scale the solver
+    /// is working at and cannot collapse towards zero on its own.
+    fn bound_step_to_crossing(
+        &mut self,
+        args: &[ExprId],
+        tol_arg: usize,
+        cur: Value,
+        prev: Value,
+        now: Value,
+    ) {
+        let state = self.ctx.alloc_retained_state(0.0);
+        let t_prev = self.ctx.retained_prev(state);
+        self.ctx.store_retained(state, now);
+
+        let one = self.ctx.fconst(1.0);
+        let never = self.ctx.fconst(f64::MAX);
+
+        // The step behind us, and the rate over it. Both meaningless before time has
+        // moved, which the `stepping` guard covers; the divisions are evaluated
+        // either way, so their divisors are pinned.
+        let dt = self.ctx.ins().fsub(now, t_prev);
+        let stepping = self.ctx.ins().fgt(dt, F_ZERO);
+        let dt_safe = self.ctx.make_select(stepping, |_s, taken| if taken { dt } else { one });
+        let change = self.ctx.ins().fsub(cur, prev);
+        let rate = self.ctx.ins().fdiv(change, dt_safe);
+
+        let rising = self.ctx.ins().fgt(rate, F_ZERO);
+        let falling = self.ctx.ins().flt(rate, F_ZERO);
+        let moving = self.or(rising, falling);
+        let rate_safe = self.ctx.make_select(moving, |_s, taken| if taken { rate } else { one });
+
+        // Time until the expression reaches zero at this rate. Positive exactly when
+        // it is heading towards the threshold rather than away from it.
+        let neg_cur = self.ctx.ins().fneg(cur);
+        let togo = self.ctx.ins().fdiv(neg_cur, rate_safe);
+        let approaching = self.ctx.ins().fgt(togo, F_ZERO);
+
+        let tol = match args.get(tol_arg) {
+            Some(&tol) if !self.body.is_missing(tol) => self.lower_expr(tol),
+            _ => {
+                let scale = self.ctx.fconst(1e-3);
+                self.ctx.ins().fmul(dt_safe, scale)
+            }
+        };
+        let too_fine = self.ctx.ins().flt(togo, tol);
+        let aim = self.ctx.make_select(too_fine, |_s, taken| if taken { tol } else { togo });
+
+        let usable = self.and(stepping, moving);
+        let usable = self.and(usable, approaching);
+        let bound = self.ctx.make_select(usable, |_s, taken| if taken { aim } else { never });
+        self.bound_step(bound);
+    }
     pub(super) fn lower_stmt(&mut self, stmnt: StmtId) {
         // TODO(msrv): let .. else
         let stmnt = if let Some(stmnt) = self.body.get_stmt(stmnt) {
@@ -18,32 +330,80 @@ impl BodyLoweringCtx<'_, '_, '_> {
             Stmt::Expr(expr) => {
                 self.lower_expr(expr);
             }
-            Stmt::EventControl { event, body } => {
+            Stmt::EventControl { events, body } => {
+                // VAMS-2023 5.10.1: the body runs when *any* of the ORed events
+                // occurs.
+                //
                 // Track `@(initial_step)` so resets of retained (`@cross`) variables
                 // inside it are treated as initial values (read from the retained
-                // state) rather than per-evaluation resets. Other events lower their
-                // body directly; their effect is gated by guards in the body.
-                if matches!(event, hir::Event::Global { kind: hir::GlobalEvent::InitialStep, .. }) {
-                    let prev = self.ctx.in_initial_step;
-                    self.ctx.in_initial_step = true;
-                    self.lower_stmt(body);
-                    self.ctx.in_initial_step = prev;
-                } else if let hir::Event::Named { event } = *event {
-                    // `@(ev)` runs its body only if `ev` was triggered earlier in
-                    // this evaluation of the analog block (VAMS-2023 5.10.4).
-                    match self.body.resolve_event(event) {
-                        Some(event) => {
-                            let cond = self.ctx.use_place(PlaceKind::NamedEvent(event));
-                            self.ctx.make_cond(cond, |ctx, branch| {
-                                if branch {
-                                    BodyLoweringCtx { body: self.body, path: self.path, ctx }
-                                        .lower_stmt(body)
-                                }
-                            });
-                        }
-                        // unresolved event; already diagnosed
-                        None => self.lower_stmt(body),
+                // state) rather than per-evaluation resets. That only holds when the
+                // initial step is the whole event expression: ORed with anything
+                // else the body runs at other times too, so an assignment in it is
+                // not just an initial value.
+                let initial_step = !events.is_empty()
+                    && events.iter().all(|event| {
+                        matches!(
+                            event,
+                            hir::Event::Global { kind: hir::GlobalEvent::InitialStep, .. }
+                        )
+                    });
+
+                if initial_step {
+                    // Guard the body on a retained "first evaluation" flag so an
+                    // initializer applies once and then lets retention carry it,
+                    // instead of being re-applied on every evaluation. Without
+                    // retained state (the init function, verilogae) there is no flag
+                    // to key on, and the body stays unconditional as before.
+                    if self.ctx.no_equations {
+                        self.lower_stmt(body);
+                    } else {
+                        let first = self.ctx.first_eval();
+                        self.ctx.make_cond(first, |ctx, branch| {
+                            if branch {
+                                BodyLoweringCtx { body: self.body, path: self.path, ctx }
+                                    .lower_stmt(body)
+                            }
+                        });
                     }
+                    return;
+                }
+
+                // Every element that carries a runtime condition contributes one:
+                // a named event its flag (VAMS-2023 5.10.4), a monitored event its
+                // crossing detection (5.10.3). The body is guarded by the
+                // disjunction only if *every* element has one -- an element that is
+                // still unscheduled, or an unresolved event, leaves the body
+                // unconditional, which is how all of them behaved before.
+                let mut conds = Vec::with_capacity(events.len());
+                let mut all = !events.is_empty();
+                for event in events {
+                    let cond = match *event {
+                        hir::Event::Named { event } => self
+                            .body
+                            .resolve_event(event)
+                            .map(|event| self.ctx.use_place(PlaceKind::NamedEvent(event))),
+                        hir::Event::Cross { call: Some(call) } => self.lower_monitored_event(call),
+                        _ => None,
+                    };
+                    match cond {
+                        Some(cond) => conds.push(cond),
+                        // keep going: a monitored element still has to track its
+                        // expression even when a sibling leaves the body unguarded
+                        None => all = false,
+                    }
+                }
+
+                if all {
+                    let mut cond = conds[0];
+                    for next in &conds[1..] {
+                        cond = self.or(cond, *next);
+                    }
+                    self.ctx.make_cond(cond, |ctx, branch| {
+                        if branch {
+                            BodyLoweringCtx { body: self.body, path: self.path, ctx }
+                                .lower_stmt(body)
+                        }
+                    });
                 } else {
                     self.lower_stmt(body);
                 }
@@ -53,21 +413,6 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 self.ctx.def_place(PlaceKind::NamedEvent(event), mir::TRUE);
             }
             Stmt::Assignment { lhs, rhs } => {
-                // A retained variable's `@(initial_step)` reset is its initial value
-                // (already loaded from the retained state); skip it so it is not
-                // re-applied on every evaluation.
-                if self.ctx.in_initial_step {
-                    let retained = match &lhs {
-                        hir::AssignmentLhs::Variable(var)
-                        | hir::AssignmentLhs::ArrayElement { var, .. } => {
-                            self.ctx.retained_states.contains_key(var)
-                        }
-                        _ => false,
-                    };
-                    if retained {
-                        return;
-                    }
-                }
                 // Whole-array assignment (`g = '{1.0, 2.0};` or `g = h;`) writes the
                 // element places directly: an array is not a single MIR value.
                 if let hir::AssignmentLhs::Variable(var) = lhs {

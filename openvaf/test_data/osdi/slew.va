@@ -1,0 +1,20 @@
+`include "disciplines.vams"
+
+// VAMS-2023 4.5.9: `slew` bounds the rate of change of its argument. The
+// rate-limited form is realized as an implicit equation, so this model exercises
+// the DAE path that the `mir` snapshot (lowered without equations) cannot reach.
+module slew_osdi(in, out, thru);
+    input in;
+    output out, thru;
+    electrical in, out, thru;
+
+    parameter real max_pos = 1e6 from (0:inf);
+    parameter real max_neg = -2e6 from (-inf:0);
+
+    analog begin
+        // rate limited: introduces one implicit equation
+        V(out) <+ slew(V(in), max_pos, max_neg);
+        // no rates: passes through, no equation
+        V(thru) <+ slew(V(in));
+    end
+endmodule

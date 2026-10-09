@@ -1,0 +1,10 @@
+warning[L018]: 'absdelta' does not schedule an event yet
+   --> /event_null_args.va:28:9
+   |
+28 |         @(absdelta(V(in), 0.1, , , en)) state = V(in);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
