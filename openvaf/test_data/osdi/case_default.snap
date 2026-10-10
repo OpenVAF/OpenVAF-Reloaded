@@ -1,0 +1,21 @@
+param "$mfactor"
+units = "", desc = "Multiplier (Verilog-A $mfactor)", flags = ParameterFlags(PARA_KIND_INST)
+param "mode"
+units = "", desc = "", flags = ParameterFlags(PARA_TY_INT)
+param "tr"
+units = "", desc = "", flags = ParameterFlags(0x0)
+
+3 terminals
+node "in" units = "V", runits = "A"
+node "viacase" units = "V", runits = "A"
+node "viaif" units = "V", runits = "A"
+node(flow) "flow(viacase)" units = "A", runits = "V"
+node(flow) "flow(viaif)" units = "A", runits = "V"
+jacobian (viacase, flow(viacase)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (viaif, flow(viaif)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(viacase), in) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(viacase), viacase) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(viaif), in) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(viaif), viaif) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+0 states
+has bound_step true

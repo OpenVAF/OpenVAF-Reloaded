@@ -1,0 +1,80 @@
+warning[L018]: 'cross' does not schedule an event yet
+   --> /vams2023_event_funs.va:41:9
+   |
+41 |         @(cross(V(d) - thresh, dir, ttol, vtol, enable)) state = state + 1.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'above' does not schedule an event yet
+   --> /vams2023_event_funs.va:42:9
+   |
+42 |         @(above(V(d) - thresh, ttol, vtol, enable)) state = state + 2.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'timer' does not schedule an event yet
+   --> /vams2023_event_funs.va:43:9
+   |
+43 |         @(timer(0.0, period, ttol, enable)) state = state + 4.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'absdelta' does not schedule an event yet
+   --> /vams2023_event_funs.va:44:9
+   |
+44 |         @(absdelta(V(d), vdelta, ttol, vtol, enable)) state = state + 8.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'cross' does not schedule an event yet
+   --> /vams2023_event_funs.va:47:9
+   |
+47 |         @(cross(V(d) - thresh)) state = state + 16.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'above' does not schedule an event yet
+   --> /vams2023_event_funs.va:48:9
+   |
+48 |         @(above(V(d) - thresh)) state = state + 32.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'timer' does not schedule an event yet
+   --> /vams2023_event_funs.va:49:9
+   |
+49 |         @(timer(0.0)) state = state + 64.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'absdelta' does not schedule an event yet
+   --> /vams2023_event_funs.va:50:9
+   |
+50 |         @(absdelta(V(d), vdelta)) state = state + 128.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+

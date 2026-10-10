@@ -1,0 +1,48 @@
+`include "disciplines.vams"
+
+// VAMS-2023 5.10.3.3: "If the start_time or period expressions change value
+// during the evaluation of the analog block, the next event will be scheduled
+// based on the latest value of the start_time and period."
+//
+// That sentence is what lets an event schedule its own successor, which is how a
+// clock source with a per-cycle period is written: the handler names the time of
+// the next edge, and nothing outside the module is involved. A `timer` that read
+// its start_time once would fire at t = 0 and then stand still for ever.
+//
+// `tol` is the clause's `time_tol`, which matters here for the same reason: the
+// scheduled instant is a sum of intervals and the simulator's time is a sum of
+// steps, so the two can miss each other and the event waits a whole step.
+//
+// Voltage contributions put each equation on a branch flow unknown, where the
+// residual is the value itself once the output node is held at zero.
+module timer_resched(in, held, count, clk);
+    input in;
+    output held, count, clk;
+    electrical in, held, count, clk;
+
+    parameter real interval = 3.0;
+    parameter real tol = 0.0;
+
+    real next_edge, state;
+    integer n, phase;
+
+    analog begin
+        @(initial_step) begin
+            next_edge = 0.0;
+            phase = 0;
+        end
+
+        // A period of zero: every event is a one-shot, and the only thing that
+        // schedules the next one is the handler below.
+        @(timer(next_edge, 0.0, tol)) begin
+            state = V(in);
+            n = n + 1;
+            phase = !phase;
+            next_edge = $abstime + interval;
+        end
+
+        V(held) <+ state;
+        V(count) <+ n;
+        V(clk) <+ phase;
+    end
+endmodule

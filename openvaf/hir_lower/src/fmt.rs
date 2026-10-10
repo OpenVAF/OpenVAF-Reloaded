@@ -36,8 +36,35 @@ pub struct FmtArg {
 
 impl BodyLoweringCtx<'_, '_, '_> {
     pub fn ins_display(&mut self, kind: DisplayKind, newline: bool, args: &[ExprId]) {
+        self.ins_display_to(kind, newline, args, None)
+    }
+
+    /// VAMS-2023 9.5.2: the same task, writing to whatever `desc` names. The
+    /// descriptor rides in front of the format string, so one callback serves both
+    /// forms and the formatting below does not have to know which it is.
+    pub fn ins_display_file(
+        &mut self,
+        kind: DisplayKind,
+        newline: bool,
+        desc: mir::Value,
+        args: &[ExprId],
+    ) {
+        self.ins_display_to(kind, newline, args, Some(desc))
+    }
+
+    fn ins_display_to(
+        &mut self,
+        kind: DisplayKind,
+        newline: bool,
+        args: &[ExprId],
+        desc: Option<mir::Value>,
+    ) {
         let mut fmt_lit = String::new();
-        let mut call_args = vec![GRAVESTONE];
+        let mut call_args = match desc {
+            Some(desc) => vec![desc, GRAVESTONE],
+            None => vec![GRAVESTONE],
+        };
+        let fmt_idx = call_args.len() - 1;
         let mut arg_tys = Vec::new();
 
         let mut i = 0;
@@ -153,8 +180,14 @@ impl BodyLoweringCtx<'_, '_, '_> {
             fmt_lit.push('\n');
         }
 
-        call_args[0] = self.ctx.sconst(&fmt_lit);
-        self.ctx
-            .call(CallBackKind::Print { kind, arg_tys: arg_tys.into_boxed_slice() }, &call_args);
+        call_args[fmt_idx] = self.ctx.sconst(&fmt_lit);
+        self.ctx.call(
+            CallBackKind::Print {
+                kind,
+                to_file: desc.is_some(),
+                arg_tys: arg_tys.into_boxed_slice(),
+            },
+            &call_args,
+        );
     }
 }

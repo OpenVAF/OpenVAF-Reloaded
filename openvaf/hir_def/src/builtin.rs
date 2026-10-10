@@ -100,37 +100,38 @@ pub enum BuiltIn {
     port_connected = 85u8,
     analog_node_alias = 86u8,
     analog_port_alias = 87u8,
-    test_plusargs = 88u8,
-    value_plusargs = 89u8,
-    bound_step = 90u8,
-    analysis = 91u8,
-    ac_stim = 92u8,
-    noise_table = 93u8,
-    noise_table_log = 94u8,
-    white_noise = 95u8,
-    flicker_noise = 96u8,
-    limit = 97u8,
-    absdelay = 98u8,
-    ddt = 99u8,
-    idt = 100u8,
-    idtmod = 101u8,
-    ddx = 102u8,
-    zi_nd = 103u8,
-    zi_np = 104u8,
-    zi_zd = 105u8,
-    zi_zp = 106u8,
-    laplace_nd = 107u8,
-    laplace_np = 108u8,
-    laplace_zd = 109u8,
-    laplace_zp = 110u8,
-    limexp = 111u8,
-    last_crossing = 112u8,
-    slew = 113u8,
-    transition = 114u8,
-    cross = 115u8,
-    above = 116u8,
-    timer = 117u8,
-    absdelta = 118u8,
+    table_model = 88u8,
+    test_plusargs = 89u8,
+    value_plusargs = 90u8,
+    bound_step = 91u8,
+    analysis = 92u8,
+    ac_stim = 93u8,
+    noise_table = 94u8,
+    noise_table_log = 95u8,
+    white_noise = 96u8,
+    flicker_noise = 97u8,
+    limit = 98u8,
+    absdelay = 99u8,
+    ddt = 100u8,
+    idt = 101u8,
+    idtmod = 102u8,
+    ddx = 103u8,
+    zi_nd = 104u8,
+    zi_np = 105u8,
+    zi_zd = 106u8,
+    zi_zp = 107u8,
+    laplace_nd = 108u8,
+    laplace_np = 109u8,
+    laplace_zd = 110u8,
+    laplace_zp = 111u8,
+    limexp = 112u8,
+    last_crossing = 113u8,
+    slew = 114u8,
+    transition = 115u8,
+    cross = 116u8,
+    above = 117u8,
+    timer = 118u8,
+    absdelta = 119u8,
 }
 #[derive(Eq, PartialEq, Copy, Clone, Hash, Debug)]
 #[allow(nonstandard_style, unreachable_pub)]
@@ -187,49 +188,13 @@ impl BuiltIn {
             | BuiltIn::analog_port_alias
             | BuiltIn::test_plusargs
             | BuiltIn::value_plusargs
-            | BuiltIn::zi_nd
-            | BuiltIn::zi_np
-            | BuiltIn::zi_zd
-            | BuiltIn::zi_zp
-            | BuiltIn::laplace_np
-            | BuiltIn::laplace_zd
-            | BuiltIn::laplace_zp
-            | BuiltIn::last_crossing
-            | BuiltIn::slew
-            | BuiltIn::fclose
-            | BuiltIn::fopen
-            | BuiltIn::fdisplay
-            | BuiltIn::fwrite
-            | BuiltIn::fstrobe
             | BuiltIn::fmonitor
             | BuiltIn::fgets
             | BuiltIn::fscanf
             | BuiltIn::swrite
             | BuiltIn::sformat
             | BuiltIn::sscanf
-            | BuiltIn::rewind
-            | BuiltIn::fseek
-            | BuiltIn::ftell
-            | BuiltIn::fflush
-            | BuiltIn::ferror
-            | BuiltIn::feof
-            | BuiltIn::fdebug
-            | BuiltIn::dist_chi_square
-            | BuiltIn::dist_exponential
-            | BuiltIn::dist_poisson
-            | BuiltIn::dist_uniform
-            | BuiltIn::dist_erlang
-            | BuiltIn::dist_normal
-            | BuiltIn::dist_t
-            | BuiltIn::random
-            | BuiltIn::arandom
-            | BuiltIn::rdist_chi_square
-            | BuiltIn::rdist_exponential
-            | BuiltIn::rdist_poisson
-            | BuiltIn::rdist_uniform
-            | BuiltIn::rdist_erlang
-            | BuiltIn::rdist_normal
-            | BuiltIn::rdist_t => true,
+            | BuiltIn::ferror => true,
             _ => false,
         }
     }
@@ -239,6 +204,17 @@ impl BuiltIn {
     pub fn is_event_fun(self) -> bool {
         match self {
             BuiltIn::cross | BuiltIn::above | BuiltIn::timer | BuiltIn::absdelta => true,
+            _ => false,
+        }
+    }
+    #[doc = r" Whether this event function takes part in scheduling, i.e. decides"]
+    #[doc = r" whether the body of its event control runs. The other event"]
+    #[doc = r" functions are accepted and type-checked but leave the body"]
+    #[doc = r" unconditional, which `unscheduled_event` warns about."]
+    #[allow(clippy::match_like_matches_macro)]
+    pub fn schedules_event(self) -> bool {
+        match self {
+            BuiltIn::cross | BuiltIn::above | BuiltIn::timer => true,
             _ => false,
         }
     }
@@ -369,6 +345,7 @@ pub fn insert_builtin_scope(dst: &mut IndexMap<Name, ScopeDefItem, BuildHasherDe
     dst.insert(sysfun::port_connected, BuiltIn::port_connected.into());
     dst.insert(sysfun::analog_node_alias, BuiltIn::analog_node_alias.into());
     dst.insert(sysfun::analog_port_alias, BuiltIn::analog_port_alias.into());
+    dst.insert(sysfun::table_model, BuiltIn::table_model.into());
     dst.insert(sysfun::test_plusargs, BuiltIn::test_plusargs.into());
     dst.insert(sysfun::value_plusargs, BuiltIn::value_plusargs.into());
     dst.insert(sysfun::bound_step, BuiltIn::bound_step.into());

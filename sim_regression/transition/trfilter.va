@@ -1,0 +1,44 @@
+// VAMS-2023 4.5.8: transition() is a piecewise linear waveform, delayed by `td`.
+//
+// Every input change here is driven by a `timer` event, so the instants are exact
+// and the corners the clause asks for can be checked against arithmetic rather
+// than against whatever step the solver happened to take.
+//
+//   ramp    a 0 -> 1 -> 0 input at 10 ns and 30 ns. With td = 2 ns, tr = 3 ns and
+//           tf = 1 ns the output is flat until 12 ns, rises to 1 by 15 ns, holds,
+//           starts falling at 32 ns and arrives at 33 ns.
+//
+//   glitch  a 1 ns pulse at 50 ns, shorter than td. A transport delay has to carry
+//           both of its edges, so the pulse reappears at 52 ns; being shorter than
+//           tr it only gets a third of the way up before the falling transition
+//           starts. The clause computes that fall from the old destination as the
+//           origin, so it takes tf/3 rather than tf.
+`include "disciplines.vams"
+
+module trfilter(ramp, glitch, raw);
+    inout ramp, glitch, raw;
+    electrical ramp, glitch, raw;
+
+    parameter real td = 2e-9 from [0.0:inf);
+    parameter real tr = 3e-9 from [0.0:inf);
+    parameter real tf = 1e-9 from [0.0:inf);
+
+    integer level;
+    integer pulse;
+
+    analog begin
+        @(initial_step) begin
+            level = 0;
+            pulse = 0;
+        end
+
+        @(timer(10e-9)) level = 1;
+        @(timer(30e-9)) level = 0;
+        @(timer(50e-9)) pulse = 1;
+        @(timer(51e-9)) pulse = 0;
+
+        V(raw)    <+ level;
+        V(ramp)   <+ transition(level, td, tr, tf);
+        V(glitch) <+ transition(pulse, td, tr, tf);
+    end
+endmodule

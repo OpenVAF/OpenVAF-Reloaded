@@ -1,0 +1,43 @@
+`include "disciplines.vams"
+
+// VAMS-2023: the analog block re-executes from the top on every evaluation while
+// its variables keep what they held, so a variable can be read before the
+// statement that assigns it and pick up the previous evaluation's value.
+//
+// Three claims, one per output:
+//
+//   count   an event handler accumulating into its own previous value -- 5.10.2's
+//           bit-error counter pattern.
+//   before  a handler reading a variable assigned *further down* the block, which
+//           is the shape of 4.5.10's period example.
+//   once    an `@(initial_step)` initializer applies on the first evaluation and
+//           is then carried by retention, instead of being re-applied every time.
+//
+// Voltage contributions put each equation on a branch flow unknown, where the
+// residual is the value itself once the output node is held at zero.
+module var_persistence(smpl, count, before, once);
+    input smpl;
+    output count, before, once;
+    electrical smpl, count, before, once;
+
+    integer n;
+    real prev_stamp, stamp;
+    real gain;
+
+    analog begin
+        @(initial_step)
+            gain = 2.0;
+
+        @(cross(V(smpl) - 2.5, +1)) begin
+            n = n + 1;
+            prev_stamp = stamp;
+        end
+
+        // Assigned after the handler that reads it.
+        stamp = $abstime;
+
+        V(count) <+ n;
+        V(before) <+ prev_stamp;
+        V(once) <+ gain;
+    end
+endmodule

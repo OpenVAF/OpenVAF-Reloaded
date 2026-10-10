@@ -1,0 +1,31 @@
+// VAMS-2023 4.5.7, the cases the clause distinguishes. Time is in seconds here so
+// the mock simulator can step the delay directly.
+//
+//   dout    a fixed delay, the typical case;
+//   dfrozen a delay written as an expression of time with no `maxdelay`, which the
+//           clause pins to "the value of td when the absdelay() is first evaluated
+//           [...] and any future changes to td shall be ignored", so this has to
+//           track `dout` exactly;
+//   dvar    the same expression with a `maxdelay`, which is what lets td vary --
+//           and bounds it: "If td becomes greater than maxdelay, maxdelay will be
+//           used as a substitute for td";
+//   dtwice  a computed delay argument. Neither a parameter nor a literal, which
+//           used to crash the backend with "attempted to read undefined value".
+`include "disciplines.vams"
+
+module absdelay_probe(dout, dfrozen, dvar, dtwice, din);
+    inout dout, dfrozen, dvar, dtwice;
+    electrical dout, dfrozen, dvar, dtwice;
+    input din;
+    electrical din;
+
+    parameter real td = 1.0 from (0:inf);
+    parameter real maxd = 4.0 from (0:inf);
+
+    analog begin
+        V(dout) <+ absdelay(V(din), td);
+        V(dfrozen) <+ absdelay(V(din), td + $abstime);
+        V(dvar) <+ absdelay(V(din), td + $abstime, maxd);
+        V(dtwice) <+ absdelay(V(din), 2 * td);
+    end
+endmodule
