@@ -5,14 +5,15 @@ use anyhow::{bail, Context, Result};
 use camino::Utf8PathBuf;
 use clap::ArgMatches;
 use openvaf::{
-    builtin_lints, get_target_names, host_triple, AbsPathBuf, LLVMCodeGenOptLevel, LintLevel,
+    builtin_lints, get_target_names, host_triple, AbsDelayMode, AbsPathBuf, LLVMCodeGenOptLevel,
+    LintLevel,
 };
 use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
 
 use crate::cli_def::{
-    ALLOW, BATCHMODE, CACHE_DIR, CODEGEN, DEFINE, DENY, DRYRUN, DUMPIR, DUMPMIR, DUMPUNOPTIR,
-    DUMPUNOPTMIR, INCLUDE, INPUT, LINTS, OPT_LVL, OUTPUT, SUPPORTED_TARGETS, TARGET, TARGET_CPU,
-    WARN,
+    ABSDELAY, ALLOW, BATCHMODE, CACHE_DIR, CODEGEN, DEFINE, DENY, DRYRUN, DUMPIR, DUMPMIR,
+    DUMPUNOPTIR, DUMPUNOPTMIR, INCLUDE, INPUT, LINTS, OPT_LVL, OUTPUT, SUPPORTED_TARGETS, TARGET,
+    TARGET_CPU, WARN,
 };
 use crate::{CompilationDestination, Opts};
 
@@ -107,6 +108,8 @@ pub fn matches_to_opts(matches: ArgMatches) -> Result<Opts> {
     let target_cpu: String =
         matches.get_one(TARGET_CPU).cloned().unwrap_or_else(|| default_cpu.to_owned());
 
+    let absdelay = absdelay_mode(matches.get_one::<String>(ABSDELAY).unwrap())?;
+
     Ok(Opts {
         input,
         lints,
@@ -122,6 +125,7 @@ pub fn matches_to_opts(matches: ArgMatches) -> Result<Opts> {
         dump_ir: matches.get_flag(DUMPIR),
         dump_unopt_ir: matches.get_flag(DUMPUNOPTIR),
         dry_run: matches.get_flag(DRYRUN),
+        absdelay,
     })
 }
 
@@ -167,5 +171,37 @@ fn print_targets() {
 
     for target in get_target_names() {
         writeln!(&mut stdout, "    {}", target).unwrap();
+    }
+}
+
+/// `simulator`, or `in-model` with an optional depth after a colon.
+fn absdelay_mode(spec: &str) -> Result<AbsDelayMode> {
+    let (mode, depth) = match spec.split_once(':') {
+        Some((mode, depth)) => (mode, Some(depth)),
+        None => (spec, None),
+    };
+    match mode {
+        "simulator" => {
+            if let Some(depth) = depth {
+                bail!("--absdelay simulator takes no depth (got `{depth}`)")
+            }
+            Ok(AbsDelayMode::Simulator)
+        }
+        "in-model" => {
+            let depth = match depth {
+                Some(depth) => depth.parse().with_context(|| {
+                    format!("--absdelay in-model depth `{depth}` is not a number")
+                })?,
+                None => AbsDelayMode::DEFAULT_DEPTH,
+            };
+            if depth < AbsDelayMode::MIN_DEPTH {
+                bail!(
+                    "--absdelay in-model depth must be at least {} (got {depth})",
+                    AbsDelayMode::MIN_DEPTH
+                )
+            }
+            Ok(AbsDelayMode::InModel { depth })
+        }
+        mode => bail!("unknown --absdelay mode `{mode}`\nhelp: `simulator` or `in-model[:DEPTH]`"),
     }
 }

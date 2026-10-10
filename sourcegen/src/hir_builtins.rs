@@ -25,21 +25,12 @@ const ANALOG_OPERATORS: [&str; 17] = [
     "transition",
 ];
 
-const UNSUPPORTED: [&str; 48] = [
+const UNSUPPORTED: [&str; 23] = [
     "simprobe",
     "analog_node_alias",
     "analog_port_alias",
     "test_plusargs",
     "value_plusargs",
-    "zi_nd",
-    "zi_np",
-    "zi_zd",
-    "zi_zp",
-    "laplace_np",
-    "laplace_zd",
-    "laplace_zp",
-    "last_crossing",
-    "slew",
     "fclose",
     "fopen",
     "fdisplay",
@@ -58,22 +49,6 @@ const UNSUPPORTED: [&str; 48] = [
     "ferror",
     "feof",
     "fdebug",
-    "dist_chi_square",
-    "dist_exponential",
-    "dist_poisson",
-    "dist_uniform",
-    "dist_erlang",
-    "dist_normal",
-    "dist_t",
-    "random",
-    "arandom",
-    "rdist_chi_square",
-    "rdist_exponential",
-    "rdist_poisson",
-    "rdist_uniform",
-    "rdist_erlang",
-    "rdist_normal",
-    "rdist_t",
 ];
 
 const ANALOG_OPERATORS_SYSFUN: [&str; 1] = ["$limit"];
@@ -81,6 +56,11 @@ const ANALOG_OPERATORS_SYSFUN: [&str; 1] = ["$limit"];
 // VAMS-2023 5.10.3: analog event functions. They are not analog operators and
 // may only appear as the event expression of an event control (`@(...)`).
 const EVENT_FUNS: [&str; 4] = ["cross", "above", "timer", "absdelta"];
+
+// The subset of EVENT_FUNS that actually takes part in scheduling, i.e. decides
+// whether the body of its event control runs. The rest are accepted and
+// type-checked but leave the body unconditional; `unscheduled_event` warns.
+const SCHEDULING_EVENT_FUNS: [&str; 3] = ["cross", "above", "timer"];
 
 const ANALYSIS_FUNS: [&str; 6] =
     ["analysis", "ac_stim", "noise_table", "noise_table_log", "white_noise", "flicker_noise"];
@@ -118,7 +98,7 @@ const BUILTINS: [&str; 28] = [
 
 const PARAM_SYSFUNS: [&str; 6] = ["mfactor", "xposition", "yposition", "angle", "hflip", "vflip"];
 
-const SYSFUNS: [&str; 88] = [
+const SYSFUNS: [&str; 89] = [
     "$display",
     "$strobe",
     "$write",
@@ -206,7 +186,7 @@ const SYSFUNS: [&str; 88] = [
     "$port_connected",
     "$analog_node_alias",
     "$analog_port_alias",
-    // "$table_model",
+    "$table_model",
     "$test$plusargs",
     "$value$plusargs",
     "$bound_step",
@@ -245,6 +225,8 @@ fn generate_builtins() {
     let analysis_funs = ANALYSIS_FUNS.into_iter().map(|op| format_ident!("{}", op));
     let analog_operators = ANALOG_OPERATORS.into_iter().map(|op| format_ident!("{}", op));
     let event_funs = EVENT_FUNS.into_iter().map(|op| format_ident!("{}", op));
+    let scheduling_event_funs =
+        SCHEDULING_EVENT_FUNS.into_iter().map(|op| format_ident!("{}", op));
     let unsupported = UNSUPPORTED.into_iter().map(|op| format_ident!("{}", op));
     let analog_operators_sysfun =
         ANALOG_OPERATORS_SYSFUN.into_iter().map(|op| format_ident!("{}", &op[1..]));
@@ -304,6 +286,18 @@ fn generate_builtins() {
             pub fn is_event_fun(self)->bool{
                 match self{
                     #(BuiltIn::#event_funs)|* =>true,
+                    _ => false
+                }
+            }
+
+            /// Whether this event function takes part in scheduling, i.e. decides
+            /// whether the body of its event control runs. The other event
+            /// functions are accepted and type-checked but leave the body
+            /// unconditional, which `unscheduled_event` warns about.
+            #[allow(clippy::match_like_matches_macro)]
+            pub fn schedules_event(self)->bool{
+                match self{
+                    #(BuiltIn::#scheduling_event_funs)|* =>true,
                     _ => false
                 }
             }

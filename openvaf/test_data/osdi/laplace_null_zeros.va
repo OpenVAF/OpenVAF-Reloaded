@@ -1,0 +1,22 @@
+`include "disciplines.vams"
+
+// VAMS-2023 4.5.11: a null zeros argument (two adjacent commas) means the empty
+// product of zeros, so the numerator is unity: H(s) = 1/(1 + s*tau). Lowering the
+// null as an expression would hit `get_expr`'s `invalid HIR` panic, so this also
+// guards that the null never reaches the expression lowering.
+module laplace_null_zeros(in, out);
+    input in;
+    output out;
+    electrical in, out;
+
+    parameter real tau = 1e-6;
+
+    real den[0:1];
+
+    analog begin
+        den[0] = 1.0;
+        den[1] = tau;
+
+        V(out) <+ laplace_nd(V(in), , den);
+    end
+endmodule

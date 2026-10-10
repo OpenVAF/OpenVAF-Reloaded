@@ -488,6 +488,7 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
         // store for use in eval() function
         unsafe { inst_data.store_temperature(&mut builder, instance, &*temperature) };
         unsafe { inst_data.store_connected_ports(&mut builder, instance, &*connected_terminals) };
+        unsafe { inst_data.init_retained(&builder, instance) };
 
         // Debug: Setting up trivial callbacks
         let trivial_cb = cx.trivial_callbacks(&[]);

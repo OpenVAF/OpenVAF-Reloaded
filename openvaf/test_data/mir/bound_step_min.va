@@ -1,0 +1,18 @@
+`include "disciplines.va"
+
+// Every `$bound_step` call bounds the time step, so the effective bound is the
+// smallest of them -- the call is not an assignment and a later call must not
+// discard an earlier, tighter bound. The second call here is conditional, so
+// the bound-step place also picks up a phi at the join.
+module test;
+    parameter real coarse = 1e-9;
+    parameter real fine = 1e-12;
+    electrical a;
+
+    analog begin
+        $bound_step(coarse);
+        if (V(a) > 0.5)
+            $bound_step(fine);
+        I(a) <+ V(a);
+    end
+endmodule

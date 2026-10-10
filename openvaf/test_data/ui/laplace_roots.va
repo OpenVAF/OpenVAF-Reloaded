@@ -1,0 +1,29 @@
+`include "disciplines.vams"
+
+// VAMS-2023 4.5.11.1-4.5.11.3: the zero-pole, zero-denominator and
+// numerator-pole forms of the Laplace filter. Each was rejected as "not
+// supported" before; all three are analog operators, so the usual restrictions
+// (no filter inside a conditional) still apply.
+module laplace_roots_ui(in, out);
+    input in;
+    output out;
+    electrical in, out;
+
+    parameter real tau = 1e-6;
+    parameter real tz = 4e-7;
+    parameter real a = 1e6;
+    parameter real b = 2e6;
+
+    analog begin
+        // zeros and poles, both as (real, imaginary) pairs
+        V(out) <+ laplace_zp(V(in), '{-1.0 / tz, 0.0}, '{-1.0 / tau, 0.0});
+        // zeros as roots, denominator as coefficients
+        V(out) <+ laplace_zd(V(in), '{-1.0 / tz, 0.0}, '{1.0, tau});
+        // numerator as coefficients, poles as roots -- here a conjugate pair
+        V(out) <+ laplace_np(V(in), '{1.0}, '{-a, b, -a, -b});
+        // a root at zero contributes a bare `s` factor
+        V(out) <+ laplace_zp(V(in), '{0.0, 0.0}, '{-1.0 / tau, 0.0});
+        // the optional tolerance argument is still accepted
+        V(out) <+ laplace_np(V(in), '{1.0}, '{-1.0 / tau, 0.0}, 1e-9);
+    end
+endmodule

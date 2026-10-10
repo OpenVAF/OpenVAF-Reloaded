@@ -48,6 +48,15 @@ impl OsdiDescriptor {
         unsafe { slice::from_raw_parts(self.jacobian_entries, self.num_jacobian_entries as usize) }
     }
 
+    pub fn absdelay_entries(&self) -> &[OsdiAbsDelayInfo] {
+        if self.absdelay_count == 0 {
+            return &[];
+        }
+        // # SAFETY: OsdiDescriptor can only be constructed from FFI and is assumed to
+        // contain valid data
+        unsafe { slice::from_raw_parts(self.absdelay_info, self.absdelay_count as usize) }
+    }
+
     pub fn check_init_result(&self, res: OsdiInitInfo) -> Result<()> {
         if (res.flags & EVAL_RET_FLAG_FATAL) != 0 {
             bail!("Verilog-A $fatal was called")

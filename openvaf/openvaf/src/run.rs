@@ -73,13 +73,19 @@ pub fn run(opts: &Opts) -> Result<i32> {
     // Lower both behavioural bodies up front (both extend `literals`).
     let (analog_func, analog_intern) =
         MirBuilder::new(&db, module.module, &is_output, &mut std::iter::empty())
+            .with_absdelay(opts.absdelay)
             .build(&mut literals);
     let (proc_func, proc_intern) =
         MirBuilder::new(&db, module.module, &is_output, &mut std::iter::empty())
             .with_procedural()
+            .with_absdelay(opts.absdelay)
             .build(&mut literals);
     if !analog_intern.absdelay.is_empty() || !proc_intern.absdelay.is_empty() {
-        bail!("absdelay requires simulator transient history; openvaf run does not support it")
+        bail!(
+            "absdelay was realized through the simulator's history protocol, which the \
+             runner has no part of\nhelp: pass `--absdelay in-model` to keep the history in \
+             the model instead"
+        )
     }
 
     // analog behaviour first, then procedural blocks; an early-exit request from the
