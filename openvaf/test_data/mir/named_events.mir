@@ -1,9 +1,20 @@
-function %(v16, v17, v18, v19) {
+function %(v16, v17, v18, v20, v21, v23, v51, v55, v57) {
+    inst0 = fn %$store_retained[retained_state1](1) -> 1
+    inst1 = fn %$store_retained[retained_state0](1) -> 1
+    inst2 = fn %$store_retained[retained_state3](1) -> 1
+    inst3 = fn %$store_retained[retained_state2](1) -> 1
     // v1 = bconst false
     // v2 = bconst true
+    v3 = fconst 0.0
     v4 = iconst 0
     v5 = iconst 1
-    v20 = fconst 0x1.0000000000000p-2
+    v6 = fconst 0x1.0000000000000p0
+    v19 = fconst 0x1.12e0be826d695p-30
+    v28 = fconst 0x1.19799812dea11p-40
+    v35 = fconst 0x1.fffffffffffffp1023
+    v52 = fconst 0x1.0000000000000p-2
+    v54 = fconst 0x1.12e0be826d695p-29
+
                                 block0:
                                     br v1, block2, block3
 
@@ -14,9 +25,11 @@ function %(v16, v17, v18, v19) {
                                     jmp block4
 
                                 block4:
-                                    v55 = phi [v5, block2], [v4, block3]
-@000e                               v21 = fgt v19, v20
-                                    br v21, block5, block6
+                                    v417 = phi [v5, block2], [v4, block3]
+                                    v22 = flt v21, v3
+                                    v24 = call inst0(v19)
+                                    v25 = fne v19, v23
+                                    br v22, block5, block6
 
                                 block5:
                                     jmp block7
@@ -25,32 +38,257 @@ function %(v16, v17, v18, v19) {
                                     jmp block7
 
                                 block7:
-                                    v22 = phi [v2, block5], [v1, block6]
-@0017                               br v22, block8, block9
+                                    v26 = phi [v2, block5], [v25, block6]
+                                    br v26, block8, block9
 
                                 block8:
-                                    v34 = iadd v4, v5
                                     jmp block10
 
                                 block9:
                                     jmp block10
 
                                 block10:
-                                    v63 = phi [v34, block8], [v4, block9]
-@001c                               br v2, block11, block12
+                                    v27 = phi [v19, block8], [v21, block9]
+                                    v29 = fgt v27, v3
+                                    br v29, block11, block12
 
                                 block11:
-                                    v48 = iadd v4, v5
                                     jmp block13
 
                                 block12:
                                     jmp block13
 
                                 block13:
-                                    v67 = phi [v48, block11], [v4, block12]
-                                    v60 = optbarrier v55
-                                    v66 = optbarrier v63
-                                    v69 = optbarrier v67
+                                    v30 = phi [v27, block11], [v3, block12]
+                                    v31 = fmul v30, v28
+                                    v32 = fsub v27, v31
+                                    v33 = fge v20, v32
+                                    v34 = fgt v3, v3
+                                    br v34, block14, block15
+
+                                block14:
+                                    jmp block16
+
+                                block15:
+                                    jmp block16
+
+                                block16:
+                                    v36 = phi [v3, block14], [v6, block15]
+                                    v37 = fsub v20, v27
+                                    v38 = fgt v37, v3
+                                    br v38, block17, block18
+
+                                block17:
+                                    jmp block19
+
+                                block18:
+                                    jmp block19
+
+                                block19:
+                                    v39 = phi [v37, block17], [v3, block18]
+                                    v40 = fdiv v39, v36
+                                    v41 = floor v40
+                                    v42 = fadd v41, v6
+                                    v43 = fmul v3, v42
+                                    v44 = fadd v27, v43
+                                    br v34, block20, block21
+
+                                block20:
+                                    jmp block22
+
+                                block21:
+                                    jmp block22
+
+                                block22:
+                                    v45 = phi [v44, block20], [v35, block21]
+                                    br v33, block23, block24
+
+                                block23:
+                                    jmp block25
+
+                                block24:
+                                    jmp block25
+
+                                block25:
+                                    v46 = phi [v45, block23], [v27, block24]
+                                    v47 = call inst1(v46)
+                                    v48 = fsub v46, v20
+                                    v49 = fgt v48, v31
+                                    br v49, block26, block27
+
+                                block26:
+                                    jmp block28
+
+                                block27:
+                                    jmp block28
+
+                                block28:
+                                    v50 = phi [v48, block26], [v35, block27]
+                                    br v33, block29, block30
+
+                                block29:
+@000e                               v53 = fgt v51, v52
+                                    br v53, block32, block33
+
+                                block32:
+                                    jmp block34
+
+                                block33:
+                                    jmp block34
+
+                                block34:
+                                    v164 = phi [v2, block32], [v1, block33]
+                                    jmp block31
+
+                                block30:
+                                    jmp block31
+
+                                block31:
+@0017                               v135 = phi [v1, block30], [v164, block34]
+                                    v56 = flt v55, v3
+                                    v58 = call inst2(v54)
+                                    v59 = fne v54, v57
+                                    br v56, block35, block36
+
+                                block35:
+                                    jmp block37
+
+                                block36:
+                                    jmp block37
+
+                                block37:
+                                    v60 = phi [v2, block35], [v59, block36]
+                                    br v60, block38, block39
+
+                                block38:
+                                    jmp block40
+
+                                block39:
+                                    jmp block40
+
+                                block40:
+                                    v61 = phi [v54, block38], [v55, block39]
+                                    v62 = fgt v61, v3
+                                    br v62, block41, block42
+
+                                block41:
+                                    jmp block43
+
+                                block42:
+                                    jmp block43
+
+                                block43:
+                                    v63 = phi [v61, block41], [v3, block42]
+                                    v64 = fmul v63, v28
+                                    v65 = fsub v61, v64
+                                    v66 = fge v20, v65
+                                    v67 = fgt v3, v3
+                                    br v67, block44, block45
+
+                                block44:
+                                    jmp block46
+
+                                block45:
+                                    jmp block46
+
+                                block46:
+                                    v68 = phi [v3, block44], [v6, block45]
+                                    v69 = fsub v20, v61
+                                    v70 = fgt v69, v3
+                                    br v70, block47, block48
+
+                                block47:
+                                    jmp block49
+
+                                block48:
+                                    jmp block49
+
+                                block49:
+                                    v71 = phi [v69, block47], [v3, block48]
+                                    v72 = fdiv v71, v68
+                                    v73 = floor v72
+                                    v74 = fadd v73, v6
+                                    v75 = fmul v3, v74
+                                    v76 = fadd v61, v75
+                                    br v67, block50, block51
+
+                                block50:
+                                    jmp block52
+
+                                block51:
+                                    jmp block52
+
+                                block52:
+                                    v77 = phi [v76, block50], [v35, block51]
+                                    br v66, block53, block54
+
+                                block53:
+                                    jmp block55
+
+                                block54:
+                                    jmp block55
+
+                                block55:
+                                    v78 = phi [v77, block53], [v61, block54]
+                                    v79 = call inst3(v78)
+                                    v80 = fsub v78, v20
+                                    v81 = fgt v80, v64
+                                    br v81, block56, block57
+
+                                block56:
+                                    jmp block58
+
+                                block57:
+                                    jmp block58
+
+                                block58:
+                                    v82 = phi [v80, block56], [v35, block57]
+                                    v113 = flt v82, v50
+                                    br v113, block59, block60
+
+                                block59:
+                                    jmp block61
+
+                                block60:
+                                    jmp block61
+
+                                block61:
+                                    v114 = phi [v82, block59], [v50, block60]
+                                    br v66, block62, block63
+
+                                block62:
+                                    jmp block64
+
+                                block63:
+                                    jmp block64
+
+                                block64:
+                                    v244 = phi [v2, block62], [v1, block63]
+                                    br v135, block65, block66
+
+                                block65:
+                                    v241 = iadd v4, v5
+                                    jmp block67
+
+                                block66:
+@001c                               jmp block67
+
+                                block67:
+                                    v446 = phi [v241, block65], [v4, block66]
+                                    br v244, block68, block69
+
+                                block68:
+                                    v374 = iadd v4, v5
+                                    jmp block70
+
+                                block69:
+                                    jmp block70
+
+                                block70:
+                                    v450 = phi [v374, block68], [v4, block69]
+                                    v443 = optbarrier v417
+                                    v449 = optbarrier v446
+                                    v452 = optbarrier v450
                                     jmp block1
 
                                 block1:

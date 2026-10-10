@@ -1,0 +1,59 @@
+`include "disciplines.vams"
+
+// VAMS-2023 5.10.2 and 5.10.1: the global events, and what they contribute to an
+// event expression that ORs them with something else.
+//
+// Three claims, measured in one run:
+//
+//   sampler  5.10.1's own one-bit sampler. `initial_step` ORed with a crossing
+//            has to leave the body conditional on the pair, so `vout` is taken at
+//            t = 0 and then only on an upward crossing of `smpl`. A body that is
+//            unconditional instead tracks `V(in)` continuously, which shows up as
+//            an edge where the input crosses the threshold rather than where the
+//            sampling clock does.
+//
+//   tran     `@(initial_step("tran"))` is the first point of a transient
+//            analysis, which this run is, so `ok_tran` is set.
+//
+//   ac       `@(initial_step("ac"))` and `@(final_step("ac"))` belong to an
+//            analysis this run is not, so neither body may run at all. An
+//            analysis list that is accepted and then ignored sets both.
+//
+// `pstatic` is reported rather than asserted, because what it reads is a property
+// of the simulator and not of the compiler: ngspice sets ANALYSIS_STATIC on the
+// first Newton iteration of the initial step and ANALYSIS_TRAN on the rest, so a
+// body gated on "static" runs on one iteration and the iterations after it write
+// the retained value back over what it did. The names that name an analysis --
+// "tran", "ac", "dc", "noise" -- are the ones held steady for a whole run.
+//
+// `final_step` is in here deliberately, so the attribute allows the warning that
+// says what it cannot do: nothing tells a model which point is the last one, so
+// its body is reached at every evaluation of the analyses its list names.
+(*openvaf_allow="unscheduled_event"*)
+module global_events(in, smpl, out, ptran, pac, pstatic);
+    input in, smpl;
+    output out, ptran, pac, pstatic;
+    electrical in, smpl, out, ptran, pac, pstatic;
+
+    parameter real thresh = 2.5;
+    parameter real tr = 10n from (0:inf);
+
+    integer vout, ok_tran, ok_ac, n_static;
+
+    analog begin
+        @(initial_step or cross(V(smpl) - thresh, +1))
+            vout = (V(in) > thresh);
+
+        @(initial_step("tran")) ok_tran = 1;
+
+        @(initial_step("static")) n_static = n_static + 1;
+
+        @(initial_step("ac")) ok_ac = 1;
+        @(final_step("ac")) ok_ac = 1;
+
+        V(out) <+ transition(vout, 0.0, tr);
+        V(ptran) <+ ok_tran;
+        V(pac) <+ ok_ac;
+        V(pstatic) <+ n_static;
+    end
+endmodule

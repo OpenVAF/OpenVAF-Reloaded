@@ -6,6 +6,7 @@ use syntax::name::Name;
 use typed_index_collections::TiSlice;
 
 use crate::db::HirDefDB;
+use crate::directives;
 use crate::item_tree::{self, BranchKind, DisciplineAttrKind, Domain, NatureRef};
 use crate::{
     AliasParamId, BranchId, DisciplineId, FunctionId, Intern, ItemTree, LocalFunctionArgId,
@@ -171,9 +172,17 @@ impl NodeData {
         let node = &tree[module.id].nodes[loc.id];
         let (is_input, is_output) = node.direction(&tree);
 
+        // A net declared without a discipline gets the one `` `default_discipline ``
+        // names, which is what 10.2's own example relies on: its ports are
+        // declared `input in1, in2;` and nothing else.
+        let discipline = node.discipline(&tree).or_else(|| {
+            let default = directives::default_discipline(db, module.scope.root_file, node.ast_id)?;
+            Some(Name::resolve(&default.name))
+        });
+
         Arc::new(NodeData {
             name: node.name.clone(),
-            discipline: node.discipline(&tree),
+            discipline,
             is_input,
             is_output,
             is_gnd: node.is_gnd(&tree),
@@ -245,6 +254,9 @@ pub struct ModuleData {
     pub name: Name,
     pub ports: Vec<NodeId>,
     pub internal_nodes: Vec<NodeId>,
+    /// The rise and fall time a transition filter in this module gets when it
+    /// specifies neither, from `` `default_transition `` (VAMS-2023 10.3).
+    pub default_transition: Option<OrderedFloat<f64>>,
 }
 
 impl ModuleData {
@@ -256,6 +268,16 @@ impl ModuleData {
         let ports = (0..num_ports).map(|id| NodeLoc { module, id: id.into() }.intern(db)).collect();
         let internal_nodes =
             (num_ports..num_nodes).map(|id| NodeLoc { module, id: id.into() }.intern(db)).collect();
-        Arc::new(ModuleData { name: item_tree[loc.id].name.clone(), ports, internal_nodes })
+        let default_transition = directives::default_transition(
+            db,
+            loc.scope.root_file,
+            item_tree[loc.id].ast_id.erased(),
+        );
+        Arc::new(ModuleData {
+            name: item_tree[loc.id].name.clone(),
+            ports,
+            internal_nodes,
+            default_transition: default_transition.map(OrderedFloat),
+        })
     }
 }

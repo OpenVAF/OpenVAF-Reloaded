@@ -1,0 +1,47 @@
+* A charge-pump PLL that has to lock: 1 MHz reference, divide by 4, so the
+* oscillator has to arrive at 4 MHz and the control voltage at (4 - 3)/2 = 0.5 V.
+*
+* ref    : the reference clock, which schedules its own edges
+* jclk   : a second clock source, identical but with 20 ns of jitter on each
+*          half-period, driving nothing -- it is there to be measured
+* vco    : the oscillator output
+* fb     : the divided oscillator, which has to come back to 1 MHz
+* ctrl   : the loop filter
+* rdrift : how far the reference's own edges have strayed from its grid
+
+Nref  ref  rdrift  perfect
+Njit  jclk jdrift jittery
+Npfd  ref  fb    ctrl  pfd
+Nvco  ctrl vco   osc
+Ndiv  vco  fb    div
+
+.model perfect clkref(period=1u tr=1n jitter=0)
+.model jittery clkref(period=1u tr=1n jitter=20n)
+.model pfd     pfd_cp(icp=20u tr=2n)
+.model osc     evco(f0=3e6 kvco=2e6)
+.model div     divider(ndiv=4)
+
+* Loop filter: the integrating capacitor with a series resistor for the zero, and
+* a tenth of it shunting the charge-pump steps. With Kpd = icp/2pi and Kvco =
+* 2pi*kvco this is wn ~ 2*pi*20 kHz and zeta ~ 0.87, so lock takes something like
+* 40 us of the 120 us run.
+Rz ctrl nz  22k
+Cz nz   0   620p
+Cp ctrl 0   62p
+
+Rr  rdrift 0 1e12
+Rj  jdrift 0 1e12
+Rjc jclk 0 1e12
+
+* The charge pump is a current source into a capacitive node, so the operating
+* point needs to be told where to start; everything after t = 0 is the loop's.
+.ic v(ctrl)=0.1
+
+.control
+pre_osdi pll.osdi
+tran 20n 120u
+set filetype=ascii
+wrdata pll_out.txt v(ref) v(fb) v(vco) v(ctrl) v(rdrift) v(jclk) v(jdrift)
+.endc
+
+.end

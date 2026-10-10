@@ -316,22 +316,9 @@ impl ast::StdRealNumber {
 
 impl ast::SiRealNumber {
     pub fn value(&self) -> f64 {
-        let src = self.syntax.text();
-        let (src, scale_char) = src.split_at(src.len() - 1);
-        let exp = match scale_char {
-            "T" => 12,
-            "G" => 9,
-            "M" => 6,
-            "K" | "k" => 3,
-            "m" => -3,
-            "u" => -6,
-            "n" => -9,
-            "p" => -12,
-            "f" => -15,
-            "a" => -18,
-            _ => unreachable!(),
-        };
-        src.parse::<f64>().unwrap() * (10_f64).powi(exp)
+        // The scale factors live in `tokens` because the preprocessor reads the
+        // argument of `` `default_transition `` (10.3) before there is a tree.
+        tokens::literal::si_real_value(self.syntax.text()).unwrap()
     }
 }
 

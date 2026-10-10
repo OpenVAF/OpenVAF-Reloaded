@@ -1,0 +1,30 @@
+// VAMS-2023 10.2: a default discipline still has to be a discipline, and nothing
+// says so where the directive is read -- a directive is processed long before a
+// `discipline` declaration is seen, and may name one from a file included later.
+// So the check belongs to the nets that take it, and this is what they say.
+`include "disciplines.vams"
+
+// Accepted: the discipline is declared, so `ok1` and `ok2` have one without
+// saying so themselves.
+`default_discipline electrical
+
+module ok(a, b);
+    inout a, b;
+    analog V(a) <+ V(b);
+endmodule
+
+// `nowhere` is not declared anywhere, which every net of the module below says.
+`default_discipline nowhere
+
+module bad(a, b);
+    inout a, b;
+    analog V(a) <+ V(b);
+endmodule
+
+// The form that removes the default puts the nets back where they started.
+`default_discipline
+
+module gone(a, b);
+    inout a, b;
+    analog V(a) <+ V(b);
+endmodule

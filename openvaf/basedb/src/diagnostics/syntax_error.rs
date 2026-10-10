@@ -1,6 +1,7 @@
 use std::iter::once;
 
 use stdx::iter::zip;
+use syntax::name::kw;
 use syntax::sourcemap::FileSpan;
 use syntax::SyntaxKind::BLOCK_STMT;
 use syntax::{AstNode, SyntaxError, TextRange, TextSize};
@@ -545,6 +546,35 @@ impl Diagnostic for SyntaxError {
                         message: "help: expected real or integer".to_owned(),
                     },
                 ])
+            }
+            SyntaxError::IllegalNullArgument { range, arg_list, ref fun, .. } => {
+                let (file_id, [range, arg_list]) =
+                    text_ranges_to_unified_spans(&sm, &parse, [range, arg_list]);
+                let mut report = Report::error().with_labels(vec![
+                    Label {
+                        style: LabelStyle::Primary,
+                        file_id,
+                        range: range.into(),
+                        message: "omitted argument".to_owned(),
+                    },
+                    Label {
+                        style: LabelStyle::Secondary,
+                        file_id,
+                        range: arg_list.into(),
+                        message: "in this argument list".to_owned(),
+                    },
+                ]);
+                // Only the analog event functions take null arguments, so point a
+                // reader of any other call at the rule rather than at the clause.
+                if !matches!(
+                    fun.as_deref(),
+                    Some(kw::raw::cross | kw::raw::above | kw::raw::timer | kw::raw::absdelta)
+                ) {
+                    report = report.with_notes(vec![
+                        "only cross, above, timer and absdelta accept omitted arguments".to_owned(),
+                    ]);
+                }
+                report
             }
             SyntaxError::PortNotDeclaredInModule { head, pos, ref name } => {
                 let pos = parse.to_file_span(pos, &sm);

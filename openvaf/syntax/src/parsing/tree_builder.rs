@@ -2,7 +2,7 @@ use std::mem;
 use std::sync::Arc;
 
 use preprocessor::sourcemap::{CtxSpan, SourceContext, SourceMap};
-use preprocessor::{SourceProvider, Token};
+use preprocessor::{DirectiveIdx, Directives, SourceProvider, Token};
 use rowan::{GreenNodeBuilder, Language};
 use tokens::KeywordSet;
 use vfs::FileId;
@@ -34,6 +34,9 @@ pub(crate) struct SyntaxTreeBuilder<'a> {
     /// sorted and non-overlapping. Regions using the default keyword set are not
     /// recorded.
     keyword_regions: Vec<(TextRange, KeywordSet)>,
+    /// The same, for the directives that set a default (10.2, 10.3).
+    directive_regions: Vec<(TextRange, DirectiveIdx)>,
+    directive_states: Arc<Vec<Directives>>,
 }
 
 enum State {
@@ -47,6 +50,33 @@ pub(crate) struct Built {
     pub errors: Vec<SyntaxError>,
     pub ranges: Vec<(TextRange, SourceContext, TextSize)>,
     pub keyword_regions: KeywordRegions,
+    pub directives: DirectiveMap,
+}
+
+/// Which directive state covers which run of the tree text.
+///
+/// `` `default_discipline `` (10.2) and `` `default_transition `` (10.3) apply to
+/// "the text stream following the directive", and the directive itself is gone by
+/// the time there is a tree, so the state travels with the tokens and is turned
+/// back into positions here. Runs in the empty state are not recorded.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DirectiveMap {
+    regions: Vec<(TextRange, DirectiveIdx)>,
+    states: Arc<Vec<Directives>>,
+}
+
+impl DirectiveMap {
+    /// What the directives had set at `pos`, which is nothing unless one of them
+    /// was used before it.
+    pub fn get(&self, pos: TextSize) -> &Directives {
+        let idx = self.regions.partition_point(|(range, _)| range.end() <= pos);
+        let state = match self.regions.get(idx) {
+            Some(&(range, state)) if range.contains(pos) => state.0 as usize,
+            _ => DirectiveIdx::EMPTY.0 as usize,
+        };
+        static EMPTY: Directives = Directives { transition: None, disciplines: Vec::new() };
+        self.states.get(state).unwrap_or(&EMPTY)
+    }
 }
 
 /// The `` `begin_keywords `` regions of a parsed file, in tree coordinates.
@@ -78,7 +108,7 @@ impl<'a> SyntaxTreeBuilder<'a> {
             kind,
             T![;] | T![end] | T![endnature] | T![endmodule] | T![enddiscipline] | T![endfunction]
         ) || self.err_depth != u32::MAX;
-        self.do_token(kind, token.span, token.keywords);
+        self.do_token(kind, token.span, token.keywords, token.directives);
     }
 
     pub(super) fn start_node(&mut self, kind: SyntaxKind) {
@@ -181,6 +211,7 @@ impl<'a> SyntaxTreeBuilder<'a> {
         root_file: FileId,
         tokens: &'a [Token],
         sm: &'a SourceMap,
+        directive_states: Arc<Vec<Directives>>,
     ) -> Self {
         let current_src = db.file_text(root_file).unwrap_or_else(|_| Arc::from(""));
         Self {
@@ -193,6 +224,8 @@ impl<'a> SyntaxTreeBuilder<'a> {
             sm,
             current_src,
             keyword_regions: Vec::new(),
+            directive_regions: Vec::new(),
+            directive_states,
             ranges: Vec::with_capacity(128),
             current_range: CtxSpan {
                 ctx: SourceContext::ROOT,
@@ -221,6 +254,10 @@ impl<'a> SyntaxTreeBuilder<'a> {
             errors: self.errors,
             ranges: self.ranges,
             keyword_regions: KeywordRegions(self.keyword_regions),
+            directives: DirectiveMap {
+                regions: self.directive_regions,
+                states: self.directive_states,
+            },
         }
     }
 
@@ -229,7 +266,7 @@ impl<'a> SyntaxTreeBuilder<'a> {
             if !token.kind.is_trivia() {
                 break;
             }
-            self.do_token(token.kind, token.span, token.keywords);
+            self.do_token(token.kind, token.span, token.keywords, token.directives);
         }
     }
 
@@ -250,7 +287,28 @@ impl<'a> SyntaxTreeBuilder<'a> {
         }
     }
 
-    fn do_token(&mut self, kind: SyntaxKind, span: CtxSpan, keywords: KeywordSet) {
+    /// Extends the current directive region, or starts a new one. Same shape as
+    /// [`Self::record_keywords`], down to leaving the default state unrecorded.
+    fn record_directives(&mut self, directives: DirectiveIdx, len: TextSize) {
+        if directives == DirectiveIdx::EMPTY {
+            return;
+        }
+        let end = self.text_pos + len;
+        match self.directive_regions.last_mut() {
+            Some((range, state)) if *state == directives && range.end() == self.text_pos => {
+                *range = TextRange::new(range.start(), end)
+            }
+            _ => self.directive_regions.push((TextRange::new(self.text_pos, end), directives)),
+        }
+    }
+
+    fn do_token(
+        &mut self,
+        kind: SyntaxKind,
+        span: CtxSpan,
+        keywords: KeywordSet,
+        directives: DirectiveIdx,
+    ) {
         let same_ctx = span.ctx == self.current_range.ctx;
         let is_continuous = same_ctx && span.range.start() == self.current_range.range.end();
         if is_continuous {
@@ -273,6 +331,7 @@ impl<'a> SyntaxTreeBuilder<'a> {
 
         let range = span.to_file_span(self.sm).range;
         self.record_keywords(keywords, range.len());
+        self.record_directives(directives, range.len());
         let text = &self.current_src[range];
         self.text_pos += range.len();
         self.token_pos += 1;

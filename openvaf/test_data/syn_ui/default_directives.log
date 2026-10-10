@@ -1,0 +1,42 @@
+error: '`default_transition' requires a transition time
+   --> /default_directives.va:11:1
+   |
+11 | `default_transition
+   | ^^^^^^^^^^^^^^^^^^^ expected a transition time
+   |
+   = 10.3: '`default_transition <transition_time>', where the time is a real number such as 1n
+
+error: a transition time cannot be negative
+   --> /default_directives.va:15:1
+   |
+15 | `default_transition -1n
+   | ^^^^^^^^^^^^^^^^^^^^^^^ negative transition time
+   |
+   = 4.5.8: a rise time and a fall time 'shall be non-negative'
+
+warning: a default discipline for 'reg' nets can never apply
+   --> /default_directives.va:23:31
+   |
+23 | `default_discipline ddiscrete reg
+   |                               ^^^ no net can be of type 'reg'
+   |
+   = info: the default would be in force and apply to nothing
+   = help: Verilog-A declares nets without a net type, so only an unqualified directive (or one qualified 'wire', their default type) reaches them
+
+error: 'bogus' is not a net type
+   --> /default_directives.va:24:32
+   |
+24 | `default_discipline electrical bogus
+   |                                ^^^^^ not a net type
+   |
+   = 10.2: '`default_discipline [discipline [ qualifier ] ]', where the qualifier is one of integer, real, reg, wreal, wire, tri, wand, triand, wor, trior, trireg, tri0, tri1, supply0, supply1
+
+error: '`default_transition' is not allowed inside a module
+   --> /default_directives.va:30:5
+   |
+30 |     `default_transition 1n
+   |     ^^^^^^^^^^^^^^^^^^^^^^ directive is used inside a module
+   |
+   = 10.3: the directive 'can be used only outside of module definitions'
+   = help: move it above the module, where it applies to every transition filter the module contains
+

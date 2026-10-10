@@ -91,8 +91,25 @@ fn assign_or_expr(p: &mut Parser) -> bool {
 fn event_stmt(p: &mut Parser, m: Marker) {
     p.bump(T![@]);
     p.expect(T!['(']);
+    // VAMS-2023 5.10.1: `or` -- or a comma, which means the same thing -- ORs
+    // event expressions together, so the body runs when any of them occurs:
+    // `@(initial_step or cross(V(smpl) - 2.5, +1))`.
+    loop {
+        event_expr(p);
+        if !p.eat(T![or]) && !p.eat(T![,]) {
+            break;
+        }
+    }
+    p.expect(T![')']);
+    stmt_with_attrs(p);
+    m.complete(p, EVENT_STMT);
+}
+
+/// One element of an event expression (VAMS-2023 A.6.5).
+fn event_expr(p: &mut Parser) {
+    let m = p.start();
     if p.at_ts(TokenSet::new(&[INITIAL_STEP_KW, FINAL_STEP_KW])) {
-        // Global events: `@(initial_step)` / `@(final_step)` with optional sim phases.
+        // Global events: `initial_step` / `final_step` with optional sim phases.
         p.bump_any();
         if p.eat(T!['(']) {
             while !p.at_ts(TokenSet::new(&[T![')'], T![begin], ENDMODULE_KW])) {
@@ -107,8 +124,8 @@ fn event_stmt(p: &mut Parser, m: Marker) {
             p.eat(T![')']);
         }
     } else {
-        // Monitored events: `@(cross(expr, dir, tol))`, `@(timer(...))`, ... parsed as
-        // a call expression. Currently the event condition is not used for scheduling
+        // Monitored events: `cross(expr, dir, tol)`, `timer(...)`, ... parsed as a
+        // call expression. Currently the event condition is not used for scheduling
         // (the guarded body is always evaluated, see hir_lower EventControl).
         //
         // A bare identifier here is a named event (VAMS-2023 5.10.4) and *is*
@@ -116,9 +133,7 @@ fn event_stmt(p: &mut Parser, m: Marker) {
         // body lowering.
         expr(p);
     }
-    p.expect(T![')']);
-    stmt_with_attrs(p);
-    m.complete(p, EVENT_STMT);
+    m.complete(p, EVENT_EXPR);
 }
 
 /// VAMS-2023 5.10.4: `-> event_identifier;`

@@ -1,0 +1,31 @@
+`include "disciplines.vams"
+
+// VAMS-2023 4.5.10: `last_crossing` reports the simulation time at which its
+// expression last crossed zero, interpolated linearly between the two straddling
+// points. It does not control the timestep, so the accuracy on offer is whatever
+// linear interpolation gives across the step the integrator happened to take.
+//
+// `lc` exposes the raw reading, which is what this test asserts on.
+//
+// `period` is 4.5.10's own use of the function, written in the clause's order:
+// the `@(cross)` handler copies the previous reading *before* the new one is
+// taken. That makes it a second, stricter claim -- it only works if `latest`
+// still holds what it held at the end of the previous evaluation.
+module lcmeas(in, lc, period);
+    input in;
+    output lc, period;
+    electrical in, lc, period;
+
+    real prev_cross;
+    real latest;
+
+    analog begin
+        @(cross(V(in), +1))
+            prev_cross = latest;
+
+        latest = last_crossing(V(in), +1);
+
+        V(lc) <+ latest;
+        V(period) <+ latest - prev_cross;
+    end
+endmodule

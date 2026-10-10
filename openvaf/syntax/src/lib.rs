@@ -13,9 +13,13 @@ use std::sync::Arc;
 
 pub use ast::AstNode;
 pub use error::SyntaxError;
+pub use parsing::DirectiveMap;
 pub use preprocessor::diagnostics::PreprocessorDiagnostic;
 use preprocessor::sourcemap::{CtxSpan, FileSpan, SourceContext};
-pub use preprocessor::{preprocess, sourcemap, Preprocess, SourceProvider};
+pub use preprocessor::{
+    preprocess, sourcemap, DefaultDiscipline, DefaultTransition, Directives, Preprocess,
+    SourceProvider,
+};
 pub use ptr::{AstPtr, SyntaxNodePtr};
 pub use rowan::{
     Direction, GreenNode, NodeOrToken, SyntaxText, TextRange, TextSize, TokenAtOffset, WalkEvent,
@@ -37,6 +41,9 @@ pub struct Parse<T> {
     green: GreenNode,
     errors: Arc<Vec<SyntaxError>>,
     pub ctx_map: Arc<Vec<(TextRange, SourceContext, TextSize)>>,
+    /// What the directives that set a default (10.2, 10.3) had set where, in the
+    /// coordinates of this tree.
+    directives: Arc<DirectiveMap>,
     _ty: PhantomData<fn() -> T>,
 }
 
@@ -46,6 +53,7 @@ impl<T> Clone for Parse<T> {
             green: self.green.clone(),
             errors: self.errors.clone(),
             ctx_map: self.ctx_map.clone(),
+            directives: self.directives.clone(),
             _ty: PhantomData,
         }
     }
@@ -56,8 +64,20 @@ impl<T> Parse<T> {
         green: GreenNode,
         errors: Vec<SyntaxError>,
         ctx_map: Vec<(TextRange, SourceContext, TextSize)>,
+        directives: DirectiveMap,
     ) -> Parse<T> {
-        Parse { green, errors: Arc::new(errors), ctx_map: Arc::new(ctx_map), _ty: PhantomData }
+        Parse {
+            green,
+            errors: Arc::new(errors),
+            ctx_map: Arc::new(ctx_map),
+            directives: Arc::new(directives),
+            _ty: PhantomData,
+        }
+    }
+
+    /// What the directives that set a default had set at `pos`.
+    pub fn directives(&self, pos: TextSize) -> &Directives {
+        self.directives.get(pos)
     }
 
     pub fn syntax_node(&self) -> SyntaxNode {
@@ -114,7 +134,13 @@ impl<T> Parse<T> {
 
 impl<T: AstNode> Parse<T> {
     pub fn to_syntax(self) -> Parse<SyntaxNode> {
-        Parse { green: self.green, errors: self.errors, ctx_map: self.ctx_map, _ty: PhantomData }
+        Parse {
+            green: self.green,
+            errors: self.errors,
+            ctx_map: self.ctx_map,
+            directives: self.directives,
+            _ty: PhantomData,
+        }
     }
 
     pub fn tree(&self) -> T {
@@ -141,6 +167,7 @@ impl Parse<SyntaxNode> {
                 green: self.green,
                 errors: self.errors,
                 ctx_map: self.ctx_map,
+                directives: self.directives,
                 _ty: PhantomData,
             })
         } else {
@@ -192,15 +219,20 @@ impl SourceFile {
         root_file: FileId,
         preprocess: &Preprocess,
     ) -> Parse<SourceFile> {
-        let parsing::Built { tree: green, mut errors, ranges: ctx_map, keyword_regions } =
-            parsing::parse_text(db, root_file, preprocess);
+        let parsing::Built {
+            tree: green,
+            mut errors,
+            ranges: ctx_map,
+            keyword_regions,
+            directives,
+        } = parsing::parse_text(db, root_file, preprocess);
         let root = SyntaxNode::new_root(green.clone());
 
         validation::validate(&root, &keyword_regions, &mut errors);
 
         assert_eq!(root.kind(), SyntaxKind::SOURCE_FILE);
 
-        Parse::new(green, errors, ctx_map)
+        Parse::new(green, errors, ctx_map, directives)
     }
 }
 

@@ -1,0 +1,18 @@
+* The same model compiled with `--absdelay in-model`, which asks nothing of the
+* simulator: the history is retained state inside the model.
+
+Nad fixed vary raw din admod
+.model admod addelay(td=1u maxd=5u)
+
+Vin din 0 pwl(0 0 6u 6)
+Rf fixed 0 1e12
+Rv vary  0 1e12
+Rr raw   0 1e12
+
+.control
+pre_osdi addelay_in_model.osdi
+tran 20n 6u
+wrdata ad_out.txt v(fixed) v(vary) v(raw)
+.endc
+
+.end

@@ -18,13 +18,7 @@ node "in[2]" units = "V", runits = ""
 node "in[3]" units = "V", runits = ""
 node "out" units = "V", runits = ""
 node(flow) "flow(out)" units = "", runits = "V"
-node "implicit_equation_0" units = "", runits = ""
-node "implicit_equation_1" units = "", runits = ""
 jacobian (out, flow(out)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
 jacobian (flow(out), out) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
-jacobian (flow(out), implicit_equation_0) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
-jacobian (flow(out), implicit_equation_1) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
-jacobian (implicit_equation_0, implicit_equation_0) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT | JACOBIAN_ENTRY_REACT_CONST)
-jacobian (implicit_equation_1, implicit_equation_1) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT | JACOBIAN_ENTRY_REACT_CONST)
 0 states
-has bound_step false
+has bound_step true
