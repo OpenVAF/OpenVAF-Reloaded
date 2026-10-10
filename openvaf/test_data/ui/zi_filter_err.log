@@ -1,0 +1,39 @@
+error: invalid $zi_nd: the denominator vector has to be an array of constants. Table 4-20 makes it a constant expression argument, and the filter is compiled into the model, so an array the module computes at run time cannot be read here: write it as an array literal
+   --> /zi_filter_err.va:19:15
+   |
+19 |         acc = zi_nd(V(a, b), {1.0}, coeffs, 1u);
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $zi_nd
+
+error: constant expressions must not contain variable references
+   --> /zi_filter_err.va:19:37
+   |
+10 |     real coeffs[0:1];
+   |          ----------- help: 'coeffs' was declared here
+   .
+19 |         acc = zi_nd(V(a, b), {1.0}, coeffs, 1u);
+   |                                     ^^^^^^ not allowed here
+
+error: invalid $zi_zp: the poles vector holds 3 numbers; 4.5.12 gives each root as a pair of a real and an imaginary part
+   --> /zi_filter_err.va:22:21
+   |
+22 |         acc = acc + zi_zp(V(a, b), {0.5, 0.0}, {0.25, 0.0, 0.5}, 1u);
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $zi_zp
+
+error: invalid $zi_np: the poles vector leaves an imaginary coefficient at z^-1; 4.5.12 requires the conjugate of every complex root to be present
+   --> /zi_filter_err.va:25:21
+   |
+25 |         acc = acc + zi_np(V(a, b), {1.0}, {0.5, 0.5}, 1u);
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $zi_np
+
+error: invalid $zi_nd: the z^0 denominator coefficient is zero, so the filter does not determine its own output
+   --> /zi_filter_err.va:28:21
+   |
+28 |         acc = acc + zi_nd(V(a, b), {1.0}, {0.0, 1.0}, 1u);
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $zi_nd
+
+error: invalid $zi_nd: the sampling period is 0; 4.5.12 requires T to be positive
+   --> /zi_filter_err.va:31:21
+   |
+31 |         acc = acc + zi_nd(V(a, b), {1.0}, {1.0}, 0.0);
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $zi_nd
+

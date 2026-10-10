@@ -217,6 +217,45 @@ bultins! {
         fn NOISE_TABLE_FILE_NAME(Val(String),Literal(String)) -> Real;
     }
 
+    // VAMS-2023 9.21:
+    //
+    //   $table_model ( table_inputs , table_data_source [, table_control_string] )
+    //   table_inputs ::= expression [, 2nd_dim_expression [, nth_dim_expression]]
+    //   table_data_source ::= file_name | table_model_array
+    //
+    // Both the lookup inputs and, in the array form, the data columns are
+    // variadic, and the clause sets no upper bound on the dimensionality. A
+    // signature list is fixed-length, so the arities are enumerated up to four
+    // dimensions, which is where the sampling schemes 9.21 is written for stop
+    // being practical. The two source forms never collide: at any arity the
+    // array form takes arrays where the file form takes a string.
+    //
+    // `file_name` is `string_literal | string_parameter`, but a parameter's value
+    // belongs to the simulator rather than the compiler, and the table is
+    // compiled into the model, so only a literal can be read. The lowering says
+    // so rather than reading a default that may be overridden.
+    TABLE_MODEL = const {
+        fn TABLE_MODEL_1_FILE(Val(Real),Val(String)) -> Real;
+        fn TABLE_MODEL_1_FILE_CTRL(Val(Real),Val(String),Literal(String)) -> Real;
+        fn TABLE_MODEL_1_ARRAY(Val(Real),ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real}) -> Real;
+        fn TABLE_MODEL_1_ARRAY_CTRL(Val(Real),ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real},Literal(String)) -> Real;
+
+        fn TABLE_MODEL_2_FILE(Val(Real),Val(Real),Val(String)) -> Real;
+        fn TABLE_MODEL_2_FILE_CTRL(Val(Real),Val(Real),Val(String),Literal(String)) -> Real;
+        fn TABLE_MODEL_2_ARRAY(Val(Real),Val(Real),ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real}) -> Real;
+        fn TABLE_MODEL_2_ARRAY_CTRL(Val(Real),Val(Real),ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real},Literal(String)) -> Real;
+
+        fn TABLE_MODEL_3_FILE(Val(Real),Val(Real),Val(Real),Val(String)) -> Real;
+        fn TABLE_MODEL_3_FILE_CTRL(Val(Real),Val(Real),Val(Real),Val(String),Literal(String)) -> Real;
+        fn TABLE_MODEL_3_ARRAY(Val(Real),Val(Real),Val(Real),ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real}) -> Real;
+        fn TABLE_MODEL_3_ARRAY_CTRL(Val(Real),Val(Real),Val(Real),ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real},Literal(String)) -> Real;
+
+        fn TABLE_MODEL_4_FILE(Val(Real),Val(Real),Val(Real),Val(Real),Val(String)) -> Real;
+        fn TABLE_MODEL_4_FILE_CTRL(Val(Real),Val(Real),Val(Real),Val(Real),Val(String),Literal(String)) -> Real;
+        fn TABLE_MODEL_4_ARRAY(Val(Real),Val(Real),Val(Real),Val(Real),ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real}) -> Real;
+        fn TABLE_MODEL_4_ARRAY_CTRL(Val(Real),Val(Real),Val(Real),Val(Real),ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real},Literal(String)) -> Real;
+    }
+
     DDT = const {
         fn DDT_NO_TOL(Val(Real)) -> Real;
         fn DDT_TOL(Val(Real),Val(Real)) -> Real;
@@ -248,10 +287,15 @@ bultins! {
     }
 
     // all zi filters have the same signature
+    // VAMS-2023 4.5.12: `zi_nd ( expr , n , d , T [ , tau [ , t0 ] ] )` and the
+    // three other forms. The two vectors are coefficients of `z^-k` or roots
+    // depending on the form, `T` is the mandatory sampling period, `tau` the
+    // optional transition time of the output and `t0` the optional instant of the
+    // first transition.
     ZI_FILTER = const {
-        fn ZI_NO_TOL(Val(Real),ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real}, Val(Real)) -> Real;
-        fn ZI_TOL(Val(Real),ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real}, Val(Real), Val(Real)) -> Real;
-        fn ZI_NATURE_TOL(Val(Real),ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real}, Val(Real), Val(Real), Val(Real)) -> Real;
+        fn ZI_T(Val(Real),ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real}, Val(Real)) -> Real;
+        fn ZI_T_TAU(Val(Real),ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real}, Val(Real), Val(Real)) -> Real;
+        fn ZI_T_TAU_T0(Val(Real),ArrayAnyLength{ty: Real},ArrayAnyLength{ty: Real}, Val(Real), Val(Real), Val(Real)) -> Real;
     }
 
     ABSDELAY = const {
@@ -259,6 +303,8 @@ bultins! {
         fn ABSDELAY_MAX(Val(Real), Val(Real), Val(Real)) -> Real;
     }
 
+    // VAMS-2023 4.5.9:
+    //   slew ( expr [ , max_pos_slew_rate [ , max_neg_slew_rate ] ] )
     SLEW = const {
         fn SLEW_NO_MAX(Val(Real)) -> Real;
         fn SLEW_POS_MAX(Val(Real),Val(Real)) -> Real;
@@ -266,7 +312,7 @@ bultins! {
     }
 
 
-    // VAMS-2023 4.5.9:
+    // VAMS-2023 4.5.8:
     //   transition ( expr [ , td [ , rise_time [ , fall_time [ , time_tol ] ] ] ] )
     // Every argument is a dynamic expression (Table 4-20, Mantis 7810).
     TRANSITION = const {
@@ -444,6 +490,23 @@ const FDISPLAY_FUN: BuiltinInfo = BuiltinInfo::varargs(
     &[SignatureData { args: Cow::Borrowed(&[Val(Integer)]), return_ty: Type::Void }],
     true,
 );
+// VAMS-2023 9.5.4. The format has to be a literal, because what each conversion
+// produces is what says how to read its result back and what to assign it to --
+// which the lowering settles, not the runtime.
+const SSCANF: BuiltinInfo = BuiltinInfo::varargs(
+    &[SignatureData {
+        args: Cow::Borrowed(&[Val(Type::String), Literal(Type::String)]),
+        return_ty: Type::Integer,
+    }],
+    true,
+);
+const FSCANF: BuiltinInfo = BuiltinInfo::varargs(
+    &[SignatureData {
+        args: Cow::Borrowed(&[Val(Integer), Literal(Type::String)]),
+        return_ty: Type::Integer,
+    }],
+    true,
+);
 const SWRITE: BuiltinInfo = BuiltinInfo::varargs(
     &[SignatureData { args: Cow::Borrowed(&[Var(String)]), return_ty: Type::Void }],
     true,
@@ -521,8 +584,6 @@ copied_builtins! {
     FMONITOR = FDISPLAY_FUN
     FWRITE = FDISPLAY_FUN
     FDEBUG = FDISPLAY_FUN
-    SSCANF = FDISPLAY_FUN
-    FSCANF = FDISPLAY_FUN
 
     REWIND = BASIC_IO
     FEOF = BASIC_IO
