@@ -1,0 +1,50 @@
+// VAMS-2023 9.21: everything a `$table_model` needs has to be knowable at
+// compile time, because the table is compiled into the model. Each call below is
+// a different way of not being.
+`include "disciplines.vams"
+
+module table_model_err(a, b);
+    inout a, b;
+    electrical a, b;
+
+    parameter real p = 1.0;
+    parameter string fname = "nowhere.dat";
+
+    real col_x[0:2];
+    real col_f[0:2];
+    real acc;
+
+    analog begin
+        // 9.21.5's own array example fills its columns in an initial_step block,
+        // so the contents only exist at run time and cannot be read here.
+        @(initial_step) begin
+            col_x[0] = 0.0; col_x[1] = 1.0; col_x[2] = 2.0;
+            col_f[0] = 0.0; col_f[1] = 1.0; col_f[2] = 4.0;
+        end
+        acc = $table_model(V(a, b), col_x, col_f);
+
+        // A string parameter is a legal file_name per the BNF, but its value
+        // belongs to the simulator.
+        acc = acc + $table_model(V(a, b), fname);
+
+        // A data file that is not there.
+        acc = acc + $table_model(V(a, b), "definitely_absent.dat");
+
+        // 'Q' is neither an interpolation nor an extrapolation character.
+        acc = acc + $table_model(V(a, b), {0.0, 1.0}, {0.0, 1.0}, "1Q");
+
+        // Two independent dimensions described for one lookup expression.
+        acc = acc + $table_model(V(a, b), {0.0, 1.0}, {0.0, 1.0}, "1L,1L");
+
+        // One sample is not enough to interpolate between.
+        acc = acc + $table_model(V(a, b), {0.0}, {1.0});
+
+        // Two samples at the same coordinate that disagree.
+        acc = acc + $table_model(V(a, b), {0.0, 0.0, 1.0}, {1.0, 2.0, 3.0});
+
+        // A dependent selector past the last column.
+        acc = acc + $table_model(V(a, b), {0.0, 1.0}, {0.0, 1.0}, "1;4");
+
+        I(a, b) <+ acc * p;
+    end
+endmodule

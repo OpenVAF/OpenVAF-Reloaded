@@ -4,7 +4,7 @@ use mir::{FunctionSignature, Param};
 use stdx::Ieee64;
 
 use crate::fmt::{DisplayKind, FmtArg};
-use crate::LimitState;
+use crate::{LimitState, RetainedState};
 
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub enum ParamInfoKind {
@@ -13,6 +13,22 @@ pub enum ParamInfoKind {
     MaxInclusive,
     MinExclusive,
     MaxExclusive,
+}
+
+/// The distributions of VAMS-2023 9.13, as the stdlib's `rng_value` / `rng_seed`
+/// select between them. The discriminants are the ABI.
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+pub enum RngDist {
+    /// An inclusive integer draw over `[a, b]`, which is also what `$random` is:
+    /// a draw over the whole 32-bit range.
+    UniformInt = 0,
+    Uniform = 1,
+    Normal = 2,
+    Exponential = 3,
+    Poisson = 4,
+    ChiSquare = 5,
+    T = 6,
+    Erlang = 7,
 }
 
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
@@ -49,6 +65,12 @@ pub enum CallBackKind {
     Analysis,
     BuiltinLimit { name: Spur, num_args: u32 },
     StoreLimit(LimitState),
+    StoreRetained(RetainedState),
+    /// The value drawn from a distribution (9.13), given `(seed, a, b)`.
+    RngValue(RngDist),
+    /// Where that same draw left the seed. Pure, like the value, so the pair can be
+    /// asked for separately without an out-parameter in the ABI.
+    RngSeed(RngDist),
     TimeDerivative,
     WhiteNoise { name: Spur, idx: u32 },
     FlickerNoise { name: Spur, idx: u32 },
@@ -117,9 +139,29 @@ impl CallBackKind {
                 name: format!("$store[{state:?}]"),
                 params: 1,
                 returns: 1,
-                // Writing `next_state` is a side effect: when the stored value is not
-                // otherwise used (retained `@(cross)` state) the call must not be
-                // eliminated. The limit path still uses the return value as before.
+                // Writing `next_state` is a side effect. The limit path always uses
+                // the returned value too, so this is only belt and braces there.
+                has_sideeffects: true,
+            },
+            CallBackKind::RngValue(dist) => FunctionSignature {
+                name: format!("$rng_value[{dist:?}]"),
+                params: 3,
+                returns: 1,
+                has_sideeffects: false,
+            },
+            CallBackKind::RngSeed(dist) => FunctionSignature {
+                name: format!("$rng_seed[{dist:?}]"),
+                params: 3,
+                returns: 1,
+                has_sideeffects: false,
+            },
+            CallBackKind::StoreRetained(state) => FunctionSignature {
+                name: format!("$store_retained[{state:?}]"),
+                params: 1,
+                returns: 1,
+                // The stored value is usually *not* used afterwards (a latch is read
+                // at the start of the next timestep, not here), so without this the
+                // call would be eliminated and the slot would never be written.
                 has_sideeffects: true,
             },
             CallBackKind::LimDiscontinuity => FunctionSignature {
@@ -186,6 +228,9 @@ impl CallBackKind {
             CallBackKind::SimParam
                 | CallBackKind::SimParamOpt
                 | CallBackKind::StoreLimit(_)
+                | CallBackKind::StoreRetained(_)
+                | CallBackKind::RngValue(_)
+                | CallBackKind::RngSeed(_)
                 | CallBackKind::Analysis
                 | CallBackKind::SimParamStr
                 | CallBackKind::LimDiscontinuity

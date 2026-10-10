@@ -1,5 +1,5 @@
 use hir::{BranchWrite, CompilationDB, Node};
-use hir_lower::{CurrentKind, HirInterner, ImplicitEquation, ParamKind};
+use hir_lower::{AbsDelayMode, CurrentKind, HirInterner, ImplicitEquation, ParamKind};
 use lasso::Rodeo;
 use mir::Function;
 use mir_opt::{simplify_cfg, sparse_conditional_constant_propagation};
@@ -159,9 +159,10 @@ impl<'a> CompiledModule<'a> {
         literals: &mut Rodeo,
         dump_unopt_mir: bool,
         dump_mir: bool,
+        absdelay: AbsDelayMode,
     ) -> CompiledModule<'a> {
         // Build MIR for the module
-        let mut cx = Context::new(db, literals, module);
+        let mut cx = Context::new(db, literals, module, absdelay);
 
         if dump_unopt_mir {
             println!("Unoptimized MIR (no DAE) of {}", module.module.name(db));

@@ -91,8 +91,13 @@ Case =
 
 
 
+// VAMS-2023 5.10.1: `or` (and `,`) OR event expressions together, so an event
+// control holds a list of them: `@(initial_step or cross(V(smpl) - 2.5, +1))`.
 EventStmt =
-  AttrList* '@' '(' ('initial_step' | 'final_step') ('(' sim_phases: ('str_lit' (',' 'str_lit')*) ')')? event:Expr? ')' Stmt
+  AttrList* '@' '(' events: (EventExpr (('or' | ',') EventExpr)*) ')' Stmt
+
+EventExpr =
+  ('initial_step' | 'final_step')? ('(' sim_phases: ('str_lit' (',' 'str_lit')*) ')')? event:Expr?
 
 EventTriggerStmt =
   AttrList* '->' Expr ';'
@@ -163,8 +168,14 @@ BinExpr =
 ParenExpr =
   '(' Expr ')'
 
+// An argument is wrapped in its own node so that a *null* argument
+// (`analog_expression_or_null`, A.6.5) keeps its position in the list:
+// `cross(V(d), dir, , , en)` has five arguments, the third and fourth empty.
 ArgList =
-  '(' args: (Expr (',' Expr)*)? ')'
+  '(' args: (Arg (',' Arg)*)? ')'
+
+Arg =
+  Expr
 
 Call =
   FunctionRef ArgList?
