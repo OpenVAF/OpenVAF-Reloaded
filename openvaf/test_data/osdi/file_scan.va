@@ -1,0 +1,63 @@
+`include "disciplines.vams"
+
+// VAMS-2023 9.5.3 and 9.5.4, and a string variable that survives a timestep.
+//
+// The model writes two records with `$sformat` and `$swrite`, then reads the
+// first one back with `$fgets` and takes it apart with `$sscanf`. The round trip
+// is the test: what comes back has to be what went in, and the model checks it
+// without the harness having to read the file at all.
+//
+// Everything happens inside `@(initial_step)`, which 5.10.2 puts in force for the
+// whole of the first point and so runs once per iteration of it. `$rewind` before
+// the writes and again before the read is what makes that harmless: each run
+// writes the same bytes over the same bytes and reads the same line.
+//
+// `kept` is the retention: `seen` is assigned only while the input is high, so
+// once the input drops it can only still hold "alpha" if a string variable keeps
+// its value between evaluations, which 4.5.10 says it does.
+//
+// Voltage contributions put each equation on a branch flow unknown, where the
+// residual is the value itself once the output node is held at zero.
+module file_scan(in, a, b, nfields, nchars, kept);
+    input in;
+    output a, b, nfields, nchars, kept;
+    electrical in, a, b, nfields, nchars, kept;
+
+    integer fd, nf, nc;
+    real ra, rb;
+    string line, tag, seen;
+
+    analog begin
+        @(initial_step) begin
+            nf = 0;
+            nc = 0;
+            ra = 0.0;
+            rb = 0.0;
+            tag = "";
+
+            fd = $fopen("openvaf_file_scan_test.txt", "w+");
+            $rewind(fd);
+            $sformat(line, "%d %g alpha", 3, 1.5);
+            $fdisplay(fd, "%s", line);
+            $swrite(line, 4, " ", 2.5, " beta");
+            $fdisplay(fd, "%s", line);
+            $fflush(fd);
+
+            $rewind(fd);
+            nc = $fgets(line, fd);
+            if (nc > 0) begin
+                nf = $sscanf(line, "%e %e %s", ra, rb, tag);
+            end
+        end
+
+        if (V(in) > 0.5) begin
+            seen = tag;
+        end
+
+        V(a) <+ ra;
+        V(b) <+ rb;
+        V(nfields) <+ nf;
+        V(nchars) <+ nc;
+        V(kept) <+ seen == "alpha" ? 1.0 : 0.0;
+    end
+endmodule

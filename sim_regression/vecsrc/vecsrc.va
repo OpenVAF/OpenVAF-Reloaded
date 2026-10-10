@@ -1,0 +1,62 @@
+`include "disciplines.vams"
+
+// VAMS-2023 9.5.4: a source whose waveform is a file.
+//
+// The file is read once into arrays and then stepped through with `timer`, rather
+// than a record at a time as the simulation goes. The reason is that an analog
+// block is re-evaluated several times for one timepoint, and a read advances the
+// file whether or not the timepoint has changed -- so a read in an event handler
+// consumes a record per Newton iteration, not per event.
+//
+// 5.10.2 puts `@(initial_step)` in force "during the solution of the first point",
+// which is every iteration of it, so the loading below runs several times too.
+// `$rewind` at the top of it is what makes that harmless: each run reads the same
+// records into the same places.
+module vecsrc(out, nrec);
+    output out, nrec;
+    electrical out, nrec;
+
+    parameter string fname = "vectors.txt";
+    parameter real tr = 1n from (0:inf);
+    parameter integer nmax = 8 from [1:inf);
+    // Beyond any time the run reaches, where the source parks once the records run
+    // out.
+    parameter real never = 1.0;
+
+    real tv[0:7], vv[0:7];
+    string line, tag;
+    integer fd, k, n, idx, fields;
+    real t_next, v_held, tnew, vnew;
+
+    analog begin
+        @(initial_step) begin
+            fd = $fopen(fname, "r");
+            $rewind(fd);
+            n = 0;
+            for (k = 0; k < nmax; k = k + 1) begin
+                if ($fgets(line, fd) > 0) begin
+                    // Three fields per record: when, what, and a name for it that
+                    // nothing uses except to prove a `%s` conversion arrives.
+                    fields = $sscanf(line, "%e %e %s", tnew, vnew, tag);
+                    if (fields == 3) begin
+                        tv[n] = tnew;
+                        vv[n] = vnew;
+                        n = n + 1;
+                    end
+                end
+            end
+            idx = 0;
+            v_held = 0.0;
+            t_next = n > 0 ? tv[0] : never;
+        end
+
+        @(timer(t_next)) begin
+            v_held = vv[idx];
+            idx = idx + 1;
+            t_next = idx < n ? tv[idx] : never;
+        end
+
+        V(out) <+ transition(v_held, 0.0, tr);
+        V(nrec) <+ n;
+    end
+endmodule

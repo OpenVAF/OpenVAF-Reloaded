@@ -15,6 +15,16 @@ pub enum DisplayKind {
     Monitor,
 }
 
+/// Where a formatted line goes. 9.4's tasks write to the simulator's log, 9.5.2's
+/// to whatever a descriptor names, and 9.5.3's into a string variable: one
+/// formatter, three destinations.
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Copy)]
+pub enum PrintSink {
+    Log,
+    File,
+    Str,
+}
+
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum FmtArgKind {
     Binary,
@@ -34,10 +44,83 @@ pub struct FmtArg {
     pub kind: FmtArgKind,
 }
 
+/// What each conversion in a `$sscanf`/`$fscanf` format produces, in order.
+///
+/// The runtime performs the conversions; this says how to read each result back
+/// and what type to assign. Only the conversions a data file is made of are
+/// recognised, which is the same set the runtime converts.
+pub fn scan_conversions(fmt: &str) -> Vec<Type> {
+    let mut out = Vec::new();
+    let mut chars = fmt.chars();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            continue;
+        }
+        let mut c = match chars.next() {
+            Some(c) => c,
+            None => break,
+        };
+        // A field width belongs to the conversion, not to the count.
+        while c.is_ascii_digit() {
+            c = match chars.next() {
+                Some(c) => c,
+                None => return out,
+            };
+        }
+        match c {
+            '%' => (),
+            'd' | 'D' => out.push(Type::Integer),
+            'e' | 'E' | 'f' | 'F' | 'g' | 'G' | 'r' | 'R' => out.push(Type::Real),
+            's' | 'S' => out.push(Type::String),
+            // Anything else stops the scan in the runtime, so it takes no
+            // argument here either.
+            _ => return out,
+        }
+    }
+    out
+}
+
 impl BodyLoweringCtx<'_, '_, '_> {
     pub fn ins_display(&mut self, kind: DisplayKind, newline: bool, args: &[ExprId]) {
+        self.ins_fmt(kind, newline, args, None, PrintSink::Log);
+    }
+
+    /// VAMS-2023 9.5.2: the same task, writing to whatever `desc` names. The
+    /// descriptor rides in front of the format string, so one callback serves both
+    /// forms and the formatting below does not have to know which it is.
+    pub fn ins_display_file(
+        &mut self,
+        kind: DisplayKind,
+        newline: bool,
+        desc: mir::Value,
+        args: &[ExprId],
+    ) {
+        self.ins_fmt(kind, newline, args, Some(desc), PrintSink::File);
+    }
+
+    /// VAMS-2023 9.5.3: `$swrite` and `$sformat` format into a string instead of
+    /// writing it anywhere, so this one has a value to return.
+    pub fn ins_sformat(&mut self, args: &[ExprId]) -> mir::Value {
+        // Neither appends a newline: 9.5.3 gives them `$write`'s behaviour, not
+        // `$display`'s.
+        self.ins_fmt(DisplayKind::Display, false, args, None, PrintSink::Str)
+            .expect("the string sink returns the formatted string")
+    }
+
+    fn ins_fmt(
+        &mut self,
+        kind: DisplayKind,
+        newline: bool,
+        args: &[ExprId],
+        desc: Option<mir::Value>,
+        sink: PrintSink,
+    ) -> Option<mir::Value> {
         let mut fmt_lit = String::new();
-        let mut call_args = vec![GRAVESTONE];
+        let mut call_args = match desc {
+            Some(desc) => vec![desc, GRAVESTONE],
+            None => vec![GRAVESTONE],
+        };
+        let fmt_idx = call_args.len() - 1;
         let mut arg_tys = Vec::new();
 
         let mut i = 0;
@@ -153,8 +236,14 @@ impl BodyLoweringCtx<'_, '_, '_> {
             fmt_lit.push('\n');
         }
 
-        call_args[0] = self.ctx.sconst(&fmt_lit);
-        self.ctx
-            .call(CallBackKind::Print { kind, arg_tys: arg_tys.into_boxed_slice() }, &call_args);
+        call_args[fmt_idx] = self.ctx.sconst(&fmt_lit);
+        let cb = CallBackKind::Print { kind, sink, arg_tys: arg_tys.into_boxed_slice() };
+        match sink {
+            PrintSink::Str => Some(self.ctx.call1(cb, &call_args)),
+            _ => {
+                self.ctx.call(cb, &call_args);
+                None
+            }
+        }
     }
 }

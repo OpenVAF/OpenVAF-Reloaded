@@ -14,7 +14,7 @@ use std::io::Write;
 use anyhow::{bail, Context, Result};
 use basedb::diagnostics::ConsoleSink;
 use hir::CompilationDB;
-use hir_lower::fmt::{DisplayKind, FmtArg, FmtArgKind};
+use hir_lower::fmt::{DisplayKind, FmtArg, FmtArgKind, PrintSink};
 use hir_lower::{CallBackKind, MirBuilder, PlaceKind, RetFlag};
 use lasso::{Rodeo, Spur};
 use mir::{FuncRef, Value};
@@ -35,6 +35,9 @@ struct CbCtx {
 
 enum CbCtxKind {
     Print {
+        /// 9.5's forms carry a descriptor the runner has no file behind, so their
+        /// output joins everything else on the host's own streams.
+        sink: PrintSink,
         kind: DisplayKind,
         arg_tys: Box<[FmtArg]>,
     },
@@ -73,13 +76,19 @@ pub fn run(opts: &Opts) -> Result<i32> {
     // Lower both behavioural bodies up front (both extend `literals`).
     let (analog_func, analog_intern) =
         MirBuilder::new(&db, module.module, &is_output, &mut std::iter::empty())
+            .with_absdelay(opts.absdelay)
             .build(&mut literals);
     let (proc_func, proc_intern) =
         MirBuilder::new(&db, module.module, &is_output, &mut std::iter::empty())
             .with_procedural()
+            .with_absdelay(opts.absdelay)
             .build(&mut literals);
     if !analog_intern.absdelay.is_empty() || !proc_intern.absdelay.is_empty() {
-        bail!("absdelay requires simulator transient history; openvaf run does not support it")
+        bail!(
+            "absdelay was realized through the simulator's history protocol, which the \
+             runner has no part of\nhelp: pass `--absdelay in-model` to keep the history in \
+             the model instead"
+        )
     }
 
     // analog behaviour first, then procedural blocks; an early-exit request from the
@@ -107,8 +116,8 @@ fn interpret_body(
         TiVec::with_capacity(intern.callbacks.len());
     for (_func_ref, kind) in intern.callbacks.iter_enumerated() {
         let cb_kind = match kind {
-            CallBackKind::Print { kind, arg_tys } => {
-                CbCtxKind::Print { kind: *kind, arg_tys: arg_tys.clone() }
+            CallBackKind::Print { kind, sink, arg_tys } => {
+                CbCtxKind::Print { kind: *kind, sink: *sink, arg_tys: arg_tys.clone() }
             }
             CallBackKind::SetRetFlag(flag) => CbCtxKind::SetRetFlag(*flag),
             other => CbCtxKind::Unsupported(format!("{other:?}")),
@@ -142,7 +151,10 @@ fn host_callback(state: &mut InterpreterState, args: &[Value], _rets: &[Value], 
     let literals = unsafe { &*ctx.literals };
 
     match &ctx.kind {
-        CbCtxKind::Print { kind, arg_tys } => {
+        CbCtxKind::Print { kind, sink, arg_tys } => {
+            // The descriptor comes first in the file forms; there is nothing here
+            // for it to name, so it is read past and the line goes to the host.
+            let args = if *sink == PrintSink::File { &args[1..] } else { args };
             let fmt = literals.resolve(&state.read::<Spur>(args[0]));
             let rendered = render_format(fmt, &args[1..], arg_tys, state, literals);
             match kind {

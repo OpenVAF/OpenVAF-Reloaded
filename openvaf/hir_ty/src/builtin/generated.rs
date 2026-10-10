@@ -4,7 +4,7 @@ use hir_def::BuiltIn;
 
 use crate::builtin::*;
 
-const BUILTIN_INFO: [BuiltinInfo; 119usize] = [
+const BUILTIN_INFO: [BuiltinInfo; 120usize] = [
     ABS,
     ACOS,
     ACOSH,
@@ -93,6 +93,7 @@ const BUILTIN_INFO: [BuiltinInfo; 119usize] = [
     PORT_CONNECTED,
     ANALOG_NODE_ALIAS,
     ANALOG_PORT_ALIAS,
+    TABLE_MODEL,
     TEST_PLUSARGS,
     VALUE_PLUSARGS,
     BOUND_STEP,
