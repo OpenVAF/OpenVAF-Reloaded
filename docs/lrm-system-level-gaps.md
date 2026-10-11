@@ -426,7 +426,8 @@ compile.
 | --- | --- | --- |
 | `` `default_discipline `` | 10.2 | Implemented. A net declared without a discipline gets the one the directive names, which is what 10.2's own example relies on. |
 | `` `default_transition `` | 10.3 | Implemented. The default rise and fall time of every transition filter that specifies neither, which is exactly how system-level models get written. |
-| Multi-dimensional arrays | 3.x, 4.2.14 | Parse error on the second subscript (`real g[0:1][0:1]`). 1-D arrays work. |
+| Multi-dimensional arrays | 3.2, 3.3 | Implemented, for as many dimensions as a declaration gives. One row of one is readable but not assignable. |
+| Array parameters | 3.4.4 | Not implemented: `parameter real c[0:2] = '{1, 2, 3};` is a parse error on the subscript, for one dimension as well as for several. Found while implementing the row above. |
 | `paramset` | 6.x | Parse error: `expected 'discipline', 'nature' or 'module'`. Matters more for device libraries than for system-level work. |
 
 ### The directives that supply a default
@@ -473,6 +474,53 @@ see which net the complaint is about.
 `` `resetall `` resets both, per 10.2, and is still unimplemented: it warns as
 an unsupported directive, which it did before.
 
+### Multi-dimensional arrays
+
+3.2 declares `integer flag_array[0:8][0:3];` as one variable, and 3.4.8 spends
+its whole example on a 3x3 coupling matrix, so this is a shape the LRM expects a
+model to be written in. It was a parse error on the second subscript, in a
+declaration and in every use.
+
+Most of what it needed was already there, which is why this is smaller than it
+looks: `Type` has always been an array of arrays, the OSDI layer has always
+flattened a nested type to its base type and total length, and an array
+variable has always been one MIR place per element. What was missing was the
+middle: a declaration that collects more than one range, an expression that
+chains more than one subscript, and the arithmetic from a chain of indices to
+the one place it names.
+
+That arithmetic is the row-major position, with the declared lower bounds kept
+on the other side of the comparison rather than subtracted from the index, so
+that a one-dimensional array still compares the index itself against a constant
+and lowers exactly as it did before: `openvaf/test_data/osdi/arrays.va` produces
+byte-identical MIR.
+
+Three things turned up next to it.
+
+**A string array crashed the compiler**, and had nothing to do with the number
+of dimensions: a variable with no initializer gets a placeholder of its own type
+to be checked against, and an array's was always a real. For a `real` or
+`integer` array that is harmless, for `string names[0:2];` it is a type mismatch
+on an expression that has no source location, which the diagnostic renderer
+unwraps. The placeholder follows the array's base type now.
+
+**`dim()` and `to_dim()` disagreed about which end a dimension list starts at**,
+which was invisible while every array had one dimension and would have
+transposed the shape of any array that reached `Type::union` with another.
+
+**A row is readable but not assignable.** `v = m[1]` copies the row, because one
+row of a multi-dimensional array is an array in its own right and the places
+that back it are a contiguous run. `m[1] = v` is rejected instead: an
+assignment destination here is one place, and a row is a run of them. The
+diagnostic says so and says what to do.
+
+What is not implemented is the other half of 3.4.8's example: an array
+*parameter*, of one dimension or several, does not parse (3.4.4). It is in the
+table above as its own item now. Nor does an array's declaration initializer
+(`real g[0:1] = '{1, 2};`), which is rejected as a scalar type mismatch and
+would not be lowered if it were accepted: an array is initialized by an
+assignment pattern in the analog block, which does work, nested and all.
+
 ## A PLL, part by part
 
 The page is organized by clause, which is the wrong shape for answering "can I
@@ -495,7 +543,7 @@ write a PLL in this". So, by part, with the state of each measured in
 | Delay line, DLL | `absdelay` (4.5.7) | works, both realizations — see Tier 0 |
 | Jitter or period logging | `$fstrobe` / `$fdisplay` to a file (9.5) | works; `sim_regression/filelog` checks a jitter sequence the model wrote itself |
 | Stimulus from a file of vectors | `$fgets` and `$sscanf` (9.5.4) | works; `sim_regression/vecsrc` drives a source from a file and checks the waveform against it |
-| Sigma-delta state for fractional-N | multi-dimensional arrays | **missing** for 2-D — Tier 4; a MASH needs only scalar accumulators, so this is a convenience |
+| Sigma-delta state for fractional-N | multi-dimensional arrays | works; `sim_regression/multidim` measures a matrix of them against its own arithmetic |
 | A bare `transition(x)` with a file-wide edge rate | `` `default_transition `` (10.3) | works; `sim_regression/directives` measures the ramp it sets |
 
 The two realizations of the oscillator are worth the distinction. The
@@ -507,8 +555,9 @@ of that, at the cost of sampling the control voltage once per edge rather than
 continuously — which is what a real oscillator does anyway.
 
 So nothing on this page now blocks writing a PLL, measuring one, or driving one
-from a file. What is left in the table above is a shape of array nothing here
-needs, and the two 9.5 tasks a testbench does not reach for.
+from a file, and nothing is left in the table above: what remains in Tier 4 is
+an array parameter, which a model can write as a scalar parameter per element,
+and the two 9.5 tasks a testbench does not reach for.
 
 ## 9.5 — files
 
@@ -630,7 +679,8 @@ Recorded so it is not re-litigated. All probed: `ddt`, `idt`, `idtmod`,
 `$limit` (9.17.3), `$bound_step` (9.17.2), named events and `->` (5.10.4),
 `initial_step` (5.10.2, `final_step` with the caveat in Tier 1), `analysis` lists
 on both, `analog initial` (5.2.1), indirect
-contributions (5.6.7), analog user-defined functions (4.7), 1-D arrays, strings
+contributions (5.6.7), analog user-defined functions (4.7), arrays of any number
+of dimensions, strings
 and string parameters, `aliasparam`, `$param_given`, `$port_connected`,
 `$simparam`, `$temperature`, `$vt`, `$abstime`, `$finish` / `$stop` / `$error` /
 `$info`, bus ports with `genvar` loops, the display tasks (9.4), the file
@@ -676,7 +726,9 @@ tasks (9.5, see above), and the compiler directives of 10.2 through 10.6.
 16. ~~**`` `default_transition `` / `` `default_discipline ``**~~ — done. The
     state a directive sets travels with the tokens, which is what both clauses
     mean by the text stream that follows the directive.
-17. **Multi-dimensional arrays** — still a parse error on the second subscript.
+17. ~~**Multi-dimensional arrays**~~ — done, for as many dimensions as a
+    declaration gives. The row-major position of an index chain, with the
+    one-dimensional case lowering byte-identically to what it did before.
 18. **OSDI proposal** — accept callback plus breakpoint/discontinuity request.
     No longer last on merit: it is what `$fstrobe` needs in order to mean what
     9.4.1 says, what would let a model read one record per timepoint, and what

@@ -30,6 +30,7 @@ transition     PASS
 vecsrc         PASS
 global_events  PASS
 directives     PASS
+multidim       PASS
 absdelay       PASS
 filelog        PASS
 pll            PASS
@@ -415,6 +416,39 @@ beside it, from identical model text. It is also what the previous compiler
 produces for all four outputs, when it produces anything: it rejects this file
 outright, with ``macro '`default_transition' has not been declared`` and then
 "no discipline for net 'bare'".
+
+## multidim — passing
+
+VAMS-2023 3.2's multi-dimensional arrays, measured on 3.4.8's own example: a 3x3
+crosstalk matrix, accumulated in a double loop whose indices are both computed, so
+every timepoint of the run goes through the flat-position arithmetic that backs an
+array of more than one dimension rather than through folded constant places.
+
+The outputs are algebraic in the inputs, so the analyzer recomputes the matrix
+product point for point instead of comparing against a stored waveform. The matrix
+is asymmetric (`c[i][j]` is `k*(10*i + j)` off the diagonal), which is what makes
+that sharp: a transposed dimension or a stride taken from the wrong dimension
+gives a different waveform, not a differently scaled one.
+
+```
+worst |v(out0) - row 0 of c| : 9.900e-10 V at 0.381 us
+worst |v(out1) - row 1 of c| : 4.840e-09 V at 0.081 us
+worst |v(out2) - row 2 of c| : 5.130e-09 V at 0.926 us
+worst |v(pick) - c[i][j]|      : 0.000e+00 V at 0.000 us
+elements reached               : 4 of 4 ([0.01, 0.2, 0.21, 1.0])
+```
+
+The residuals of a few parts in 1e9 are the precision `wrdata` prints its columns
+with: the inputs this recomputes from are already rounded to nine significant
+digits. An element read from the wrong place would be off by the size of a
+coupling term, 1e-2 of an input, which is seven orders of magnitude away.
+
+`pick` is the one index pair that is not a loop variable: `c[i][j]` with `i` and
+`j` taken from the signs of two inputs, so it is a four-level staircase whose
+level says which element was read, and all four levels occur in the run.
+
+The previous compiler does not reach a waveform here at all: `real c[0:2][0:2];`
+is a parse error on the second subscript, and so is every use of it.
 
 ## filelog — passing
 
