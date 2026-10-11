@@ -199,10 +199,9 @@ impl PlaceKind {
     pub fn ty(&self, db: &CompilationDB) -> Type {
         match *self {
             PlaceKind::Var(var) => var.ty(db),
-            PlaceKind::VarElement(var, _) => match var.ty(db) {
-                Type::Array { ty, .. } => *ty,
-                ty => ty,
-            },
+            // One element of an array, of any number of dimensions: what it holds is
+            // the array's base type.
+            PlaceKind::VarElement(var, _) => var.ty(db).base_type().clone(),
             PlaceKind::FunctionReturn(fun) => fun.return_ty(db),
             PlaceKind::FunctionArg(arg) => arg.ty(db),
 

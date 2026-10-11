@@ -474,9 +474,10 @@ impl Variable {
         db.var_data(self.id).ty.clone()
     }
 
-    /// Lowest declared index of an array variable (`real g[2:5]` -> 2).
-    pub fn array_lo(self, db: &CompilationDB) -> i32 {
-        db.var_data(self.id).array_lo
+    /// Lowest declared index of each dimension of an array variable, outermost
+    /// first (`real g[2:5][0:1]` -> `[2, 0]`). Empty for a scalar.
+    pub fn array_lows(self, db: &CompilationDB) -> Box<[i32]> {
+        db.var_data(self.id).array_lows.clone()
     }
 
     pub fn init(self, db: &CompilationDB) -> Body {

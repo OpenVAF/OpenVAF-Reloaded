@@ -59,14 +59,16 @@ impl<'c1, 'c2> BodyLoweringCtx<'_, 'c1, 'c2> {
     }
 
     /// The element type and the per-element places that back a retained variable: a
-    /// scalar has one `Var` place, an array one `VarElement` place per index.
+    /// scalar has one `Var` place, an array one `VarElement` place per element,
+    /// however many dimensions it has.
     fn retained_layout(&self, var: Variable) -> (Type, Vec<PlaceKind>) {
-        match var.ty(self.ctx.db) {
-            Type::Array { ty, len } => {
+        let ty = var.ty(self.ctx.db);
+        match self.array_len(var) {
+            0 => (ty, vec![PlaceKind::Var(var)]),
+            len => {
                 let places = (0..len).map(|i| PlaceKind::VarElement(var, i)).collect();
-                (*ty, places)
+                (ty.base_type().clone(), places)
             }
-            ty => (ty, vec![PlaceKind::Var(var)]),
         }
     }
 
@@ -133,9 +135,14 @@ impl<'c1, 'c2> BodyLoweringCtx<'_, 'c1, 'c2> {
                         assigned.insert(var);
                     }
                     // A partial write leaves the rest of the array unsettled, and an
-                    // array is retained whole or not at all.
-                    AssignmentLhs::ArrayElement { index, .. } => {
-                        self.collect_reads(index, assigned, dst)
+                    // array is retained whole or not at all. The indices are reads,
+                    // the array they index is not: `g[i] = x` reads `i`.
+                    AssignmentLhs::ArrayElement { elem, .. } => {
+                        if let Some((_, indices)) = self.index_chain(elem) {
+                            for index in indices {
+                                self.collect_reads(index, assigned, dst)
+                            }
+                        }
                     }
                     _ => {}
                 }

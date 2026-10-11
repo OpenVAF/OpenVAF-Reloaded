@@ -29,6 +29,34 @@ use crate::{
     ParamKind, PlaceKind, RetFlag, RngDist,
 };
 
+/// How an array variable's elements are laid out across its MIR places: one place
+/// per element, in row-major order, however many dimensions it was declared with.
+pub(crate) struct ArrayLayout {
+    /// Element count of each dimension, outermost first.
+    pub dims: Vec<u32>,
+    /// Lowest declared index of each dimension (`real g[2:5]` -> 2).
+    pub lows: Vec<i32>,
+    /// Distance between consecutive elements of each dimension, in places.
+    pub strides: Vec<u32>,
+    /// Total number of places.
+    pub len: u32,
+    /// The position the declared lower bounds themselves address, which is what
+    /// makes `real g[2:5]` store `g[2]` in the first place. It is kept here rather
+    /// than subtracted from the index so that an index the model computes is
+    /// compared against `base + position` instead of being offset at run time.
+    pub base: i32,
+}
+
+/// Where an index chain lands in the places that back an array.
+pub(crate) enum FlatIndex {
+    /// Every index is a literal: this element, or none at all if one of them is
+    /// outside its dimension (diagnosed during type checking).
+    Const(Option<u32>),
+    /// At least one index is computed, so the position is only known at run time:
+    /// the un-offset sum of index*stride (see [`ArrayLayout::base`]).
+    Dynamic(Value),
+}
+
 impl BodyLoweringCtx<'_, '_, '_> {
     pub fn lower_expr(&mut self, expr: ExprId) -> Value {
         let old_loc = self.ctx.get_srcloc();
@@ -56,7 +84,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
 
                 self.ctx.ins().phi(&[then_src, else_src])
             }
-            Expr::Index { base, index } => self.lower_index(base, index),
+            Expr::Index { .. } => self.lower_index(expr),
             Expr::Call { args, fun } => match fun {
                 ResolvedFun::User { func, limit } => self.lower_user_fun(func, limit, args),
                 ResolvedFun::BuiltIn(builtin) => self.lower_builtin(expr, builtin, args),
@@ -296,50 +324,174 @@ impl BodyLoweringCtx<'_, '_, '_> {
     }
 
     /// The number of elements of an array-typed variable (0 if not an array).
+    ///
+    /// A multi-dimensional array is one array: VAMS-2023 3.2 declares
+    /// `integer flag_array[0:8][0:3]` as a single variable, and it is backed by one
+    /// MIR place per element, in row-major order.
     pub(crate) fn array_len(&self, var: hir::Variable) -> u32 {
-        match var.ty(self.ctx.db) {
-            Type::Array { len, .. } => len,
-            _ => 0,
+        self.array_layout(var).map_or(0, |layout| layout.len)
+    }
+
+    /// How an array variable's elements are laid out across its MIR places.
+    pub(crate) fn array_layout(&self, var: hir::Variable) -> Option<ArrayLayout> {
+        let dims = var.ty(self.ctx.db).dim();
+        if dims.is_empty() {
+            return None;
+        }
+        let lows = var.array_lows(self.ctx.db);
+        let mut strides = vec![1u32; dims.len()];
+        for k in (0..dims.len().saturating_sub(1)).rev() {
+            strides[k] = strides[k + 1] * dims[k + 1];
+        }
+        let len = dims.iter().product();
+        let lows: Vec<i32> = (0..dims.len()).map(|k| lows.get(k).copied().unwrap_or(0)).collect();
+        let base = lows.iter().zip(&strides).map(|(lo, stride)| lo * *stride as i32).sum();
+        Some(ArrayLayout { dims, lows, strides, len, base })
+    }
+
+    /// `m[i][j]` -> `(m, [i, j])`, for an index chain rooted at a variable.
+    ///
+    /// The indices come back outermost first, which is the order their dimensions
+    /// are declared in.
+    pub(crate) fn index_chain(&self, expr: ExprId) -> Option<(hir::Variable, Vec<ExprId>)> {
+        let mut indices = Vec::new();
+        let mut cur = expr;
+        loop {
+            match self.body.try_get_expr(cur)? {
+                Expr::Index { base, index } => {
+                    indices.push(index);
+                    cur = base;
+                }
+                Expr::Read(Ref::Variable(var)) => {
+                    indices.reverse();
+                    return Some((var, indices));
+                }
+                _ => return None,
+            }
         }
     }
 
-    /// Lower an array element read `base[index]`. A fixed-size array is one MIR place
-    /// per element; a constant index reads it directly, a runtime index builds a
-    /// select chain over all elements.
-    fn lower_index(&mut self, base: ExprId, index: ExprId) -> Value {
-        let var = match self.body.get_expr(base) {
-            Expr::Read(Ref::Variable(var)) => var,
+    /// Where `indices` lands in the flat run of places that backs the array.
+    pub(crate) fn flat_index(
+        &mut self,
+        layout: &ArrayLayout,
+        indices: &[ExprId],
+    ) -> Option<FlatIndex> {
+        if indices.len() > layout.dims.len() {
+            return None;
+        }
+        if indices.iter().all(|idx| self.body.as_literalint(idx).is_some()) {
+            let mut pos = 0i64;
+            for (k, idx) in indices.iter().enumerate() {
+                let c = self.body.as_literalint(idx)? as i64;
+                let off = c - layout.lows[k] as i64;
+                if !(0..layout.dims[k] as i64).contains(&off) {
+                    // Out of the declared range: diagnosed during type checking.
+                    return Some(FlatIndex::Const(None));
+                }
+                pos += off * layout.strides[k] as i64;
+            }
+            return Some(FlatIndex::Const(Some(pos as u32)));
+        }
+        // The sum of index*stride, with the declared lower bounds left on the other
+        // side of the comparison (see `ArrayLayout::base`) so that a
+        // one-dimensional array still compares the index itself against a constant.
+        let mut sum = None;
+        for (k, idx) in indices.iter().enumerate() {
+            let mut term = self.lower_expr(*idx);
+            if layout.strides[k] != 1 {
+                let stride = self.ctx.iconst(layout.strides[k] as i32);
+                term = self.ctx.ins().imul(term, stride);
+            }
+            sum = Some(match sum {
+                Some(prev) => self.ctx.ins().iadd(prev, term),
+                None => term,
+            });
+        }
+        sum.map(FlatIndex::Dynamic)
+    }
+
+    /// The values of one row of an array: `m[i]` where `m` has more dimensions
+    /// than `indices` has indices.
+    ///
+    /// `None` unless the chain really does leave a dimension over, so a caller can
+    /// tell a row from an element. A computed row index selects among the rows for
+    /// each position, which is the same choice a computed element index makes, one
+    /// position at a time.
+    pub(crate) fn array_row_values(
+        &mut self,
+        var: hir::Variable,
+        indices: &[ExprId],
+    ) -> Option<Vec<Value>> {
+        let layout = self.array_layout(var)?;
+        if indices.is_empty() || indices.len() >= layout.dims.len() {
+            return None;
+        }
+        // The size of one element of the last dimension that was indexed is the
+        // size of the row that is left over.
+        let row = layout.strides[indices.len() - 1];
+        let mut values = Vec::with_capacity(row as usize);
+        match self.flat_index(&layout, indices)? {
+            FlatIndex::Const(Some(start)) => {
+                for i in 0..row {
+                    values.push(self.ctx.use_place(PlaceKind::VarElement(var, start + i)));
+                }
+            }
+            // Out of the declared range: diagnosed during type checking.
+            FlatIndex::Const(None) => return None,
+            FlatIndex::Dynamic(idx_val) => {
+                for i in 0..row {
+                    let mut res = self.ctx.use_place(PlaceKind::VarElement(var, i));
+                    for r in 1..layout.len / row {
+                        let elem = self.ctx.use_place(PlaceKind::VarElement(var, r * row + i));
+                        let r_const = self.ctx.iconst(layout.base + (r * row) as i32);
+                        let cond = self.ctx.ins().ieq(idx_val, r_const);
+                        let prev = res;
+                        res = self
+                            .ctx
+                            .make_select(cond, |_s, branch| if branch { elem } else { prev });
+                    }
+                    values.push(res);
+                }
+            }
+        }
+        Some(values)
+    }
+
+    /// Lower an array element read `m[i]`, or `m[i][j]` for as many dimensions as
+    /// the array was declared with. A constant index reads its place directly, a
+    /// computed one builds a select chain over every element.
+    fn lower_index(&mut self, expr: ExprId) -> Value {
+        let Some((var, indices)) = self.index_chain(expr) else {
             // only array-variable indexing is supported
-            _ => return F_ZERO,
+            return F_ZERO;
         };
-        let len = self.array_len(var);
-        if len == 0 {
+        let Some(layout) = self.array_layout(var) else {
+            return F_ZERO;
+        };
+        // Fewer indices than dimensions is a row rather than an element, which is
+        // only assignable as a whole (see `assign_whole_array`).
+        if indices.len() != layout.dims.len() {
             return F_ZERO;
         }
-        // Element positions are offset by the declared lower bound: `real g[2:5]`
-        // stores g[2] in element 0. Previously the raw index was used as the
-        // position (g[3] read the wrong element) and constant out-of-range
-        // indices were silently clamped instead of diagnosed.
-        let lo = var.array_lo(self.ctx.db);
-        if let Some(c) = self.body.as_literalint(&index) {
-            let pos = c as i64 - lo as i64;
-            if !(0..len as i64).contains(&pos) {
-                // Out of the declared range: diagnosed during type checking;
-                // lower to 0 so compilation can continue.
-                return F_ZERO;
+        match self.flat_index(&layout, &indices) {
+            Some(FlatIndex::Const(Some(pos))) => {
+                self.ctx.use_place(PlaceKind::VarElement(var, pos))
             }
-            return self.ctx.use_place(PlaceKind::VarElement(var, pos as u32));
+            // Out of range: lower to 0 so compilation can continue.
+            Some(FlatIndex::Const(None)) | None => F_ZERO,
+            Some(FlatIndex::Dynamic(idx_val)) => {
+                let mut res = self.ctx.use_place(PlaceKind::VarElement(var, 0));
+                for i in 1..layout.len {
+                    let elem = self.ctx.use_place(PlaceKind::VarElement(var, i));
+                    let i_const = self.ctx.iconst(layout.base + i as i32);
+                    let cond = self.ctx.ins().ieq(idx_val, i_const);
+                    let prev = res;
+                    res = self.ctx.make_select(cond, |_s, branch| if branch { elem } else { prev });
+                }
+                res
+            }
         }
-        let idx_val = self.lower_expr(index);
-        let mut res = self.ctx.use_place(PlaceKind::VarElement(var, 0));
-        for i in 1..len {
-            let elem = self.ctx.use_place(PlaceKind::VarElement(var, i));
-            let i_const = self.ctx.iconst(lo + i as i32);
-            let cond = self.ctx.ins().ieq(idx_val, i_const);
-            let prev = res;
-            res = self.ctx.make_select(cond, |_s, branch| if branch { elem } else { prev });
-        }
-        res
     }
 
     /// Evaluate a compile-time-constant real expression (literal, possibly
@@ -1614,15 +1766,14 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
             // One element of an array is a place as well, and so is one the model
             // picks at run time: `assign_array_element` writes the choice into every
-            // element, exactly as `arr[i] = x` does.
-            Some(Expr::Index { base, index }) => {
-                if let Some(Expr::Read(Ref::Variable(var))) = self.body.try_get_expr(base) {
-                    let dst = match var.ty(self.ctx.db) {
-                        Type::Array { ty, .. } => *ty,
-                        ty => ty,
-                    };
+            // element, exactly as `arr[i] = x` does. The whole index expression goes
+            // with it, because a multi-dimensional array is addressed by a chain of
+            // them rather than by one.
+            Some(Expr::Index { .. }) => {
+                if let Some((var, _)) = self.index_chain(arg) {
+                    let dst = var.ty(self.ctx.db).base_type().clone();
                     let val = self.cast_out(val, src, &dst);
-                    self.assign_array_element(var, index, val);
+                    self.assign_array_element(var, arg, val);
                 }
             }
             // Anything else is rejected during type checking, because a value with
@@ -2495,10 +2646,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
         match self.body.get_expr(arg) {
             Expr::Read(Ref::Variable(var)) => {
                 let len = self.array_len(var);
-                let elem_ty = match var.ty(self.ctx.db) {
-                    Type::Array { ty, .. } => *ty,
-                    other => other,
-                };
+                let elem_ty = var.ty(self.ctx.db).base_type().clone();
                 (0..len)
                     .map(|i| {
                         let v = self.ctx.use_place(PlaceKind::VarElement(var, i));
@@ -2518,6 +2666,29 @@ impl BodyLoweringCtx<'_, '_, '_> {
                     self.coeff_to_real(v, &ty)
                 })
                 .collect(),
+            // One row of a multi-dimensional array is a coefficient vector like any
+            // other: a bank of them is a natural thing to keep in a matrix.
+            Expr::Index { .. } => {
+                let row = self
+                    .index_chain(arg)
+                    .and_then(|(var, indices)| {
+                        let elem_ty = var.ty(self.ctx.db).base_type().clone();
+                        self.array_row_values(var, &indices).map(|vals| (vals, elem_ty))
+                    })
+                    .map(|(vals, elem_ty)| {
+                        vals.into_iter().map(|v| self.coeff_to_real(v, &elem_ty)).collect()
+                    });
+                match row {
+                    Some(row) => row,
+                    // Not a row but one element of an array, which is a single
+                    // coefficient.
+                    None => {
+                        let v = self.lower_expr(arg);
+                        let ty = self.resolved_ty(arg);
+                        vec![self.coeff_to_real(v, &ty)]
+                    }
+                }
+            }
             _ => {
                 let v = self.lower_expr(arg);
                 let ty = self.resolved_ty(arg);

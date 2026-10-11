@@ -249,8 +249,8 @@ impl<'a> BodyRef<'a> {
                     inference::AssignDst::Var(id) => {
                         Stmt::Assignment { lhs: AssignmentLhs::Variable(Variable { id }), rhs: val }
                     }
-                    inference::AssignDst::VarElement { var, index } => Stmt::Assignment {
-                        lhs: AssignmentLhs::ArrayElement { var: Variable { id: var }, index },
+                    inference::AssignDst::VarElement { var, elem } => Stmt::Assignment {
+                        lhs: AssignmentLhs::ArrayElement { var: Variable { id: var }, elem },
                         rhs: val,
                     },
                     inference::AssignDst::FunVar { fun, arg: None } => Stmt::Assignment {
@@ -303,10 +303,11 @@ pub enum AssignmentLhs {
     Variable(Variable),
     FunctionReturn(Function),
     FunctionArg(FunctionArg),
-    /// `arr[index] = …` — assignment to an array element.
+    /// `arr[index] = …` — assignment to an array element. `elem` is the whole
+    /// index expression, which for a multi-dimensional array is a chain of them.
     ArrayElement {
         var: Variable,
-        index: ExprId,
+        elem: ExprId,
     },
 }
 

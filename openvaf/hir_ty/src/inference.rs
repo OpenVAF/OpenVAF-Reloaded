@@ -42,10 +42,11 @@ pub enum ResolvedFun {
 #[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum AssignDst {
     Var(VarId),
-    /// `arr[index] = …` — assignment to an array element.
+    /// `arr[index] = …` — assignment to an array element. `elem` is the whole
+    /// index expression, which for a multi-dimensional array is a chain of them.
     VarElement {
         var: VarId,
-        index: ExprId,
+        elem: ExprId,
     },
     FunVar {
         fun: FunctionId,
@@ -100,12 +101,10 @@ impl InferenceResult {
                     .infere_expr(body.entry_stmts[0], db.param_exprs(param).default)
                     .and_then(|ty| ty.to_value()),
             },
-            DefWithBodyId::VarId(var) => Some(match db.var_data(var).ty.clone() {
-                // An array variable's desugared default is a scalar placeholder; check
-                // it against the element type rather than the array type.
-                Type::Array { ty, .. } => *ty,
-                ty => ty,
-            }),
+            // An array variable's desugared default is a scalar placeholder; check it
+            // against the element type rather than the array type, however many
+            // dimensions stand between the two.
+            DefWithBodyId::VarId(var) => Some(db.var_data(var).ty.base_type().clone()),
             DefWithBodyId::FunctionId(fun) => {
                 ctx.fn_return_ty = Some(db.function_data(fun).return_ty.clone());
                 None
@@ -252,6 +251,25 @@ impl Ctx<'_> {
         }
     }
 
+    /// The array variable an index chain is rooted at, and how many of its
+    /// dimensions `expr` addresses (`a[i][j]` -> `(a, 2)`).
+    ///
+    /// Only the innermost base of a chain is a variable reference, so neither the
+    /// dimension an index belongs to nor the variable it belongs to is visible
+    /// from the index expression itself.
+    fn index_root(&self, expr: ExprId) -> Option<(VarId, usize)> {
+        let mut depth = 0;
+        let mut root = expr;
+        while let Expr::Index { base, .. } = self.body.exprs[root] {
+            depth += 1;
+            root = base;
+        }
+        match self.result.expr_types[root] {
+            Ty::Var(_, var) => Some((var, depth)),
+            _ => None,
+        }
+    }
+
     pub fn infere_assignment_dst(
         &mut self,
         stmt: StmtId,
@@ -260,22 +278,44 @@ impl Ctx<'_> {
     ) -> Option<Type> {
         let e = self.infere_expr(stmt, expr);
 
-        // Array element assignment `den[index] = …`. The base must be an array variable.
-        if let Expr::Index { base, index } = self.body.exprs[expr] {
-            if let Ty::Var(Type::Array { ty, .. }, var) = self.result.expr_types[base].clone() {
-                let elem = *ty;
-                if matches!(assignment_kind, ast::AssignOp::Contribute | ast::AssignOp::Indirect) {
-                    self.result.diagnostics.push(InferenceDiagnostic::InvalidAssignDst {
-                        e: expr,
-                        maybe_different_operand: Some(ast::AssignOp::Assign),
-                        assignment_kind,
+        // Array element assignment `den[index] = …`, or `m[i][j] = …` for as many
+        // dimensions as the variable was declared with. The base must be an array
+        // variable; `m[i]` with one index left over is an array, not an element,
+        // and falls through to the whole-array assignment below.
+        if let Expr::Index { .. } = self.body.exprs[expr] {
+            if let Some((var, depth)) = self.index_root(expr) {
+                let elem =
+                    (0..depth).try_fold(self.db.var_data(var).ty.clone(), |ty, _| match ty {
+                        Type::Array { ty, .. } => Some(*ty),
+                        _ => None,
                     });
-                } else {
-                    self.result
-                        .assignment_destination
-                        .insert(stmt, AssignDst::VarElement { var, index });
+                // A chain that leaves a dimension over addresses a row rather than
+                // an element, and a row has no place of its own to be assigned to.
+                if let Some(Type::Array { .. }) = elem {
+                    self.result.diagnostics.push(InferenceDiagnostic::AssignToArrayRow {
+                        e: expr,
+                        indexed: depth,
+                        dims: self.db.var_data(var).ty.dim().len(),
+                    });
+                    return None;
                 }
-                return Some(elem);
+                if let Some(elem) = elem {
+                    if matches!(
+                        assignment_kind,
+                        ast::AssignOp::Contribute | ast::AssignOp::Indirect
+                    ) {
+                        self.result.diagnostics.push(InferenceDiagnostic::InvalidAssignDst {
+                            e: expr,
+                            maybe_different_operand: Some(ast::AssignOp::Assign),
+                            assignment_kind,
+                        });
+                    } else {
+                        self.result
+                            .assignment_destination
+                            .insert(stmt, AssignDst::VarElement { var, elem: expr });
+                    }
+                    return Some(elem);
+                }
             }
         }
 
@@ -489,10 +529,17 @@ impl Ctx<'_> {
                 self.infere_expr(stmt, index);
                 // The result is the element type of the indexed array.
                 let base_ty = self.infere_expr(stmt, base)?;
-                if let Ty::Var(Type::Array { len, .. }, var) = &base_ty {
+                // Each index of a chain addresses one dimension, and the declared
+                // range of that dimension is the one it has to be inside. Only the
+                // innermost base is a `Ty::Var`, so which dimension this is comes
+                // from how many indices stand between it and the variable.
+                if let (Some(Type::Array { len, .. }), Some((var, depth))) =
+                    (base_ty.to_value(), self.index_root(expr))
+                {
                     if let Some(idx) = self.const_int_value(index) {
-                        let lo = self.db.var_data(*var).array_lo as i64;
-                        let hi = lo + *len as i64 - 1;
+                        let lows = &self.db.var_data(var).array_lows;
+                        let lo = lows.get(depth - 1).copied().unwrap_or(0) as i64;
+                        let hi = lo + len as i64 - 1;
                         if idx < lo || idx > hi {
                             self.result.diagnostics.push(
                                 InferenceDiagnostic::ArrayIndexOutOfBounds {
@@ -1379,6 +1426,14 @@ pub enum InferenceDiagnostic {
         index: i64,
         lo: i64,
         hi: i64,
+    },
+
+    /// `m[i] = …` on an array of more dimensions than that: the destination is a
+    /// row rather than an element.
+    AssignToArrayRow {
+        e: ExprId,
+        indexed: usize,
+        dims: usize,
     },
 
     InvalidLimitFunction {

@@ -590,7 +590,7 @@ pub struct Var {
 }
 impl Var {
     pub fn name(&self) -> Option<Name> { support::child(&self.syntax) }
-    pub fn dimension(&self) -> Option<Dimension> { support::child(&self.syntax) }
+    pub fn dimensions(&self) -> AstChildren<Dimension> { support::children(&self.syntax) }
     pub fn eq_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![=]) }
     pub fn default(&self) -> Option<Expr> { support::child(&self.syntax) }
 }

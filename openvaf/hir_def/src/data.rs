@@ -123,15 +123,20 @@ impl NatureData {
 pub struct VarData {
     pub name: Name,
     pub ty: Type,
-    /// Lowest declared index of an array variable (`real g[2:5]` -> 2).
-    pub array_lo: i32,
+    /// Lowest declared index of each dimension of an array variable, outermost
+    /// first (`real g[2:5][0:1]` -> `[2, 0]`). Empty for a scalar.
+    pub array_lows: Box<[i32]>,
 }
 
 impl VarData {
     pub fn var_data_query(db: &dyn HirDefDB, id: VarId) -> Arc<VarData> {
         let loc = id.lookup(db);
         let var = &loc.item_tree(db)[loc.id];
-        Arc::new(VarData { name: var.name.clone(), ty: var.ty.clone(), array_lo: var.array_lo })
+        Arc::new(VarData {
+            name: var.name.clone(),
+            ty: var.ty.clone(),
+            array_lows: var.array_lows.clone(),
+        })
     }
 }
 

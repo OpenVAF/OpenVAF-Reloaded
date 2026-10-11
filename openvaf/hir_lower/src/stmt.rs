@@ -7,6 +7,7 @@ use mir::{Opcode, Value, FALSE, F_ZERO, TRUE};
 use syntax::ast::BinaryOp;
 
 use crate::body::BodyLoweringCtx;
+use crate::expr::FlatIndex;
 use crate::{CallBackKind, CurrentKind, ImplicitEquationKind, ParamKind, PlaceKind};
 
 impl BodyLoweringCtx<'_, '_, '_> {
@@ -498,8 +499,8 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 }
                 let val_ = self.lower_expr(rhs);
                 match lhs {
-                    hir::AssignmentLhs::ArrayElement { var, index } => {
-                        self.assign_array_element(var, index, val_)
+                    hir::AssignmentLhs::ArrayElement { var, elem } => {
+                        self.assign_array_element(var, elem, val_)
                     }
                     _ => self.ctx.def_place(lhs.into(), val_),
                 }
@@ -657,71 +658,117 @@ impl BodyLoweringCtx<'_, '_, '_> {
     }
 
     /// Lower `arr = rhs` where `arr` is an array variable. The right-hand side can
-    /// only be an array literal or another array variable (the type checker rejects
-    /// everything else); both are written element by element.
+    /// only be an assignment pattern, another array variable, or one row of a
+    /// multi-dimensional one (the type checker rejects everything else); all three
+    /// are written element by element.
     fn assign_whole_array(&mut self, var: hir::Variable, rhs: ExprId) {
         let len = self.array_len(var);
-        // A cast recorded on the whole array expression (e.g. `'{0, 1}` assigned to
-        // a real array) applies to every element.
-        let elem_cast = self.body.needs_cast(rhs).and_then(|(src, dst)| match (src, dst.clone()) {
-            (Type::Array { ty: src, .. }, Type::Array { ty: dst, .. }) => Some((*src, *dst)),
-            _ => None,
-        });
         match self.body.get_expr(rhs) {
-            Expr::Array(vals) => {
-                for (i, val) in vals.iter().enumerate().take(len as usize) {
-                    let mut elem = self.lower_expr(*val);
-                    if let Some((src, dst)) = &elem_cast {
-                        elem = self.ctx.insert_cast(elem, src, dst);
-                    }
-                    self.ctx.def_place(PlaceKind::VarElement(var, i as u32), elem);
-                }
+            Expr::Array(_) => {
+                self.write_pattern(var, 0, len, rhs);
             }
             Expr::Read(hir::Ref::Variable(src_var)) => {
                 for i in 0..len.min(self.array_len(src_var)) {
-                    let mut elem = self.ctx.use_place(PlaceKind::VarElement(src_var, i));
-                    if let Some((src, dst)) = &elem_cast {
-                        elem = self.ctx.insert_cast(elem, src, dst);
-                    }
+                    let elem = self.ctx.use_place(PlaceKind::VarElement(src_var, i));
+                    let elem = self.cast_elem(var, elem, src_var.ty(self.ctx.db).base_type());
                     self.ctx.def_place(PlaceKind::VarElement(var, i), elem);
                 }
             }
-            _ => unreachable!("unsupported whole-array assignment source"),
+            // `v = m[i]`: one row of a multi-dimensional array, which is an array in
+            // its own right (VAMS-2023 3.2 declares an array of arrays).
+            Expr::Index { .. } => self.assign_array_row(var, rhs, len),
+            _ => (),
         }
     }
 
-    /// Lower `arr[index] = val`. A constant index writes the element place directly;
-    /// a runtime index conditionally rewrites every element (`elem_i = (index==i) ?
+    /// Write the leaves of an assignment pattern into the places from `pos` on, and
+    /// return the position after the last one written.
+    ///
+    /// A nested pattern (`'{'{1, 2}, '{3, 4}}`, VAMS-2023 3.4.8) is the rows of the
+    /// array one after another, which is the order the places are already in, so
+    /// the nesting only has to be walked through.
+    fn write_pattern(&mut self, var: hir::Variable, mut pos: u32, limit: u32, rhs: ExprId) -> u32 {
+        let vals = match self.body.get_expr(rhs) {
+            Expr::Array(vals) => vals,
+            _ => {
+                if pos < limit {
+                    let val = self.lower_expr(rhs);
+                    let val = self.cast_elem(var, val, &self.resolved_ty(rhs));
+                    self.ctx.def_place(PlaceKind::VarElement(var, pos), val);
+                }
+                return pos + 1;
+            }
+        };
+        for val in vals.iter() {
+            pos = self.write_pattern(var, pos, limit, *val);
+        }
+        pos
+    }
+
+    /// Copy one row of a multi-dimensional array into `var`, whose own shape is the
+    /// row's.
+    fn assign_array_row(&mut self, var: hir::Variable, rhs: ExprId, len: u32) {
+        let Some((src_var, indices)) = self.index_chain(rhs) else {
+            return;
+        };
+        let Some(values) = self.array_row_values(src_var, &indices) else {
+            return;
+        };
+        let src_elem_ty = src_var.ty(self.ctx.db).base_type().clone();
+        for (i, val) in values.into_iter().enumerate().take(len as usize) {
+            let val = self.cast_elem(var, val, &src_elem_ty);
+            self.ctx.def_place(PlaceKind::VarElement(var, i as u32), val);
+        }
+    }
+
+    /// Convert a value to the element type of `var`, which is the cast an
+    /// assignment does: `real g[0:1] = '{0, 1}` stores two reals.
+    fn cast_elem(&mut self, var: hir::Variable, val: mir::Value, src: &Type) -> mir::Value {
+        let dst = var.ty(self.ctx.db).base_type().clone();
+        if src == &dst || !src.is_numeric() || !dst.is_numeric() {
+            return val;
+        }
+        self.ctx.insert_cast(val, src, &dst)
+    }
+
+    /// Lower `arr[index] = val`, or `m[i][j] = val` for as many dimensions as the
+    /// array was declared with. A constant index writes the element place directly;
+    /// a computed one conditionally rewrites every element (`elem_i = (index==i) ?
     /// val : elem_i`), keeping the array in pure SSA.
+    ///
+    /// `elem` is the whole index expression, because which element is written is a
+    /// question about the chain rather than about any one index in it.
     pub(crate) fn assign_array_element(
         &mut self,
         var: hir::Variable,
-        index: ExprId,
+        elem: ExprId,
         val: mir::Value,
     ) {
-        let len = self.array_len(var);
-        if len == 0 {
+        let Some(layout) = self.array_layout(var) else {
             return;
-        }
-        // Element positions are offset by the declared lower bound (see
-        // `lower_index`): `real g[2:5]` stores g[2] in element 0.
-        let lo = var.array_lo(self.ctx.db);
-        if let Some(c) = self.body.as_literalint(&index) {
-            let pos = c as i64 - lo as i64;
-            if !(0..len as i64).contains(&pos) {
-                // Out of the declared range: diagnosed during type checking.
-                return;
+        };
+        let indices = match self.index_chain(elem) {
+            Some((root, indices)) if root == var && indices.len() == layout.dims.len() => indices,
+            // A row rather than an element, or not this variable's at all: rejected
+            // during type checking.
+            _ => return,
+        };
+        match self.flat_index(&layout, &indices) {
+            Some(FlatIndex::Const(Some(pos))) => {
+                self.ctx.def_place(PlaceKind::VarElement(var, pos), val)
             }
-            self.ctx.def_place(PlaceKind::VarElement(var, pos as u32), val);
-            return;
-        }
-        let idx_val = self.lower_expr(index);
-        for i in 0..len {
-            let current = self.ctx.use_place(PlaceKind::VarElement(var, i));
-            let i_const = self.ctx.iconst(lo + i as i32);
-            let cond = self.ctx.ins().ieq(idx_val, i_const);
-            let new = self.ctx.make_select(cond, |_s, branch| if branch { val } else { current });
-            self.ctx.def_place(PlaceKind::VarElement(var, i), new);
+            // Out of the declared range: diagnosed during type checking.
+            Some(FlatIndex::Const(None)) | None => (),
+            Some(FlatIndex::Dynamic(idx_val)) => {
+                for i in 0..layout.len {
+                    let current = self.ctx.use_place(PlaceKind::VarElement(var, i));
+                    let i_const = self.ctx.iconst(layout.base + i as i32);
+                    let cond = self.ctx.ins().ieq(idx_val, i_const);
+                    let new =
+                        self.ctx.make_select(cond, |_s, branch| if branch { val } else { current });
+                    self.ctx.def_place(PlaceKind::VarElement(var, i), new);
+                }
+            }
         }
     }
 

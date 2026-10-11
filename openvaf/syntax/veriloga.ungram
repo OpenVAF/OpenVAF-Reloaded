@@ -253,7 +253,7 @@ VarDecl =
   AttrList* Type (Var (',' Var)*) ';'
 
 Var =
-  Name Dimension? ('=' default:Expr)?
+  Name Dimension* ('=' default:Expr)?
 
 Dimension =
   '[' Expr ':' Expr ']'

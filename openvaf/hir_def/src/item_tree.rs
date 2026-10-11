@@ -294,9 +294,9 @@ pub struct Net {
 pub struct Var {
     pub name: Name,
     pub ty: Type,
-    /// Lowest declared index of an array variable (`real g[2:5]` -> 2).
-    /// 0 for scalars and zero-based arrays.
-    pub array_lo: i32,
+    /// Lowest declared index of each dimension of an array variable, outermost
+    /// first (`real g[2:5][0:1]` -> `[2, 0]`). Empty for a scalar.
+    pub array_lows: Box<[i32]>,
     pub ast_id: AstId<ast::Var>,
 }
 
