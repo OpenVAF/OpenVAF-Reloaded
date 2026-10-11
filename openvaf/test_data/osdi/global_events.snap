@@ -1,0 +1,26 @@
+param "$mfactor"
+units = "", desc = "Multiplier (Verilog-A $mfactor)", flags = ParameterFlags(PARA_KIND_INST)
+param "thresh"
+units = "", desc = "", flags = ParameterFlags(0x0)
+
+6 terminals
+node "in" units = "V", runits = "A"
+node "smpl" units = "V", runits = "A"
+node "samp" units = "V", runits = "A"
+node "ntran" units = "V", runits = "A"
+node "nac" units = "V", runits = "A"
+node "nfinal" units = "V", runits = "A"
+node(flow) "flow(samp)" units = "A", runits = "V"
+node(flow) "flow(ntran)" units = "A", runits = "V"
+node(flow) "flow(nac)" units = "A", runits = "V"
+node(flow) "flow(nfinal)" units = "A", runits = "V"
+jacobian (samp, flow(samp)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (ntran, flow(ntran)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (nac, flow(nac)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (nfinal, flow(nfinal)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(samp), samp) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(ntran), ntran) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(nac), nac) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(nfinal), nfinal) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+0 states
+has bound_step true

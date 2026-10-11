@@ -48,7 +48,7 @@ impl SourceProvider for TestSourceProvider {
 }
 
 fn check_prepocessor(sources: TestSourceProvider, root_file: FileId, test_name: &'static str) {
-    let Preprocess { ts, diagnostics, sm } = preprocess(&sources, root_file);
+    let Preprocess { ts, diagnostics, sm, .. } = preprocess(&sources, root_file);
     assert_eq!(diagnostics.as_slice(), &[]);
     let actual_tokens: String = ts.iter().map(|token| format!("{:?}\n", token.kind,)).collect();
     let expected = PathBuf::from(".").join("test_data").join(format!("{}.tokens", test_name));

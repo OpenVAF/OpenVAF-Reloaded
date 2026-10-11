@@ -1,0 +1,45 @@
+`include "disciplines.vams"
+
+// VAMS-2023 5.10.2: the global events, and the analysis list that narrows them.
+//
+//   samp    5.10.1's one-bit sampler, whose event expression ORs `initial_step`
+//           with a crossing. Both halves have to guard the body: the bit is taken
+//           while the first point is solved, and then only on an upward crossing.
+//
+//   ntran   `@(initial_step("tran"))` -- the first point of a transient analysis
+//   nac     `@(initial_step("ac"))`   -- of an ac analysis, which the harness can
+//           ask for separately, since it supplies the flags itself
+//   nfinal  `@(final_step("tran"))`, which is confined to transient analyses but
+//           not to the last point of one: nothing in OSDI says which point that
+//           is, so this counts every evaluation. The attribute allows the warning
+//           that says so.
+//
+// Each counter is read before it is written, which earns it retention, so it
+// counts committed timesteps rather than Newton iterations.
+//
+// Voltage contributions put each equation on a branch flow unknown, where the
+// residual is the value itself once the output node is held at zero.
+(*openvaf_allow="unscheduled_event"*)
+module global_events(in, smpl, samp, ntran, nac, nfinal);
+    input in, smpl;
+    output samp, ntran, nac, nfinal;
+    electrical in, smpl, samp, ntran, nac, nfinal;
+
+    parameter real thresh = 2.5;
+
+    integer vout, n_tran, n_ac, n_final;
+
+    analog begin
+        @(initial_step or cross(V(smpl) - thresh, +1))
+            vout = (V(in) > thresh);
+
+        @(initial_step("tran")) n_tran = n_tran + 1;
+        @(initial_step("ac")) n_ac = n_ac + 1;
+        @(final_step("tran")) n_final = n_final + 1;
+
+        V(samp) <+ vout;
+        V(ntran) <+ n_tran;
+        V(nac) <+ n_ac;
+        V(nfinal) <+ n_final;
+    end
+endmodule

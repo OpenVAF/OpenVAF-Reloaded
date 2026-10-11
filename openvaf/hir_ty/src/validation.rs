@@ -1,5 +1,7 @@
 use basedb::diagnostics::{Diagnostic, Label, LabelStyle, Report};
-use basedb::lints::builtin::{const_simparam, trivial_probe, variant_const_simparam};
+use basedb::lints::builtin::{
+    const_simparam, ignored_discontinuity, trivial_probe, unscheduled_event, variant_const_simparam,
+};
 use basedb::lints::{self, Lint, LintSrc};
 use basedb::{AstIdMap, BaseDB, FileId};
 pub use body::BodyValidationDiagnostic;
@@ -130,6 +132,21 @@ impl Diagnostic for BodyValidationDiagnosticWrapped<'_> {
                 let src = self.body_sm.lint_src(stmt, trivial_probe);
                 Some((trivial_probe, src))
             }
+            BodyValidationDiagnostic::UnscheduledEvent { stmt, .. } => {
+                let src = self.body_sm.lint_src(stmt, unscheduled_event);
+                Some((unscheduled_event, src))
+            }
+            // The same lint as an event function that does not schedule: the shape of
+            // the problem is the same one, a body that runs when the event it names
+            // has not occurred.
+            BodyValidationDiagnostic::UnconditionalFinalStep { stmt } => {
+                let src = self.body_sm.lint_src(stmt, unscheduled_event);
+                Some((unscheduled_event, src))
+            }
+            BodyValidationDiagnostic::IgnoredDiscontinuity { stmt, .. } => {
+                let src = self.body_sm.lint_src(stmt, ignored_discontinuity);
+                Some((ignored_discontinuity, src))
+            }
             _ => None,
         }
     }
@@ -244,6 +261,115 @@ impl Diagnostic for BodyValidationDiagnosticWrapped<'_> {
                         "help: in an analog block an event may only be triggered from an event \
                          statement such as '@(timer(1n)) -> ev;'"
                             .to_owned(),
+                    ])
+            }
+            BodyValidationDiagnostic::UnscheduledEvent { stmt, func } => {
+                let FileSpan { range, file } = self.parse.to_file_span(
+                    self.body_sm.stmt_map_back[stmt].as_ref().unwrap().range(),
+                    self.sm,
+                );
+
+                Report::warning()
+                    .with_message(format!("'{func:?}' does not schedule an event yet"))
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: "body is evaluated unconditionally".to_owned(),
+                    }])
+                    .with_notes(vec![
+                        "the event expression is checked but takes no part in scheduling"
+                            .to_owned(),
+                        "the guarded statement runs on every evaluation, not per event".to_owned(),
+                    ])
+            }
+            BodyValidationDiagnostic::UnconditionalFinalStep { stmt } => {
+                let FileSpan { range, file } = self.parse.to_file_span(
+                    self.body_sm.stmt_map_back[stmt].as_ref().unwrap().range(),
+                    self.sm,
+                );
+
+                Report::warning()
+                    .with_message("'final_step' does not select the last point".to_owned())
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: "body is evaluated unconditionally".to_owned(),
+                    }])
+                    .with_notes(vec![
+                        "nothing in OSDI tells a model which point is the last one, so the event \
+                         cannot be scheduled"
+                            .to_owned(),
+                        "an analysis list is honoured, so the body is confined to the analyses it \
+                         names, but runs at every evaluation of them"
+                            .to_owned(),
+                        "help: a file does not need closing for what was written to it to arrive, \
+                         and '$fclose' here closes it on the first evaluation"
+                            .to_owned(),
+                    ])
+            }
+            BodyValidationDiagnostic::IgnoredDiscontinuity { expr, .. } => {
+                let FileSpan { range, file } = self.expr_src(expr);
+
+                Report::warning()
+                    .with_message("'$discontinuity' is ignored".to_owned())
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: "the discontinuity is not announced".to_owned(),
+                    }])
+                    .with_notes(vec![
+                        "OSDI cannot announce a discontinuity, so the integrator keeps its history and step order"
+                            .to_owned(),
+                        "help: '$bound_step' does reach the simulator and can cap the step across the jump"
+                            .to_owned(),
+                        "note: '$discontinuity(-1)' is supported; it pairs with '$limit' (VAMS-2023 9.17.3)"
+                            .to_owned(),
+                    ])
+            }
+            BodyValidationDiagnostic::ScanTargetNotAPlace { arg } => {
+                let FileSpan { range, file } = self.expr_src(arg);
+
+                Report::error()
+                    .with_message("a scanned value has nowhere to go".to_owned())
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: "cannot be assigned to".to_owned(),
+                    }])
+                    .with_notes(vec![
+                        "VAMS-2023 9.5.4 writes each conversion into the argument that follows \
+                         the format, so an argument that is not a variable, or one element of an \
+                         array, has nothing to receive it"
+                            .to_owned(),
+                        "help: scan into a variable, and read the variable where this stands"
+                            .to_owned(),
+                    ])
+            }
+            BodyValidationDiagnostic::ScanTargetTy { arg, spec, ref produces, ref found } => {
+                let FileSpan { range, file } = self.expr_src(arg);
+
+                Report::error()
+                    .with_message(format!(
+                        "'%{spec}' produces a {produces}, which a {found} variable cannot hold"
+                    ))
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: format!("this is a {found}"),
+                    }])
+                    .with_notes(vec![
+                        "VAMS-2023 9.5.4 settles what each conversion produces, and there is no \
+                         conversion between a string and a number"
+                            .to_owned(),
+                        format!(
+                            "help: give this argument a {produces} variable, or change the \
+                             conversion to one that produces a {found}"
+                        ),
                     ])
             }
             BodyValidationDiagnostic::WriteToInputArg { expr, arg } => {
@@ -402,6 +528,17 @@ impl Diagnostic for BodyValidationDiagnosticWrapped<'_> {
                 }
 
                 res
+            }
+            BodyValidationDiagnostic::InvalidOperator { expr, what, ref err } => {
+                let FileSpan { range, file } = self.expr_src(expr);
+                Report::error().with_message(format!("invalid {what}: {err}")).with_labels(vec![
+                    Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: format!("invalid {what}"),
+                    },
+                ])
             }
             BodyValidationDiagnostic::UnsupportedFunction { expr, func } => {
                 let FileSpan { range, file } = self.expr_src(expr);
@@ -788,6 +925,32 @@ impl Diagnostic for TypeValidationDiagnosticWrapped<'_> {
                     .with_notes(vec![
                         format!("info: disciplineless nets are digital and therefore not supported in Verilog-A"),
                         format!("help: add a discipline with 'electrical {name}'"),
+                    ])
+            }
+            TypeValidationDiagnostic::UnknownDefaultDiscipline {
+                decl,
+                ref name,
+                ref discipline,
+            } => {
+                let src = self.parse.to_file_span(self.map.get_syntax(decl).range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("'{name}' takes its discipline from the directive"),
+                    }])
+                    .with_message(format!(
+                        "'{discipline}' is not a discipline, and is the default discipline here"
+                    ))
+                    .with_notes(vec![
+                        "info: '`default_discipline' (10.2) names the discipline a net declared \
+                         without one gets"
+                            .to_owned(),
+                        format!(
+                            "help: declare 'discipline {discipline}', or name one that is declared"
+                        ),
                     ])
             }
             TypeValidationDiagnostic::IncompatibleBranch { branch, node1, node2 } => {
