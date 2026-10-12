@@ -1,6 +1,6 @@
 --- a/src/osdi/osdi.h
 +++ b/src/osdi/osdi.h
-@@ -233,6 +233,13 @@
+@@ -233,6 +233,18 @@
    void (*load_noise_params)(void *inst, void *model, double *power, double *exponent);
    uint32_t absdelay_count;
    const OsdiAbsDelayInfo *absdelay_info;
@@ -11,6 +11,11 @@
 +   * asks or never announces. Read after `eval`, acted on at `accept`. */
 +  uint32_t breakpoint_offset;
 +  uint32_t discontinuity_offset;
++  /* Called once per accepted timepoint, with `eval`'s own arguments, after the
++   * solution is final and before the next step is attempted. NULL when the model
++   * has no accepted-point work. It is what VAMS-2023 9.4.1's "at the end of the
++   * current simulation time" needs. */
++  void (*accept)(void *handle, void *inst, void *model, OsdiSimInfo *info);
  }OsdiDescriptor;
  
  
@@ -36,20 +41,21 @@
    #ifdef KLU
 --- a/src/osdi/osditrunc.c
 +++ b/src/osdi/osditrunc.c
-@@ -12,11 +12,105 @@
+@@ -11,6 +11,126 @@
+ 
  #include "ngspice/cktdefs.h"
  #include "osdidefs.h"
- 
++
 +#include <math.h>
 +#include <stddef.h>
 +#include <stdlib.h>
 +#include <stdio.h>
 +
- /* Whether the object file's descriptor reaches far enough to hold a field.
-  * Everything past the OSDI 0.4 tail is optional, so a field is only there to read
-  * when the size the file reported covers it. */
- static bool osdi_has_field(const OsdiRegistryEntry *entry, size_t off, size_t size) {
-   return (size_t)entry->descriptor_size >= off + size;
++/* Whether the object file's descriptor reaches far enough to hold a field.
++ * Everything past the OSDI 0.4 tail is optional, so a field is only there to read
++ * when the size the file reported covers it. */
++static bool osdi_has_field(const OsdiRegistryEntry *entry, size_t off, size_t size) {
++  return (size_t)entry->descriptor_size >= off + size;
 +}
 +
 +/* Whether to act on a request for a timepoint. See the comment at the use. */
@@ -79,6 +85,9 @@
 +  OsdiRegistryEntry *entry = osdi_reg_entry_model(in_model);
 +  const OsdiDescriptor *descr = entry->descriptor;
 +
++  bool has_accept = osdi_has_field(entry, offsetof(OsdiDescriptor, accept),
++                                   sizeof(void (*)(void))) &&
++                    descr->accept != NULL;
 +  bool has_breakpoint =
 +      osdi_has_field(entry, offsetof(OsdiDescriptor, breakpoint_offset),
 +                     sizeof(uint32_t)) &&
@@ -88,13 +97,29 @@
 +                     sizeof(uint32_t)) &&
 +      descr->discontinuity_offset != UINT32_MAX;
 +
-+  if (!has_breakpoint && !has_discontinuity) {
++  if (getenv("OSDI_TP_TRACE")) {
++    fprintf(stderr, "[osdi] accept: size %u, offsetof(accept) %zu, accept %s\n",
++            entry->descriptor_size, offsetof(OsdiDescriptor, accept),
++            has_accept ? "yes" : "no");
++  }
++
++  if (!has_breakpoint && !has_discontinuity && !has_accept) {
 +    return OK;
 +  }
 +
 +  for (GENmodel *model = in_model; model; model = model->GENnextModel) {
++    void *model_data = osdi_model_data(model);
 +    for (GENinstance *inst = model->GENinstances; inst;
 +         inst = inst->GENnextInstance) {
++
++      /* The model's own accepted-point work: a `$fstrobe` line composed during
++       * the evaluations of this point is written here, from the evaluation that
++       * converged, and a point the solver went back on leaves none behind. */
++      if (has_accept) {
++        OsdiNgspiceHandle handle =
++            (OsdiNgspiceHandle){.kind = 3, .name = inst->GENname};
++        descr->accept(&handle, osdi_instance_data(entry, inst), model_data, NULL);
++      }
 +
 +      /* Off by default, and measured: a breakpoint in ngspice both places the
 +       * point and cuts the next step to a tenth of the last one, so honouring a
@@ -139,6 +164,7 @@
 +  }
 +
 +  return OK;
- }
++}
  
  int OSDItrunc(GENmodel *in_model, CKTcircuit *ckt, double *timestep) {
+   OsdiRegistryEntry *entry = osdi_reg_entry_model(in_model);

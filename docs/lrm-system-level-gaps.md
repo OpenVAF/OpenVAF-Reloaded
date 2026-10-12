@@ -17,14 +17,15 @@ analog-only OSDI flow.
 
 ## What OSDI does not expose, and how much of it matters
 
-OSDI 0.4 gave a model no way to say anything to the *integrator*. ngspice has all
-three of the missing pieces internally; two of them are reachable across the ABI
-now, through the descriptor tail that `docs/osdi-timepoint-protocol.md` specifies
-and `patches/ngspice-osdi-timepoints.patch` implements.
+OSDI 0.4 gave a model no way to say anything to the *integrator*, and no way to
+be told anything by it. ngspice has all three of the missing pieces internally,
+and all three are reachable across the ABI now, through the descriptor tail that
+`docs/osdi-timepoint-protocol.md` specifies and
+`patches/ngspice-osdi-timepoints.patch` implements.
 
 | What a model needs | ngspice has it as | OSDI exposes | State |
 | --- | --- | --- | --- |
-| Know a timestep was accepted | `DEVaccept` (e.g. `vsrcacct.c`) | nothing | specified, not implemented; `$abstime` movement stands in for it |
+| Know a timestep was accepted | `DEVaccept` (e.g. `vsrcacct.c`) | `accept` | implemented; `$fstrobe` writes **7789 lines instead of 9114**, none from a point the solver went back on |
 | Land a point at an exact time | `CKTsetBreak(ckt, t)` | `breakpoint_offset` | implemented, and `bound_step` remains the cheaper way |
 | Announce a discontinuity | breakpoint + `CKTorder = 1` | `discontinuity_offset` | implemented; **14.8x** more accurate after a jump |
 
@@ -75,13 +76,16 @@ are meant to be written. Clocks are the other case, and in a SPICE flow they
 usually come from a real source: `vsrc` calls `CKTsetBreak` for its own corners,
 so `@(cross)` on a clock node already gets breakpoint-placed edges for free.
 
-The proposal is written, and two thirds of it is implemented and measured:
-`docs/osdi-timepoint-protocol.md`. It followed `absdelay`'s precedent, a
-descriptor-level protocol where the simulator owns the time-dependent part, and
-it gates far less than it first appeared: a cleanup, not a prerequisite. What is
-left of it is the accept callback, which is what `$fstrobe` needs in order to
-mean what 9.4.1 says, what would let a model read one record per timepoint, and
-what the `$abstime` workaround is a proxy for.
+The proposal is written and implemented: `docs/osdi-timepoint-protocol.md`. It
+followed `absdelay`'s precedent, a descriptor-level protocol where the simulator
+owns the time-dependent part, and it gates far less than it first appeared: a
+cleanup, not a prerequisite.
+
+What the accept callback does not do yet is run the model's own code. It writes a
+line the runtime is holding, which is what `$fstrobe` needed; reading one record
+per accepted timepoint (9.5) and committing retained state without the `$abstime`
+proxy both need generated code to run at an accepted point, which is the same
+next step for both and needs no further ABI.
 
 ## Tier 0 — compiles, and then no simulator can run it
 
@@ -596,20 +600,24 @@ Channel 0 of an mcd and the three reserved descriptors are standard input, outpu
 and error; a model inside a simulator has no business writing to the process's
 stdout, so those route to `osdi_log`, where `$display` already goes.
 
-**`$strobe` and `$fstrobe` now write once per timepoint**, which is 9.4.1's "at the
-end of the current simulation time" read as closely as an analog model can read it.
-Before, `$strobe` was lowered identically to `$display` — once per Newton iteration,
-which for a measurement log is 2x to 20x the lines wanted. The guard is the
-uncommitted half of a retained slot, which is per instance and is written as soon as
-it is assigned, so it distinguishes the first evaluation at a timepoint from the
-iterations that settle it.
+**`$strobe` and `$fstrobe` write once per timepoint**, which is 9.4.1's "at the end
+of the current simulation time" read as closely as the simulator allows. Before,
+`$strobe` was lowered identically to `$display`, once per Newton iteration, which
+for a measurement log is 2x to 20x the lines wanted.
 
-It cannot distinguish an *accepted* timepoint from an attempted one, because
-nothing tells it: a step the solver goes back on keeps the line already written for
-it, and the time column goes backwards there. `sim_regression/filelog` measures how
-much of that there is (1325 lines of 9114) and the monotone subsequence is the
-accepted run. This is the best argument on this page for the accept callback at the
-top of it.
+Which timepoint, and which evaluation of it, depends on what the simulator can
+say. A `$fstrobe` line is composed and held, and written when the accept callback
+says the point was accepted: the values of the evaluation that converged, once per
+accepted point, and nothing at all for a point the solver went back on. Measured
+in `sim_regression/filelog`: 7789 lines where a simulator without the callback
+gets 9114, the 1325 difference being exactly the points that were gone back on.
+
+Without the callback the line is written as soon as it is composed at a new time,
+which is one line per *attempted* point from its first evaluation: the time column
+goes backwards where the solver did, and the monotone subsequence is the accepted
+run. A line to the simulator's own log (`$strobe` rather than `$fstrobe`) is always
+written that way, because the handle it is written through is only valid during
+the call it came with and a held line has no handle left.
 
 **`$fopen` of a file this library already has open returns the same descriptor.**
 5.10.2 puts `@(initial_step)` in force "during the solution of the first point",
@@ -743,11 +751,19 @@ tasks (9.5, see above), and the compiler directives of 10.2 through 10.6.
 17. ~~**Multi-dimensional arrays**~~ — done, for as many dimensions as a
     declaration gives. The row-major position of an index chain, with the
     one-dimensional case lowering byte-identically to what it did before.
-18. **OSDI proposal** — written as `docs/osdi-timepoint-protocol.md`, with two
-    of its three facilities implemented, measured and patched into ngspice: a
-    discontinuity can be announced (14.8x more accurate after a jump, with Gear)
-    and an instant can be asked for (which ngspice charges 64% more timepoints
-    for than the cap it would replace). What is left is the accept callback, which
-    is what `$fstrobe` needs in order to mean what 9.4.1 says, what would let a
-    model read one record per timepoint, and what the `$abstime` workaround is a
-    proxy for.
+18. ~~**OSDI proposal**~~ — done, all three facilities, written as
+    `docs/osdi-timepoint-protocol.md` and patched into ngspice: a discontinuity
+    can be announced (14.8x more accurate after a jump, with Gear), an instant can
+    be asked for (which ngspice charges 64% more timepoints for than the cap it
+    would replace), and a timepoint can be confirmed, which is what `$fstrobe`
+    needed in order to mean what 9.4.1 says (7789 lines instead of 9114, none from
+    a point the solver went back on).
+19. **A generated accept function** — the callback above runs a runtime function,
+    which is all a held `$fstrobe` line needs. Two things want the model's *own*
+    code to run at an accepted point instead, and neither needs further ABI: a
+    read that happens once per accepted timepoint rather than once per evaluation,
+    which is what 9.5's sequential reads mean and what `sim_regression/vecsrc`
+    rewinds to work around; and committing retained state because the point was
+    accepted rather than because `$abstime` moved, which is the proxy every
+    operator with retained state currently shares and the one hole in it (a step
+    rejected and retried at the same time is indistinguishable from progress).

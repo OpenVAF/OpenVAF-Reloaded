@@ -151,13 +151,22 @@ run_timepoints() {
 run_filelog() {
     dir=filelog
     cd "$here/$dir" || return 1
-    rm -f periods.txt evals.txt both_a.txt both_b.txt
+    rm -f periods.txt evals.txt both_a.txt both_b.txt periods_proto.txt
 
     if ! "$OV" filelog.va -o filelog.osdi >/dev/null 2>&1; then
         printf '%-14s COMPILE FAILED\n' "$dir"
         "$OV" filelog.va -o filelog.osdi
         fail=1
         return
+    fi
+
+    # 9.4.1 through the accept callback, when there is a simulator that makes one:
+    # the same model, run first by that one and then by the plain one, so that the
+    # analyzer can compare what each was told.
+    if [ -n "${NGSPICE_TIMEPOINTS:-}" ]; then
+        "$NGSPICE_TIMEPOINTS" -b filelog.cir > filelog_proto.log 2>&1
+        mv -f periods.txt periods_proto.txt
+        rm -f evals.txt both_a.txt both_b.txt
     fi
 
     "$NG" -b filelog.cir > filelog.log 2>&1

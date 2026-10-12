@@ -57,6 +57,44 @@ def main():
     retries = sum(1 for a, b in zip(times, times[1:]) if b <= a)
     print(f"timepoints attempted and then gone back on: {retries}")
 
+    # -- and what the accept callback does about that --------------------------
+    # 9.4.1's own reading of `$strobe` needs a moment an analog block cannot reach
+    # by itself. With the timepoint protocol's accept callback the line is held
+    # until the point is accepted, so a point the solver goes back on leaves none
+    # behind and the rest carry the values of the evaluation that converged.
+    # `periods_proto.txt` is the same model run by a simulator that makes that call
+    # (patches/ngspice-osdi-timepoints.patch, pointed at by NGSPICE_TIMEPOINTS).
+    try:
+        proto = read("periods_proto.txt")
+    except OSError:
+        proto = []
+    if proto:
+        ptimes = [r[1] for r in proto]
+        pretries = sum(1 for a, b in zip(ptimes, ptimes[1:]) if b <= a)
+        print(
+            f"with the accept callback: {len(proto)} lines, "
+            f"{pretries} of them from a timepoint gone back on"
+        )
+        if pretries != 0:
+            fail.append(
+                f"{pretries} lines belong to timepoints the solver went back on, "
+                "which an accepted-point write cannot produce"
+            )
+        if len(proto) >= len(periods):
+            fail.append(
+                f"the accepting run wrote {len(proto)} lines and the other "
+                f"{len(periods)}: the rejected points should be the difference"
+            )
+        # The same periods either way: what changes is which evaluation of each
+        # point the line comes from, not what the model measured.
+        pn = {int(r[0]) for r in proto}
+        n = {int(r[0]) for r in periods}
+        if pn != n:
+            fail.append(f"{len(n - pn)} periods are missing from the accepting run")
+    else:
+        print("accept callback run skipped: set NGSPICE_TIMEPOINTS to a simulator")
+        print("that makes one (patches/ngspice-osdi-timepoints.patch)")
+
     # -- the periods, checked against each other -------------------------------
     # One (edge, period) pair per period index, however many timepoints carried it.
     logged = {}

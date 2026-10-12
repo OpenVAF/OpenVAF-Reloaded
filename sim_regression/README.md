@@ -328,9 +328,11 @@ its files in `@(initial_step)` and `$fopen` hands back the descriptor it already
 opened rather than truncating the file again.
 
 There is no way for a model to ask "is this the first evaluation of this
-timepoint" -- `$strobe` has that built in, and nothing else can get at it. Which
-is, once again, the accept callback at the top of
-`docs/lrm-system-level-gaps.md`.
+timepoint", or the last: `$fstrobe` has the answer built in now, through the accept
+callback of `docs/osdi-timepoint-protocol.md`, but it is the runtime that holds its
+line and nothing a model writes can get at the same moment. Reading one record per
+accepted timepoint needs the model's own code to run there, which is the part of
+that protocol still to come.
 
 ## global_events — passing
 
@@ -543,13 +545,25 @@ so the period's standard deviation is `sqrt(2)` times the one in the netlist.
 ### What a reader of such a log has to know
 
 The time column is not monotone, and 1325 of the 9114 lines here are timepoints
-the solver attempted and then went back on. `$fstrobe` writes once per *attempted*
-timepoint, because that is as close to "the end of the current simulation time"
-as a model can get: OSDI tells it when time has moved, and never tells it that a
-step was accepted. The monotone subsequence is the accepted run. This is the same
-missing accept callback the top of `docs/lrm-system-level-gaps.md` is about, and
-it is the clearest argument for it so far — with it, `$fstrobe` would mean exactly
-what the clause says.
+the solver attempted and then went back on: a line written as soon as it is
+composed at a new time is a line about a point that may still be taken back, and
+the monotone subsequence is the accepted run.
+
+That is what the accept callback is for, and this case is where it is measured.
+Set `NGSPICE_TIMEPOINTS` to a simulator that makes the call
+(`patches/ngspice-osdi-timepoints.patch`) and the same model is run twice:
+
+```
+$fstrobe wrote 9114 lines, $fdisplay 18229
+timepoints attempted and then gone back on: 1325
+with the accept callback: 7789 lines, 0 of them from a timepoint gone back on
+```
+
+The 1325 are exactly the difference. With the callback the line is held until the
+point is accepted, so it carries the values of the evaluation that converged and a
+point the solver went back on leaves none behind. The periods the model measured
+are the same either way, which is the other half of the assertion: what changed is
+which evaluation each line came from, not the measurement.
 
 ## pll — passing
 

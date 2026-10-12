@@ -12,7 +12,7 @@ they were expected to matter:
 | --- | --- |
 | "the solution is discontinuous at the point you just solved" (VAMS-2023 9.17.1) | implemented and measured: **14.8x** more accurate after a jump |
 | "place a timepoint at this instant" (5.10.3.1, 5.10.3.3, 4.5.8) | implemented and measured: it works, and in ngspice it costs 64% more timepoints than the `$bound_step` cap it would replace |
-| "a timepoint was accepted" (9.4.1, 9.5) | specified below, not implemented |
+| "a timepoint was accepted" (9.4.1, 9.5) | implemented and measured: `$fstrobe` writes **7789 lines instead of 9114**, and none of them for a point the solver went back on |
 
 ## The shape of it
 
@@ -23,7 +23,11 @@ model leaves in its instance data, which the simulator reads after `eval`:
   /* additions to the OSDI 0.4 descriptor tail */
   uint32_t breakpoint_offset;      /* double: the instant wanted, +inf for none */
   uint32_t discontinuity_offset;   /* double: the degree announced, < 0 for none */
+  void (*accept)(void *handle, void *inst, void *model, OsdiSimInfo *info);
 ```
+
+The first two are what a model says *during* an evaluation; the third is the
+simulator's turn to speak, and the next section is what it is for.
 
 That is the same mechanism `$bound_step` has always used (`bound_step_offset`) and
 the same one `absdelay` uses for the delay it hands over, so a simulator that
@@ -110,41 +114,68 @@ reprice the next step would get the placement for nothing.
 
 ## The third facility: an accept callback
 
-Not implemented. The specification is small, and so is the list of things waiting
-for it:
-
 ```c
-  /* a further addition to the tail */
   void (*accept)(void *handle, void *inst, void *model, OsdiSimInfo *info);
 ```
 
-Called once per accepted timepoint, after the solution is final, before the next
-step is attempted. The arguments are `eval`'s, so an implementation has everything
-it needs; `NULL` (or a descriptor that does not reach the field) means a model has
-no accepted-point work and the simulator should skip it.
+Called once per accepted timepoint, after the solution is final and before the next
+step is attempted, with `eval`'s own arguments except that `info` may be null: a
+simulator that has no `OsdiSimInfo` to hand at that moment passes none, and nothing
+an accepted-point task does needs one. A null field means the model has no
+accepted-point work, so a simulator can skip the call and most models never offer
+it.
 
-What it would retire, in the order the rest of this tree wants it:
+### What it buys, measured
 
-1. **`$strobe` and `$fstrobe` would mean what 9.4.1 says.** "At the end of the
-   current simulation time" is currently read as "the first evaluation at a new
-   time", because that is the only thing an analog model can detect. Two
-   consequences, both measured in `sim_regression/filelog`: a line is composed from
-   the *least* converged iteration of a timepoint, and 1325 of 9114 lines belong to
-   timepoints the solver went on to reject. With an accept callback the line is
-   buffered and flushed when the point is accepted: the converged values, once, and
-   never for a step that was taken back.
-2. **A model could read one record per timepoint.** 9.5's file reads advance the
-   file on every evaluation, so `sim_regression/vecsrc` has to make its reads
-   idempotent by rewinding (three of four records were swallowed before t = 0
-   without that). A read in an accept callback happens exactly once per point.
-3. **Retained state would not need `$abstime`.** Everything this tree keeps across
-   timesteps -- `@(cross)` latches, `timer`'s next event, `transition`'s queue,
-   `absdelay`'s history in the in-model realization -- commits by noticing that
-   `$abstime` has moved, which is a proxy for "the last point was accepted". It
-   works, and it costs a retained slot and a comparison per model; an accept
-   callback is what it is a proxy for.
+`$strobe` and `$fstrobe` are what 9.4.1 gives "at the end of the current simulation
+time", which is a moment an analog block cannot reach by itself: it is evaluated
+many times while the solver settles one point, and nothing in it knows which
+evaluation was the last. Until now the closest reading was "the first evaluation at
+a new time", with two consequences, both visible in `sim_regression/filelog`: the
+line carries the values of the *least* converged iteration of its point, and a
+point the solver goes back on leaves a line behind that the next accepted point
+contradicts.
 
-None of the three is a correctness problem today, which is why this half is last.
+With the callback the line is composed as before but held, and written when the
+point is accepted:
+
+```
+                                   lines   from a timepoint the solver went back on
+without the callback                9114   1325
+with it                             7789      0
+```
+
+The 1325 are exactly the difference. What the model measured does not change (the
+same 100 periods, agreeing with their own edges to 9e-18 s); what changes is which
+evaluation of each point the line comes from, and that the points that never
+happened say nothing.
+
+Nothing changes for a simulator that does not make the call: the runtime writes the
+line as soon as it is composed at a new time, which is what this task did before
+the callback existed, down to the iteration it picks. The first accepted point of a
+run is written that way too, because its line is composed before the first `accept`
+arrives.
+
+### What it does not buy yet
+
+Two of the three things this page listed as waiting for the callback are still
+waiting, and both are bigger than the write side:
+
+1. **A model reading one record per timepoint.** 9.5's reads advance the file on
+   every evaluation, so `sim_regression/vecsrc` makes its reads idempotent by
+   rewinding. A read in an accepted-point task happens exactly once per point, but
+   it has to *be* in the model's own code rather than in the runtime: that needs
+   the callback to run generated code, not a runtime function.
+2. **Retained state without `$abstime`.** Everything this tree keeps across
+   timesteps commits by noticing that `$abstime` has moved. The proxy has a hole
+   the callback would close: the solver can reject a step and retry at the same
+   time, and a commit keyed on "the time changed" cannot tell that apart from
+   progress. Reaching it needs the same generated-code callback, and it touches
+   every operator with retained state, so it is its own piece of work.
+
+Both are the same next step: a *generated* accept function in the module, which the
+descriptor's field points at instead of the runtime's own. The ABI above does not
+change for it.
 
 ## What this does not propose
 
@@ -155,11 +186,18 @@ forward-looking; an event that is discovered late stays discovered late.
 **A say in the solution itself.** The protocol is about *when* the simulator
 solves, not about what it solves. `$limit` (9.17.3) already has its own channel.
 
-**A version bump.** The two implemented fields extend the 0.4 tail, which
+**A version bump.** The three fields extend the 0.4 tail, which
 `OSDI_DESCRIPTOR_SIZE` makes safe, and this tree's `absdelay` fields set that
-precedent. For an upstream OSDI release the three fields together are the natural
-contents of an 0.5, with the accept callback's `NULL` and the offsets' `UINT32_MAX`
-as the "not used" encodings.
+precedent. For an upstream OSDI release they are the natural contents of an 0.5,
+with the accept callback's `NULL` and the offsets' `UINT32_MAX` as the "not used"
+encodings.
+
+One implementation note that is not in the ABI but bit once: a simulator's handle
+is only valid for the duration of the call it came with (ngspice builds one on
+the stack per evaluation), so a line held for later cannot be written through it.
+That is why the accept callback is given one of its own, and why a line going to
+the simulator's own log rather than to a file is not held at all: `$strobe` keeps
+the first-evaluation reading that `$fstrobe` has now left behind.
 
 ## Checking an implementation
 
@@ -170,6 +208,14 @@ as the "not used" encodings.
   about one point rather than about the state it left behind.
 * `sim_regression/timepoints`: the two runs above, which also assert that a
   simulator which ignores the protocol produces the same waveform either way.
+* `openvaf/test_data/osdi/accept_log.va` plus `test_accept`: six timepoints, the
+  first three unaccepted, the next two accepted and the last evaluated and left,
+  with a value that changes from one evaluation of a point to the next -- so each
+  line says which evaluation it came from, and the point that was never accepted
+  says nothing at all.
+* `sim_regression/filelog` runs the same model twice when `NGSPICE_TIMEPOINTS` is
+  set, and requires that the accepting run write fewer lines and none from a
+  timepoint the solver went back on.
 * `patches/ngspice-osdi-timepoints.patch` is the ngspice side, on top of
   `patches/ngspice-absdelay-history.patch` (which is where the per-entry descriptor
   size comes from). `OSDI_TP_TRACE=1` prints each announcement as it arrives, which
