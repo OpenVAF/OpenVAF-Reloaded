@@ -708,30 +708,30 @@ impl Ctx {
         let module = decl.syntax().ancestors().find_map(ast::ModuleDecl::cast);
         for var in decl.vars() {
             if let Some(name) = var.name() {
-                // `real den[msb:lsb];` -> a fixed-size array. The bounds are
-                // compile-time integer constants (literals, arithmetic, or parameter
-                // references resolved against the enclosing module).
-                let (ty, array_lo) = match (var.dimension(), module.as_ref()) {
-                    (Some(dim), Some(module)) => {
-                        let bounds = dim
-                            .msb()
+                // `real den[msb:lsb];` -> a fixed-size array, and one dimension per
+                // range: VAMS-2023 3.2's own example is `integer
+                // flag_array[0:8][0:3];`. The bounds are compile-time integer
+                // constants (literals, arithmetic, or parameter references resolved
+                // against the enclosing module).
+                let mut lens = Vec::new();
+                let mut lows = Vec::new();
+                for dim in var.dimensions() {
+                    let bounds = module.as_ref().and_then(|module| {
+                        dim.msb()
                             .and_then(|m| eval_const_int(&m, module))
-                            .zip(dim.lsb().and_then(|l| eval_const_int(&l, module)));
-                        let len = bounds
-                            .map(|(msb, lsb)| (msb - lsb).unsigned_abs() as u32 + 1)
-                            .unwrap_or(0);
-                        // The declared range may run either way (`[2:5]` or `[5:2]`);
-                        // element positions are offset by the lower bound.
-                        let lo = bounds.map(|(msb, lsb)| msb.min(lsb) as i32).unwrap_or(0);
-                        (Type::Array { ty: Box::new(base_ty.clone()), len }, lo)
-                    }
-                    _ => (base_ty.clone(), 0),
-                };
+                            .zip(dim.lsb().and_then(|l| eval_const_int(&l, module)))
+                    });
+                    lens.push(bounds.map_or(0, |(msb, lsb)| (msb - lsb).unsigned_abs() as u32 + 1));
+                    // The declared range may run either way (`[2:5]` or `[5:2]`);
+                    // element positions are offset by the lower bound.
+                    lows.push(bounds.map_or(0, |(msb, lsb)| msb.min(lsb) as i32));
+                }
+                let ty = base_ty.clone().to_dim(&lens);
                 let var = Var {
                     name: name.as_name(),
                     ast_id: self.source_ast_id_map.ast_id(&var),
                     ty,
-                    array_lo,
+                    array_lows: lows.into_boxed_slice(),
                 };
                 let id = self.tree.data.variables.push_and_get_key(var);
                 dst.push(id.into())

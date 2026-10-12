@@ -119,11 +119,28 @@ impl<'a> HeaderParser<'a> {
         &self.header.src[self.off..]
     }
 
+    /// Skip to the next thing that is not whitespace or a comment.
+    ///
+    /// Comments are skipped so that a field of the descriptor can say what it is
+    /// for where it is declared; the header is the ABI, and the ABI is what a
+    /// simulator author reads.
     fn trim(&mut self) {
-        let src = self.src();
-        let (off, _) =
-            src.char_indices().find(|(_, c)| !c.is_whitespace()).unwrap_or((src.len(), '\0'));
-        self.off += off;
+        loop {
+            let src = self.src();
+            let (off, _) =
+                src.char_indices().find(|(_, c)| !c.is_whitespace()).unwrap_or((src.len(), '\0'));
+            self.off += off;
+            let src = self.src();
+            if let Some(rest) = src.strip_prefix("/*") {
+                let end = rest.find("*/").map_or(rest.len(), |end| end + 2);
+                self.off += 2 + end;
+            } else if let Some(rest) = src.strip_prefix("//") {
+                let end = rest.find('\n').unwrap_or(rest.len());
+                self.off += 2 + end;
+            } else {
+                return;
+            }
+        }
     }
 
     fn eat(&mut self, kw: &str) -> bool {

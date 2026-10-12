@@ -1,0 +1,33 @@
+// VAMS-2023 10.2 and 10.3: what the two directives that supply a default accept,
+// and what they say about the rest. As many legal forms as rejected ones, so the
+// test fails if one of them starts being reported.
+
+// Legal: a real literal with a scale factor character, a plain real, an integer.
+`default_transition 1n
+`default_transition 2.5
+`default_transition 1
+
+// Nothing to read: the directive does not extend onto the next line.
+`default_transition
+`default_transition 1n
+
+// 4.5.8 asks for a non-negative time.
+`default_transition -1n
+
+// Legal: with a qualifier, without one, and the form that removes the default.
+`default_discipline electrical
+`default_discipline electrical wire
+`default_discipline
+
+// A qualifier Verilog-A can have no nets of, and one that is not a net type.
+`default_discipline ddiscrete reg
+`default_discipline electrical bogus
+
+module m(a, b);
+    inout electrical a, b;
+
+    // 10.3's own first sentence: outside of module definitions.
+    `default_transition 1n
+
+    analog V(a) <+ V(b);
+endmodule

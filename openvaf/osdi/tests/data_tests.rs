@@ -32,6 +32,7 @@ fn test_compile(root_file: &Path) {
         false,
         false,
         false,
+        hir_lower::AbsDelayMode::Simulator,
     );
 }
 

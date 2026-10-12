@@ -1,0 +1,18 @@
+`include "disciplines.vams"
+
+// VAMS-2023 4.5.10: the simulation time at which the expression last crossed zero
+// in the given direction, linearly interpolated between the two straddling points,
+// and a negative value before it has crossed at all.
+//
+// A voltage contribution puts its equation on the branch flow unknown, where it
+// reads `last_crossing(...) - V(out)`, so holding `V(out)` at zero makes that
+// residual the reading itself.
+module lc_detect(in, out);
+    input in;
+    output out;
+    electrical in, out;
+
+    analog begin
+        V(out) <+ last_crossing(V(in), +1);
+    end
+endmodule

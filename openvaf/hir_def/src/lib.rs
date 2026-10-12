@@ -2,6 +2,7 @@ pub mod body;
 mod builtin;
 mod data;
 pub mod db;
+pub mod directives;
 pub mod expr;
 pub mod item_tree;
 pub mod nameres;
