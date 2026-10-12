@@ -39,6 +39,9 @@ pub struct LoweringCtx<'a, 'c> {
     pub function_exit: Option<Block>,
     /// Function whose return place early `return` statements write into.
     pub function_return: Option<hir::Function>,
+    /// Numbers the strobe statements of a module, so that the runtime can keep one
+    /// pending line for each of them (VAMS-2023 9.4.1).
+    pub strobe_sites: i32,
     /// How `absdelay` is realized (VAMS-2023 4.5.7). See [`AbsDelayMode`].
     pub absdelay: AbsDelayMode,
     /// The rise and fall time a transition filter gets when it specifies
@@ -76,6 +79,7 @@ impl<'a, 'c> LoweringCtx<'a, 'c> {
             loop_stack: Vec::new(),
             function_exit: None,
             function_return: None,
+            strobe_sites: 0,
             absdelay: AbsDelayMode::Simulator,
             default_transition: None,
         }
@@ -94,6 +98,13 @@ impl<'a, 'c> LoweringCtx<'a, 'c> {
     pub fn with_default_transition(mut self, time: Option<f64>) -> Self {
         self.default_transition = time;
         self
+    }
+
+    /// The number of the next strobe statement.
+    pub fn next_strobe_site(&mut self) -> i32 {
+        let site = self.strobe_sites;
+        self.strobe_sites += 1;
+        site
     }
 
     /// This function should be used for reading variables to correctly

@@ -1741,6 +1741,90 @@ fn test_transition_pwl() -> Result<()> {
     Ok(())
 }
 
+/// VAMS-2023 9.4.1 through the accept callback: `$fstrobe` writes one line per
+/// *accepted* timepoint, from the evaluation that converged.
+///
+/// Three things are pinned, and the model (`accept_log.va`) makes them visible by
+/// logging the input voltage, which this test changes from one evaluation of a
+/// timepoint to the next:
+///
+///   * without the callback, nothing changes: one line per attempted timepoint,
+///     from its first evaluation, which is what the task did before there was a
+///     callback to do better with;
+///   * with it, the line is the last evaluation's, which is the converged one;
+///   * with it, a timepoint that is evaluated and never accepted leaves no line,
+///     where before it left one that the next accepted point contradicts.
+fn test_accept() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+
+    const ITERS: usize = 3;
+
+    // One run, because a library keeps its open descriptors (9.5.1, and `$fopen`
+    // hands the same one back for the same file), so three runs would be three
+    // sections of one file anyway. Three sections is what this is: six timepoints
+    // of `ITERS` evaluations each, logging `10*step + iter`, with the first three
+    // unaccepted, the next two accepted, and the last one evaluated and left.
+    let log = std::path::Path::new("openvaf_accept_test.txt");
+    let _ = std::fs::remove_file(log);
+
+    let desc = test_descriptor(&openvaf_test_data("osdi").join("accept_log.va"))?;
+    let model = desc.new_model();
+    model.process_params()?;
+    let mut instance = model.new_instance();
+    let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+
+    let mut first = true;
+    for step in 0..6 {
+        for iter in 0..ITERS {
+            if !first {
+                sim.next_iter();
+            }
+            first = false;
+            sim.set_voltage("a", (10 * step + iter) as f64);
+            sim.set_voltage("b", 0.0);
+            instance.eval(&model, &mut sim, EvalFlags::empty());
+            instance.load_dae(&model, &mut sim);
+        }
+        if (3..5).contains(&step) {
+            // The model has accepted-point work, so the descriptor offers the
+            // callback to do it with.
+            assert!(instance.accept(&model), "the descriptor offers no accept");
+        }
+        sim.advance_time(1.0);
+    }
+
+    // The line of an accepted point is written when the point is accepted, so
+    // everything the model has to say is in the file by now.
+    let text = std::fs::read_to_string(log)
+        .unwrap_or_else(|e| panic!("the model did not leave {} behind: {e}", log.display()));
+    let _ = std::fs::remove_file(log);
+    let lines: Vec<&str> = text.lines().collect();
+
+    assert_eq!(
+        lines,
+        vec![
+            // Nothing has said that a point was accepted, so each line is written as
+            // it is composed at a new time: one per attempted point, from its first
+            // evaluation, which is what this task did before the callback existed.
+            "0 0", "1 10", "2 20",
+            // The first accepted point is the one exception: its line was composed
+            // before the first `accept` arrived, so it is written the same way.
+            "3 30",
+            // From here on the line is the evaluation that converged, which is the
+            // last one of the point: iteration 2, so 10*step + 2.
+            "4 42",
+            // And the sixth point, evaluated and never accepted, leaves no line at
+            // all -- where before it left one that the next accepted point
+            // contradicts.
+        ],
+        "the lines the model left behind"
+    );
+
+    Ok(())
+}
+
 /// The timepoint protocol: what a model asks of the integrator, and what it tells
 /// it (see `docs/osdi-timepoint-protocol.md`).
 ///
@@ -2331,5 +2415,5 @@ harness! {
     Test::from_dir_filtered("vacask_spice", &vacask_spice_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice")),
     // VACASK simplified SPICE models
     Test::from_dir_filtered("vacask_spice_sn", &vacask_spice_sn_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice/sn")),
-    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros),Test::new("laplace_roots", &test_laplace_roots),Test::new("slew", &test_slew),Test::new("cross_detect", &test_cross_detect),Test::new("above_detect", &test_above_detect),Test::new("last_crossing", &test_last_crossing),Test::new("var_persistence", &test_var_persistence),Test::new("timer_detect", &test_timer_detect),Test::new("rng_stream", &test_rng_stream),Test::new("transition_pwl", &test_transition_pwl),Test::new("table_model", &test_table_model),Test::new("zi_filter", &test_zi_filter),Test::new("absdelay", &test_absdelay),Test::new("absdelay_in_model", &test_absdelay_in_model),Test::new("timer_resched", &test_timer_resched),Test::new("case_default", &test_case_default),Test::new("file_io", &test_file_io),Test::new("file_scan", &test_file_scan),Test::new("global_events", &test_global_events),Test::new("scan_target", &test_scan_target),Test::new("directives", &test_directives),Test::new("multidim", &test_multidim),Test::new("timepoints", &test_timepoints)]
+    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros),Test::new("laplace_roots", &test_laplace_roots),Test::new("slew", &test_slew),Test::new("cross_detect", &test_cross_detect),Test::new("above_detect", &test_above_detect),Test::new("last_crossing", &test_last_crossing),Test::new("var_persistence", &test_var_persistence),Test::new("timer_detect", &test_timer_detect),Test::new("rng_stream", &test_rng_stream),Test::new("transition_pwl", &test_transition_pwl),Test::new("table_model", &test_table_model),Test::new("zi_filter", &test_zi_filter),Test::new("absdelay", &test_absdelay),Test::new("absdelay_in_model", &test_absdelay_in_model),Test::new("timer_resched", &test_timer_resched),Test::new("case_default", &test_case_default),Test::new("file_io", &test_file_io),Test::new("file_scan", &test_file_scan),Test::new("global_events", &test_global_events),Test::new("scan_target", &test_scan_target),Test::new("directives", &test_directives),Test::new("multidim", &test_multidim),Test::new("timepoints", &test_timepoints),Test::new("accept", &test_accept)]
 }

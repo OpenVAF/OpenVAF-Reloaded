@@ -1805,21 +1805,30 @@ impl BodyLoweringCtx<'_, '_, '_> {
     /// 9.4.1/9.5.2: `$strobe` and `$fstrobe` write once for the timepoint, not once
     /// for each evaluation of it.
     ///
-    /// "At the end of the current simulation time" is the digital reading of a
-    /// statement that an analog block reaches many times while the solver settles
-    /// one point. Writing on the first evaluation at a new time is the closest thing
-    /// an analog model can say: there is no hook for "the solution is final", and
-    /// buffering the line until the step is accepted would hold back a line the
-    /// model has already composed, with nothing to flush it at the end of the run.
+    /// "At the end of the current simulation time" is a statement about a moment an
+    /// analog block cannot reach by itself: it is evaluated many times while the
+    /// solver settles one point, and nothing in it knows which evaluation was the
+    /// last. So the line is composed and handed to the runtime, which keeps it until
+    /// whoever does know says that the point is final:
     ///
-    /// So a line per attempted timepoint, where `$display` gives a line per
-    /// iteration -- and a step the solver goes on to reject leaves its line behind,
-    /// visible as a time column that goes backwards.
+    ///   * a simulator that calls the descriptor's `accept` (the timepoint protocol,
+    ///     `docs/osdi-timepoint-protocol.md`) gets the line of the evaluation that
+    ///     converged, once per *accepted* point, and nothing at all for a point the
+    ///     solver went back on;
+    ///   * one that does not gets the line flushed when the model composes the next
+    ///     one at a new time, which is still the last evaluation of the point it
+    ///     belongs to, and the last line of all when the library goes away.
     ///
-    /// The cell is the uncommitted half of a retained slot, which is per instance
-    /// and is written as soon as it is assigned, so two instances of the same model
-    /// do not silence each other. Without retained state at all (the init function,
-    /// verilogae) there is nothing to key on and the write is unconditional.
+    /// Either way it is one line per timepoint, where `$display` gives one per
+    /// iteration. Without retained state at all (the init function, verilogae) there
+    /// is no timepoint to belong to and the line is written as it stands.
+    ///
+    /// Only the file form is held. A line to the simulator's own log is written
+    /// through a handle that is only valid for the duration of the call it came
+    /// with -- ngspice builds one on the stack per evaluation -- so `$strobe` keeps
+    /// the closest thing it can reach by itself: the first evaluation at a new time.
+    /// The cell that detects it is the uncommitted half of a retained slot, which is
+    /// per instance, so two instances of a model do not silence each other.
     fn strobe(&mut self, kind: DisplayKind, desc: Option<Value>, args: &[ExprId]) {
         if self.ctx.no_equations {
             match desc {
@@ -1829,9 +1838,22 @@ impl BodyLoweringCtx<'_, '_, '_> {
             return;
         }
 
+        let now = self.ctx.use_param(ParamKind::Abstime);
+
+        if let Some(desc) = desc {
+            let Some(line) = self.ins_fmt_str(kind, args) else {
+                return;
+            };
+            // Which statement this is, so that two in one module keep their own
+            // pending line rather than overwriting each other's.
+            let site = self.ctx.next_strobe_site();
+            let site = self.ctx.iconst(site);
+            self.ctx.call(CallBackKind::StrobeLine { kind }, &[site, desc, line, now]);
+            return;
+        }
+
         // A time no simulation reaches, so the first evaluation of all is a new one.
         let cell = self.ctx.alloc_retained_state(-1.0);
-        let now = self.ctx.use_param(ParamKind::Abstime);
         let first = self.ctx.call1(CallBackKind::RetainedFirst(cell), &[now]);
         let first = self.ctx.ins().fne(first, F_ZERO);
 
@@ -1839,10 +1861,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
         self.ctx.make_cond(first, |ctx, branch| {
             if branch {
                 let mut body = BodyLoweringCtx { body: self.body, path: self.path, ctx };
-                match desc {
-                    Some(desc) => body.ins_display_file(kind, true, desc, &args),
-                    None => body.ins_display(kind, true, &args),
-                }
+                body.ins_display(kind, true, &args);
             }
         });
     }

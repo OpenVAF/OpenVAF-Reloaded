@@ -71,6 +71,13 @@ impl BodyLoweringCtx<'_, '_, '_> {
             .expect("the string sink returns the formatted string")
     }
 
+    /// The same formatting, into a string rather than to a sink: the line a
+    ///  composes, which is handed over rather than written (see
+    /// [BodyLoweringCtx::strobe]).
+    pub fn ins_fmt_str(&mut self, kind: DisplayKind, args: &[ExprId]) -> Option<mir::Value> {
+        self.ins_fmt(kind, true, args, None, PrintSink::Str)
+    }
+
     fn ins_fmt(
         &mut self,
         kind: DisplayKind,

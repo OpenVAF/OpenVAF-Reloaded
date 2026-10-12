@@ -250,6 +250,17 @@ typedef struct OsdiDescriptor {
    * simulator should restart the integration order there rather than place a new
    * point. */
   uint32_t discontinuity_offset;
+  /* Called once per accepted timepoint, after the solution is final and before the
+   * next step is attempted, with `eval`'s own arguments except that `info` may be
+   * null: a simulator that has no `OsdiSimInfo` to hand at that moment passes none,
+   * and nothing in an accepted-point task needs one. NULL when the model has no
+   * accepted-point work, which is every module without `$fstrobe` in it.
+   *
+   * This is what 9.4.1's "at the end of the current simulation time" needs: a line
+   * composed during the evaluations of a point is written when the point is
+   * accepted, from the evaluation that converged, and not at all for a point the
+   * solver goes back on. */
+  void (*accept)(void *handle, void *inst, void *model, OsdiSimInfo *info);
 }OsdiDescriptor;
 
 typedef struct OsdiNature {

@@ -1,0 +1,28 @@
+// VAMS-2023 9.4.1: `$fstrobe` writes "at the end of the current simulation time",
+// which is a moment an analog block cannot reach by itself. The line it composes is
+// held by the runtime until something says that the point is final, and the
+// descriptor's `accept` callback is that something (the timepoint protocol, see
+// docs/osdi-timepoint-protocol.md).
+//
+// The line carries the input voltage, which the test changes from one evaluation of
+// a timepoint to the next: so the line says which evaluation it came from, and a
+// timepoint that is evaluated and never accepted says nothing at all.
+`include "disciplines.vams"
+
+module accept_log(a, b);
+    inout electrical a, b;
+
+    integer fd;
+
+    analog begin
+        @(initial_step) fd = $fopen("openvaf_accept_test.txt", "w");
+
+        $fstrobe(fd, "%g %g", $abstime, V(a));
+        // So that the test can read the file while the simulation is still going.
+        // A line the runtime is holding is not affected by this: it is not in a
+        // buffer, it is not written yet.
+        $fflush(fd);
+
+        V(b) <+ V(a);
+    end
+endmodule

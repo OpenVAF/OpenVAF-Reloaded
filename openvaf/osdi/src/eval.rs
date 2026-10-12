@@ -341,7 +341,8 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
         params.extend(cache_vals);
         builder.params = params;
 
-        builder.callbacks = general_callbacks(intern, &mut builder, ret_flags, handle, simparam);
+        builder.callbacks =
+            general_callbacks(intern, &mut builder, ret_flags, handle, simparam, instance);
 
         for (func, kind) in intern.callbacks.iter_enumerated() {
             let cb = match *kind {

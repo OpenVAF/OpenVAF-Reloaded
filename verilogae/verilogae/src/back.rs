@@ -67,6 +67,7 @@ pub fn stub_callbacks<'ll>(
                     CallbackFun::Prebuilt(cx.const_callback(&[cx.ty_double()], cx.const_real(0.0)))
                 }
                 CallBackKind::Print { .. }
+                | CallBackKind::StrobeLine { .. }
                 | CallBackKind::ParamInfo(_, _)
                 | CallBackKind::BuiltinLimit { .. }
                 | CallBackKind::StoreLimit(_)

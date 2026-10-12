@@ -125,6 +125,12 @@ pub enum CallBackKind {
     /// 9.4 and 9.5 format alike and differ in where the line goes: `sink` says
     /// which, and for a file the first argument is the descriptor.
     Print { kind: DisplayKind, sink: PrintSink, arg_tys: Box<[FmtArg]> },
+    /// A line `$strobe` or `$fstrobe` composed, handed over for the runtime to keep
+    /// until the timepoint it belongs to is final (VAMS-2023 9.4.1). The arguments
+    /// are the statement it came from, where it goes, the line itself and
+    /// `$abstime`; the instance it belongs to and the level this kind of task logs
+    /// at come from the simulator and from the descriptor's own constants.
+    StrobeLine { kind: DisplayKind },
     File(FileOp),
     /// Whether this is the first evaluation at the current timepoint, which is what
     /// 9.4.1's "at the end of the current simulation time" needs in order not to
@@ -219,6 +225,13 @@ impl CallBackKind {
                 // function of its arguments: left movable, the pass that hoists
                 // op-independent work into instance setup would take it there and
                 // leave the evaluation reading a value nothing computes.
+                has_sideeffects: true,
+            },
+            CallBackKind::StrobeLine { kind } => FunctionSignature {
+                name: format!("$strobe_line[{kind:?}]"),
+                // site, descriptor, line, time
+                params: 4,
+                returns: 0,
                 has_sideeffects: true,
             },
             CallBackKind::BuiltinLimit { name, num_args } => FunctionSignature {
@@ -365,6 +378,7 @@ impl CallBackKind {
                 | CallBackKind::PrevRetainedStr(_)
                 | CallBackKind::RetainedFirst(_)
                 | CallBackKind::File(_)
+                | CallBackKind::StrobeLine { .. }
                 | CallBackKind::RngValue(_)
                 | CallBackKind::RngSeed(_)
                 | CallBackKind::Analysis
@@ -379,7 +393,7 @@ impl CallBackKind {
     }
 
     pub fn tracked(&self) -> bool {
-        !matches!(self, CallBackKind::Print { .. })
+        !matches!(self, CallBackKind::Print { .. } | CallBackKind::StrobeLine { .. })
     }
 }
 

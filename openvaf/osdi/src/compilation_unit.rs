@@ -180,6 +180,10 @@ pub fn general_callbacks<'ll>(
     ret_flags: &'ll llvm_sys::LLVMValue,
     handle: &'ll llvm_sys::LLVMValue,
     simparam: &'ll llvm_sys::LLVMValue,
+    // The instance whose evaluation this is, for the callbacks that keep something
+    // per instance. A null pointer where there is no one instance (a model's own
+    // setup), which the runtime takes as "there is no timepoint either".
+    instance: &'ll llvm_sys::LLVMValue,
 ) -> TiVec<FuncRef, Option<CallbackFun<'ll>>> {
     let ptr_ty = builder.cx.ty_ptr();
     intern
@@ -233,6 +237,36 @@ pub fn general_callbacks<'ll>(
                         fun_ty,
                         fun,
                         state: vec![simparam, handle, ret_flags].into_boxed_slice(),
+                        num_state: 0,
+                    })
+                }
+                // 9.4.1: the line goes to the runtime, which keeps it until the
+                // timepoint it belongs to is final. The level this kind of task logs
+                // at is a constant of the statement, so it rides along with the
+                // handle and the instance rather than being an argument.
+                CallBackKind::StrobeLine { kind } => {
+                    let fun = builder
+                        .cx
+                        .get_func_by_name("va_strobe")
+                        .expect("stdlib function va_strobe is missing");
+                    let int_ty = builder.cx.ty_int();
+                    let fun_ty = builder.cx.ty_func(
+                        &[ptr_ty, ptr_ty, int_ty, int_ty, int_ty, ptr_ty, builder.cx.ty_double()],
+                        builder.cx.ty_void(),
+                    );
+                    let lvl = match kind {
+                        DisplayKind::Debug => LOG_LVL_DEBUG,
+                        DisplayKind::Display | DisplayKind::Monitor => LOG_LVL_DISPLAY,
+                        DisplayKind::Info => LOG_LVL_INFO,
+                        DisplayKind::Warn => LOG_LVL_WARN,
+                        DisplayKind::Error => LOG_LVL_ERR,
+                        DisplayKind::Fatal => LOG_LVL_FATAL,
+                    };
+                    let lvl = builder.cx.const_unsigned_int(lvl);
+                    CallbackFun::Prebuilt(BuiltCallbackFun {
+                        fun_ty,
+                        fun,
+                        state: vec![handle, instance, lvl].into_boxed_slice(),
                         num_state: 0,
                     })
                 }

@@ -179,14 +179,22 @@ void bound_step(double *dst, double val) { *dst = val; }
  * (or storing it in a parameter) has to mean the same file to both.
  */
 
+/* The state below has to be one object however many times this file is compiled
+ * into the library: the generated code is several object files (the evaluation,
+ * each setup function, the loads), each of which gets its own copy of the bitcode,
+ * and `eval` opening a descriptor that `accept` writes through only works if both
+ * see the same table. A weak definition is merged by the linker; a static one, or a
+ * tentative definition under -fno-common, is one per object. */
+#define VA_SHARED __attribute__((weak))
+
 #define VA_FD_BIT 0x80000000u
 #define VA_NMCD 31
 #define VA_NFD 32
 /* stdin, stdout, stderr as 9.5.1 numbers them. */
 #define VA_FD_RESERVED 3
 
-static void *va_mcd[VA_NMCD];
-static void *va_fd[VA_NFD];
+VA_SHARED void *va_mcd[VA_NMCD];
+VA_SHARED void *va_fd[VA_NFD];
 /* What each open descriptor was opened as: the mode and the name, so that a
  * second request for the same pair can be answered with the same descriptor.
  *
@@ -199,8 +207,8 @@ static void *va_fd[VA_NFD];
  * idiom work. The cost is that a model wanting two independent handles on one
  * file gets one, which is not something 9.5 offers a way to ask for.
  */
-static char *va_mcd_key[VA_NMCD];
-static char *va_fd_key[VA_NFD];
+VA_SHARED char *va_mcd_key[VA_NMCD];
+VA_SHARED char *va_fd_key[VA_NFD];
 
 /* "shall return zero if the file could not be opened" -- for both forms, which
  * is also why channel 0 is never handed out: its bit set alone would be 1. */
@@ -324,14 +332,17 @@ void va_fputs(void *handle, int32_t desc, char *msg, uint32_t lvl) {
   if (d & VA_FD_BIT) {
     uint32_t i = d & ~VA_FD_BIT;
     if (i < VA_FD_RESERVED) {
-      osdi_log(handle, msg, lvl);
+      /* No handle, no simulator to say it to: see `va_strobe_write`. */
+      if (handle != NULL) {
+        osdi_log(handle, msg, lvl);
+      }
     } else if (i < VA_NFD && va_fd[i] != NULL) {
       fputs(msg, va_fd[i]);
     }
     return;
   }
   /* Channel 0 is the simulator's own output. */
-  if (d & 1) {
+  if ((d & 1) && handle != NULL) {
     osdi_log(handle, msg, lvl);
   }
   for (uint32_t b = 1; b < VA_NMCD; b++) {
@@ -341,9 +352,192 @@ void va_fputs(void *handle, int32_t desc, char *msg, uint32_t lvl) {
   }
 }
 
+/* 9.4.1: "$strobe displays the simulation data at the end of the current
+ * simulation time", which an analog block cannot reach by itself -- it is reached
+ * many times while the solver settles one point, and nothing in it knows which
+ * evaluation was the last.
+ *
+ * So the line comes here, and what happens to it depends on whether anything can
+ * tell us that a point is final:
+ *
+ *   a simulator that calls `accept`   the line is held until the point is accepted
+ *                                     and then written, so it is the line of the
+ *                                     evaluation that converged, once per accepted
+ *                                     point, and nothing at all for a point the
+ *                                     solver went back on.
+ *   one that does not                 the line is written as soon as it is composed
+ *                                     at a new time and nothing is held, which is
+ *                                     what this task did before the callback
+ *                                     existed: one line per attempted point, from
+ *                                     its first evaluation.
+ *
+ * The first point of a run is the one exception on an accepting simulator: its
+ * line is composed before the first `accept` arrives, so it is written as the
+ * second column above describes. Nothing can be done about that from here, and
+ * nothing is lost by it.
+ *
+ * One pending line per instance and statement, because a statement writes one line
+ * per timepoint and two instances of a model do not share theirs. The table is
+ * searched linearly: it holds one entry per strobe statement per instance, which
+ * is a handful in every model that logs anything.
+ */
+int32_t va_fflush(int32_t desc, int32_t all);
+
+typedef struct VaStrobe {
+  /* The instance the line belongs to, or NULL for a free slot. */
+  void *inst;
+  /* Which statement composed it, so that two in one module do not overwrite each
+   * other. The lowering numbers them. */
+  int32_t site;
+  int32_t desc;
+  uint32_t lvl;
+  /* The `$abstime` it was composed at, which is how a new point is recognized. */
+  double at;
+  /* Owned here, and freed when written or replaced. */
+  char *line;
+} VaStrobe;
+
+VA_SHARED VaStrobe *va_strobes;
+VA_SHARED uint32_t va_nstrobes;
+/* Set by the first `accept` call. Until one arrives the simulator is assumed never
+ * to make one, and a line is written as soon as it is composed at a new time,
+ * which is what this task did before the callback existed. */
+VA_SHARED bool va_accept_seen;
+
+/* `handle` is the simulator's, and is only valid for the duration of the call it
+ * came with: ngspice builds one on the stack per evaluation. So it is passed in
+ * rather than kept, and a flush that has none (the library going away, `$fflush`)
+ * writes to files only -- `va_fputs` leaves the simulator's own log alone when it
+ * has no handle to write through. */
+static void va_strobe_write(VaStrobe *slot, void *handle) {
+  if (slot->line != NULL) {
+    va_fputs(handle, slot->desc, slot->line, slot->lvl);
+    /* The point is final, so the line is too: a measurement log is read while the
+     * simulation is still going, and a line held back in a buffer is a line that
+     * is not there yet. Once per accepted point, which is what the clause's own
+     * "end of the current simulation time" costs. */
+    va_fflush(slot->desc, 0);
+    free(slot->line);
+    slot->line = NULL;
+  }
+  slot->inst = NULL;
+}
+
+/* The pending line of this instance and statement, or a free slot for it. */
+static VaStrobe *va_strobe_slot(void *inst, int32_t site) {
+  VaStrobe *slot;
+  uint32_t i;
+  for (i = 0; i < va_nstrobes; i++) {
+    if (va_strobes[i].inst == inst && va_strobes[i].site == site) {
+      return &va_strobes[i];
+    }
+  }
+  for (i = 0; i < va_nstrobes; i++) {
+    if (va_strobes[i].inst == NULL) {
+      return &va_strobes[i];
+    }
+  }
+  slot = realloc(va_strobes, (va_nstrobes + 1) * sizeof(VaStrobe));
+  if (slot == NULL) {
+    return NULL;
+  }
+  va_strobes = slot;
+  slot = &va_strobes[va_nstrobes];
+  va_nstrobes += 1;
+  slot->inst = NULL;
+  slot->line = NULL;
+  return slot;
+}
+
+/* `$strobe` and `$fstrobe`: keep this line as the one for `at`, and take the
+ * ownership of it that the formatting handed over.
+ *
+ * `inst` is NULL where there is no instance to key on (a model's own setup, or
+ * verilogae), and then there is no timepoint either, so the line is written as it
+ * stands.
+ */
+void va_strobe(void *handle, void *inst, uint32_t lvl, int32_t site, int32_t desc,
+               char *line, double at) {
+  VaStrobe *slot;
+  if (line == NULL) {
+    return;
+  }
+  if (inst == NULL) {
+    va_fputs(handle, desc, line, lvl);
+    free(line);
+    return;
+  }
+  slot = va_strobe_slot(inst, site);
+  if (slot == NULL) {
+    va_fputs(handle, desc, line, lvl);
+    free(line);
+    return;
+  }
+
+  if (!va_accept_seen) {
+    /* No simulator has said that a point was accepted, so this one is assumed not
+     * to: write the first evaluation at each new time and keep nothing. That is
+     * what this task did before there was an accept callback, down to the line it
+     * picks, so a simulator that does not call one sees no change at all. The slot
+     * is kept for the time, which is all that is needed to recognize a new point.
+     */
+    bool is_new = slot->inst != inst || slot->at != at;
+    slot->inst = inst;
+    slot->site = site;
+    slot->at = at;
+    if (is_new) {
+      va_fputs(handle, desc, line, lvl);
+    }
+    free(line);
+    return;
+  }
+
+  /* A simulator that does confirm its points: hold the line, replacing whatever
+   * an earlier evaluation of this point left, and let `accept` decide that it was
+   * the last word. A point the solver goes back on is simply overwritten. */
+  if (slot->inst == inst && slot->line != NULL) {
+    free(slot->line);
+  }
+  slot->inst = inst;
+  slot->site = site;
+  slot->desc = desc;
+  slot->lvl = lvl;
+  slot->at = at;
+  slot->line = line;
+}
+
+/* The descriptor's `accept`: the timepoint just evaluated is final, so every line
+ * this instance composed during it is the line for it. */
+void va_accept(void *handle, void *inst, void *model, void *sim_info) {
+  uint32_t i;
+  (void)model;
+  (void)sim_info;
+  va_accept_seen = 1;
+  for (i = 0; i < va_nstrobes; i++) {
+    if (va_strobes[i].inst == inst) {
+      va_strobe_write(&va_strobes[i], handle);
+    }
+  }
+}
+
+/* Nothing else holds the last line of a run: no further point arrives to push it
+ * out, and a simulator that accepts points has already had the last one. */
+static void va_strobe_flush(void) {
+  uint32_t i;
+  for (i = 0; i < va_nstrobes; i++) {
+    va_strobe_write(&va_strobes[i], NULL);
+  }
+}
+
+__attribute__((destructor)) static void va_strobe_atexit(void) { va_strobe_flush(); }
+
 /* 9.5.6: "$fflush(mcd) ... writes any buffered output"; with no argument it
  * flushes everything this library has open. */
 int32_t va_fflush(int32_t desc, int32_t all) {
+  /* A line this library is holding is buffered output too. */
+  if (all) {
+    va_strobe_flush();
+  }
   if (all) {
     for (uint32_t i = VA_FD_RESERVED; i < VA_NFD; i++) {
       if (va_fd[i] != NULL) {

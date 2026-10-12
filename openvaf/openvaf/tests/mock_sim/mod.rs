@@ -467,6 +467,32 @@ impl OsdiInstance {
         EvalRetFlags::from_bits(flags).unwrap()
     }
 
+    /// The timepoint protocol's accept callback: the point just evaluated is final
+    /// (`docs/osdi-timepoint-protocol.md`). Returns whether the model had any
+    /// accepted-point work at all, which a descriptor says by leaving the field
+    /// null.
+    ///
+    /// The simulator decides when to call this; the mock one leaves it to the test,
+    /// because what a test wants to pin is the difference between a point that was
+    /// accepted and one that was not.
+    pub fn accept(&self, model: &OsdiModel) -> bool {
+        // Read the field as the number it is: Rust takes a `fn` to be non-null, so
+        // a null one has to be recognized before it is a `fn` at all.
+        let offered = unsafe { ptr::addr_of!(self.descriptor.accept).cast::<usize>().read() };
+        if offered == 0 {
+            return false;
+        }
+        (self.descriptor.accept)(
+            b"foo\0".as_ptr() as *mut c_void,
+            self.data,
+            model.data,
+            // 9.4.1's work needs nothing of the simulator's state, and ngspice has
+            // no `OsdiSimInfo` to hand at this point either.
+            ptr::null_mut(),
+        );
+        true
+    }
+
     /// Read one `double` out of the instance data at a descriptor-given offset.
     ///
     /// # Safety

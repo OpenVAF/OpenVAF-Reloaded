@@ -207,6 +207,7 @@ pub struct OsdiDescriptor {
     pub absdelay_info: *const OsdiAbsDelayInfo,
     pub breakpoint_offset: u32,
     pub discontinuity_offset: u32,
+    pub accept: fn(*mut c_void, *mut c_void, *mut c_void, *mut OsdiSimInfo),
 }
 impl OsdiDescriptor {
     pub fn access(
@@ -343,6 +344,15 @@ impl OsdiDescriptor {
         exponent: *mut f64,
     ) {
         (self.load_noise_params)(inst, model, power, exponent)
+    }
+    pub fn accept(
+        &self,
+        handle: *mut c_void,
+        inst: *mut c_void,
+        model: *mut c_void,
+        info: *mut OsdiSimInfo,
+    ) {
+        (self.accept)(handle, inst, model, info)
     }
 }
 #[repr(C)]
