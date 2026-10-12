@@ -1,0 +1,20 @@
+* Multi-dimensional arrays, VAMS-2023 3.2: the crosstalk matrix of 3.4.8
+* in0..2 : three sines at different frequencies, so the three weighted sums are
+*          three different waveforms and none of them is a scaled copy
+* out0..2 : the matrix product, accumulated through computed indices
+* pick    : c[i][j] with i and j from the signs of in0 and in1
+
+Vin0 in0 0 SIN(0 1 1MEG)
+Vin1 in1 0 SIN(0 1 2MEG)
+Vin2 in2 0 SIN(0 1 3MEG)
+
+Nx out0 out1 out2 pick in0 in1 in2 xmod
+.model xmod xtalk(k=0.01)
+
+.control
+pre_osdi xtalk.osdi
+tran 5n 2u
+wrdata xt_out.txt v(out0) v(out1) v(out2) v(pick) v(in0) v(in1) v(in2)
+.endc
+
+.end

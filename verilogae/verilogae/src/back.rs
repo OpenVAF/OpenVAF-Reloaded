@@ -67,9 +67,17 @@ pub fn stub_callbacks<'ll>(
                     CallbackFun::Prebuilt(cx.const_callback(&[cx.ty_double()], cx.const_real(0.0)))
                 }
                 CallBackKind::Print { .. }
+                | CallBackKind::StrobeLine { .. }
                 | CallBackKind::ParamInfo(_, _)
                 | CallBackKind::BuiltinLimit { .. }
                 | CallBackKind::StoreLimit(_)
+                | CallBackKind::StoreRetained(_)
+                | CallBackKind::File(_)
+                | CallBackKind::RetainedFirst(_)
+                | CallBackKind::StoreRetainedStr(_)
+                | CallBackKind::PrevRetainedStr(_)
+                | CallBackKind::RngValue(_)
+                | CallBackKind::RngSeed(_)
                 | CallBackKind::LimDiscontinuity
                 | CallBackKind::CollapseHint(_, _)
                 | CallBackKind::SetRetFlag { .. } => return None,
@@ -378,7 +386,8 @@ impl CodegenCtx<'_, '_> {
                     ParamKind::ImplicitUnknown(_)
                     | ParamKind::Abstime
                     | ParamKind::PrevState(_)
-                    | ParamKind::NewState(_) => codegen.builder.cx.const_real(0.0),
+                    | ParamKind::NewState(_)
+                    | ParamKind::PrevRetained(_) => codegen.builder.cx.const_real(0.0),
                     ParamKind::EnableIntegration | ParamKind::EnableLim => {
                         codegen.builder.cx.const_bool(false)
                     }
@@ -724,7 +733,8 @@ impl CodegenCtx<'_, '_> {
                     ParamKind::ImplicitUnknown(_)
                     | ParamKind::Abstime
                     | ParamKind::PrevState(_)
-                    | ParamKind::NewState(_) => builder.cx.const_real(0.0),
+                    | ParamKind::NewState(_)
+                    | ParamKind::PrevRetained(_) => builder.cx.const_real(0.0),
                     ParamKind::EnableIntegration | ParamKind::EnableLim => {
                         builder.cx.const_bool(false)
                     }

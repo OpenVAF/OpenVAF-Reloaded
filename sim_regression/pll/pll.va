@@ -1,0 +1,177 @@
+`include "disciplines.vams"
+
+// A charge-pump PLL, behavioural, built out of nothing but the analog operators
+// and events the LRM gives a system-level modeller: an event-driven clock source
+// (5.10.3.3), edge detection (5.10.3.1), a Gaussian draw for jitter (9.13.2) and
+// `transition` to smooth every logic-valued waveform (4.5.8).
+//
+// The point of the netlist around it is that the loop closes: the reference and
+// the divided oscillator meet at the phase detector, the charge pump drives the
+// loop filter, and the oscillator frequency has to arrive at ndiv times the
+// reference.
+
+// ---------------------------------------------------------------------------
+// A clock source that schedules its own edges. Each event's handler names the
+// time of the next one, which is 5.10.3.3's "if the start_time ... change value
+// during the evaluation of the analog block, the next event will be scheduled
+// based on the latest value" -- and is what makes a per-cycle period, and
+// therefore jitter, expressible at all.
+//
+// `drift` reports the worst distance between where an edge landed and where the
+// grid says it belongs, which is the whole claim about placement in one number.
+module clkref(clk, drift);
+    output clk, drift;
+    electrical clk, drift;
+
+    parameter real period = 1u from (0:inf);
+    parameter real tr = 1n from (0:inf);
+    parameter real jitter = 0.0 from [0:inf);
+    parameter real tol = 0.0 from [0:inf);
+    parameter real vh = 1.0;
+
+    integer seed, state;
+    real next_edge, worst, n;
+
+    analog begin
+        @(initial_step) begin
+            state = 0;
+            next_edge = 0.0;
+            worst = 0.0;
+            n = 0.0;
+        end
+
+        // A period of zero makes every event a one-shot: the only thing that
+        // schedules the next edge is the handler below. `tol` is the clause's
+        // time_tol, a landing window for when the instants asked for are a running
+        // sum of half-periods and the simulator's time a running sum of steps;
+        // ngspice lands on them exactly, so the netlist leaves it at zero.
+        @(timer(next_edge, 0.0, tol)) begin
+            if (abs($abstime - n * period / 2.0) > worst)
+                worst = abs($abstime - n * period / 2.0);
+            n = n + 1.0;
+            state = !state;
+            // The next instant from the one just served, not from the time it was
+            // served at. The two are the same thing when the landing is exact, and
+            // only this one stays on the grid when it is not: a tolerance spent on
+            // every edge would otherwise accumulate into a frequency error.
+            next_edge = next_edge + period / 2.0 + $rdist_normal(seed, 0.0, jitter);
+        end
+
+        V(clk) <+ transition(state ? vh : 0.0, 0.0, tr);
+        V(drift) <+ worst;
+    end
+endmodule
+
+// ---------------------------------------------------------------------------
+// A tri-state phase-frequency detector and its charge pump. An edge raises its
+// own arm; whichever arrives first holds the pump until the other catches up, and
+// then both are dropped. So the pump is on for exactly the interval between the
+// two edges and off the rest of the time: the charge per cycle is the phase error
+// and the ripple goes to zero with it.
+//
+// The clearing is written as a plain `if` after both event controls, and the arms
+// are read before they are written, which is what earns them their memory between
+// evaluations (4.5.10). The arm that arrives second is raised and dropped in the
+// same evaluation, which is the zero-width pulse a real PFD's reset path also
+// produces and contributes no charge.
+//
+// With the two frequencies apart it is the more frequent edge that keeps finding
+// its arm already raised, so the pump stays on in one direction: the detector
+// pulls in as well as it tracks, which is what the F in PFD is for.
+module pfd_cp(ref, fb, ctrl);
+    input ref, fb;
+    output ctrl;
+    electrical ref, fb, ctrl;
+
+    parameter real vth = 0.5;
+    parameter real icp = 20u;
+    parameter real tr = 2n from (0:inf);
+
+    integer up, dn;
+
+    analog begin
+        @(initial_step) begin
+            up = 0;
+            dn = 0;
+        end
+
+        @(cross(V(ref) - vth, +1)) up = 1;
+        @(cross(V(fb) - vth, +1)) dn = 1;
+
+        if (up && dn) begin
+            up = 0;
+            dn = 0;
+        end
+
+        // Current *out of* the node, so a reference edge ahead of the feedback
+        // edge charges the filter and speeds the oscillator up.
+        I(ctrl) <+ -transition(icp * (up - dn), 0.0, tr);
+    end
+endmodule
+
+// ---------------------------------------------------------------------------
+// The oscillator, event-driven for the same reason the reference is: its edges
+// are half a period apart at whatever frequency the control voltage asks for at
+// that moment, and `timer` places them there exactly.
+module evco(ctrl, clk);
+    input ctrl;
+    output clk;
+    electrical ctrl, clk;
+
+    parameter real f0 = 3M from (0:inf);
+    parameter real kvco = 2M;
+    parameter real fmin = 1M from (0:inf);
+    parameter real tr = 1n from (0:inf);
+    parameter real vh = 1.0;
+
+    integer state;
+    real next_edge, freq;
+
+    analog begin
+        @(initial_step) begin
+            state = 0;
+            next_edge = 0.0;
+        end
+
+        freq = f0 + kvco * V(ctrl);
+        if (freq < fmin) freq = fmin;
+
+        // From the time the edge was taken, not from the instant it was asked
+        // for -- the opposite of the reference, and for the opposite reason. A
+        // grid-locked clock must not let a late edge move the grid; a variable
+        // oscillator must not let one put the next edge in the past, where it
+        // would be served immediately and the two half-periods would cancel into
+        // no edge at all.
+        @(timer(next_edge)) begin
+            state = !state;
+            next_edge = $abstime + 0.5 / freq;
+        end
+
+        V(clk) <+ transition(state ? vh : 0.0, 0.0, tr);
+    end
+endmodule
+
+// ---------------------------------------------------------------------------
+// Divide by ndiv, counting rising edges. `cross` steers the timestep onto each
+// one, so the count is not at the mercy of where the solver happened to step.
+module divider(in, out);
+    input in;
+    output out;
+    electrical in, out;
+
+    parameter integer ndiv = 4 from [2:inf);
+    parameter real vth = 0.5;
+    parameter real tr = 1n from (0:inf);
+    parameter real vh = 1.0;
+
+    integer cnt;
+
+    analog begin
+        @(initial_step) cnt = 0;
+        @(cross(V(in) - vth, +1)) begin
+            cnt = cnt + 1;
+            if (cnt >= ndiv) cnt = 0;
+        end
+        V(out) <+ transition(2 * cnt < ndiv ? vh : 0.0, 0.0, tr);
+    end
+endmodule

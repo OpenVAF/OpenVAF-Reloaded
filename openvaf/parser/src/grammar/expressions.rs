@@ -113,9 +113,14 @@ fn atom_expr(p: &mut Parser) -> Option<CompletedMarker> {
             if p.at(T!('(')) {
                 call(p, m)
             } else if p.at(T!['[']) {
-                // Index expression `base[index]` (array element or bus node access).
-                let base = m.precede(p).complete(p, PATH_EXPR);
-                index_expr(p, base)
+                // Index expression `base[index]` (array element or bus node access),
+                // one per dimension: `m[i][j]` indexes a multi-dimensional array
+                // (VAMS-2023 3.2) and is an index expression whose base is one.
+                let mut base = m.precede(p).complete(p, PATH_EXPR);
+                while p.at(T!['[']) {
+                    base = index_expr(p, base);
+                }
+                base
             } else {
                 let m = m.precede(p);
                 m.complete(p, PATH_EXPR)

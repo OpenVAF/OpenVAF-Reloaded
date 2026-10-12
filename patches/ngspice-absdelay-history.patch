@@ -1,0 +1,649 @@
+--- a/src/include/ngspice/osdiitf.h
++++ b/src/include/ngspice/osdiitf.h
+@@ -17,6 +17,9 @@
+ 
+ typedef struct OsdiRegistryEntry {
+   const void *descriptor;
++  /* Size the object file reported for its descriptor, or sizeof(OsdiDescriptor)
++   * for an OSDI 0.3 file. Fields past that are not there to read. */
++  uint32_t descriptor_size;
+   uint32_t inst_offset;
+   uint32_t noise_offset;
+   uint32_t dt;
+--- a/src/osdi/osdi.h
++++ b/src/osdi/osdi.h
+@@ -143,6 +143,17 @@
+   uint32_t len;
+ }OsdiParamOpvar;
+ 
++/* VAMS-2023 4.5.7. One per absdelay in the module: the input the simulator has to
++ * remember, the unknown whose row it has to stamp with the delayed value, and where
++ * in the instance data the model leaves the delay it worked out this evaluation. */
++typedef struct OsdiAbsDelayInfo {
++  uint32_t input_node_1;
++  uint32_t input_node_2;
++  uint32_t output_node;
++  uint32_t delay_offset;
++  uint32_t max_delay_offset;
++}OsdiAbsDelayInfo;
++
+ typedef struct OsdiNoiseSource {
+   char *name;
+   OsdiNodePair nodes;
+@@ -202,6 +213,26 @@
+   void (*load_jacobian_resist)(void *inst, void* model);
+   void (*load_jacobian_react)(void *inst, void* model, double alpha);
+   void (*load_jacobian_tran)(void *inst, void* model, double alpha);
++  /* OSDI 0.4 tail. Everything from here on is only present when the object file
++   * exports OSDI_DESCRIPTOR_SIZE and that size reaches far enough, which is what
++   * OsdiRegistryEntry.descriptor_size is kept for. The fields are listed in the
++   * order OpenVAF-reloaded emits them, because the offsets are what matter. */
++  uint32_t (*given_flag_model)(void *model, uint32_t id);
++  uint32_t (*given_flag_instance)(void *inst, uint32_t id);
++  uint32_t num_resistive_jacobian_entries;
++  uint32_t num_reactive_jacobian_entries;
++  void (*write_jacobian_array_resist)(void *inst, void* model, double* destination);
++  void (*write_jacobian_array_react)(void *inst, void* model, double* destination);
++  uint32_t num_inputs;
++  OsdiNodePair* inputs;
++  void (*load_jacobian_with_offset_resist)(void *inst, void* model, size_t offset);
++  void (*load_jacobian_with_offset_react)(void *inst, void* model, size_t offset);
++  void* unknown_nature;
++  void* residual_nature;
++  uint32_t *noise_source_type;
++  void (*load_noise_params)(void *inst, void *model, double *power, double *exponent);
++  uint32_t absdelay_count;
++  const OsdiAbsDelayInfo *absdelay_info;
+ }OsdiDescriptor;
+ 
+ 
+--- a/src/osdi/osdidefs.h
++++ b/src/osdi/osdidefs.h
+@@ -58,12 +58,57 @@
+ #define ALIGN(pow) __declspec(align(pow))
+ #endif
+ 
++/* One absdelay, as the descriptor describes it plus the history the protocol makes
++ * the simulator's business (VAMS-2023 4.5.7). */
++typedef struct OsdiAbsDelayRuntime {
++  uint32_t output;
++  uint32_t input_hi;
++  uint32_t input_lo;
++  uint32_t delay_off;
++  uint32_t max_delay_off;
++
++  /* The row the model leaves empty. `coo_*` are the pointers SMPmakeElt handed
++   * out; with KLU those are only keys to look the real elements up with. */
++  double *jac_out;
++  double *jac_hi;
++  double *jac_lo;
++  double *coo_out;
++  double *coo_hi;
++  double *coo_lo;
++  double *csc_out;
++  double *csc_hi;
++  double *csc_lo;
++  double *csc_cplx_out;
++  double *csc_cplx_hi;
++  double *csc_cplx_lo;
++
++  /* Accepted timepoints, oldest first. */
++  double *hist_t;
++  double *hist_v;
++  uint32_t hist_len;
++  uint32_t hist_cap;
++
++  /* The point being evaluated, which the solver may still reject. */
++  double at;
++  double input_now;
++  bool started;
++
++  /* What the last evaluation came to. */
++  double delay;
++  double max_delay;
++  bool has_max;
++  double delayed;
++  double slope;
++} OsdiAbsDelayRuntime;
++
+ typedef struct OsdiExtraInstData {
+   double dt;
+   double temp;
+   bool temp_given;
+   bool dt_given;
+   uint32_t eval_flags;
++  /* `absdelay_count` runtimes, or NULL when the model has no absdelay. */
++  OsdiAbsDelayRuntime *absdelay;
+ 
+ } ALIGN(MAX_ALIGN) OsdiExtraInstData;
+ 
+@@ -103,6 +148,25 @@
+ 
+ typedef void (*osdi_log_ptr)(void *handle, char *msg, uint32_t lvl);
+ 
++/* absdelay (VAMS-2023 4.5.7); implemented in osdiload.c */
++extern uint32_t osdi_absdelay_count(const OsdiRegistryEntry *entry);
++extern int osdi_absdelay_setup(SMPmatrix *matrix, const OsdiRegistryEntry *entry,
++                               GENinstance *gen_inst);
++extern void osdi_absdelay_free(const OsdiRegistryEntry *entry,
++                               GENinstance *gen_inst);
++extern void osdi_absdelay_eval(CKTcircuit *ckt, const OsdiRegistryEntry *entry,
++                               GENinstance *gen_inst, bool is_tran);
++extern void osdi_absdelay_load(CKTcircuit *ckt, const OsdiRegistryEntry *entry,
++                               GENinstance *gen_inst);
++extern void osdi_absdelay_ac_load(CKTcircuit *ckt, const OsdiRegistryEntry *entry,
++                                  GENinstance *gen_inst);
++#ifdef KLU
++extern int osdi_absdelay_bind_csc(SMPmatrix *matrix, const OsdiRegistryEntry *entry,
++                                  GENinstance *gen_inst);
++extern void osdi_absdelay_update_csc(const OsdiRegistryEntry *entry,
++                                     GENinstance *gen_inst, bool complex);
++#endif
++
+ double osdi_pnjlim(bool init, bool *icheck, double vnew, double vold, double vt,
+                    double vcrit);
+ 
+--- a/src/osdi/osdiregistry.c
++++ b/src/osdi/osdiregistry.c
+@@ -477,6 +477,7 @@
+     size_t noise_off = calc_osdi_noise_off(descr);
+     dst[i] = (OsdiRegistryEntry){
+         .descriptor = descr,
++        .descriptor_size = (uint32_t)descriptor_size,
+         .inst_offset = (uint32_t)inst_off,
+         .noise_offset = (uint32_t)noise_off,
+         .dt = dt,
+--- a/src/osdi/osdisetup.c
++++ b/src/osdi/osdisetup.c
+@@ -284,6 +284,13 @@
+         return err;
+       }
+ 
++      /* an absdelay output row is the simulator's to stamp, so its entries are
++       * not in the descriptor's list (VAMS-2023 4.5.7) */
++      err = osdi_absdelay_setup(matrix, entry, gen_inst);
++      if (err) {
++        return err;
++      }
++
+       /* reserve space in the state vector*/
+       gen_inst->GENstate = *states;
+       write_state_ids(descr, inst, (uint32_t)*states);
+@@ -383,6 +390,9 @@
+          gen_inst = gen_inst->GENnextInstance) {
+       void *inst = osdi_instance_data(entry, gen_inst);
+ 
++      /* the absdelay history belongs to this matrix, which is going away */
++      osdi_absdelay_free(entry, gen_inst);
++
+       // reset is collapsible
+       bool *collapsed = (bool *)(((char *)inst) + descr->collapsed_offset);
+       memset(collapsed, 0, sizeof(bool) * descr->num_collapsible);
+@@ -492,6 +502,10 @@
+       if (err != (OK)) {
+         return err;
+       }
++      err = osdi_absdelay_bind_csc(ckt->CKTmatrix, entry, gen_inst);
++      if (err != (OK)) {
++        return err;
++      }
+     }
+   }
+ 
+@@ -519,6 +533,7 @@
+       if (err != (OK)) {
+         return err;
+       }
++      osdi_absdelay_update_csc(entry, gen_inst, complex);
+     }
+   }
+ 
+--- a/src/osdi/osdiload.c
++++ b/src/osdi/osdiload.c
+@@ -17,12 +17,17 @@
+ #include "osdi.h"
+ #include "osdidefs.h"
+ 
++#include <math.h>
++#include <stddef.h>
+ #include <stdint.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/types.h>
+ 
++#include "ngspice/klu.h"
++#include "ngspice/smpdefs.h"
++
+ #define NUM_SIM_PARAMS 10
+ char *sim_params[NUM_SIM_PARAMS + 1] = {
+     "iniLim", "gmin", "gdev", "tnom", 
+@@ -54,6 +59,382 @@
+   return sim_params_;
+ }
+ 
++/* ----------------------------------------------------------------------------
++ * absdelay (VAMS-2023 4.5.7)
++ *
++ *   Output(t) = Input(max(t - td, 0))
++ *
++ * The compiler emits the delayed output as an unknown of its own and leaves that
++ * unknown's row empty: the input's history is not something a model evaluation
++ * has, so the descriptor hands the job over (OsdiAbsDelayInfo) and the simulator
++ * remembers the input, reads it back at t - td, and stamps the row. What follows
++ * is that half of the contract.
++ * ------------------------------------------------------------------------- */
++
++/* The absdelay table is at the very end of the OSDI 0.4 descriptor, so a shorter
++ * descriptor simply does not have it. */
++extern uint32_t osdi_absdelay_count(const OsdiRegistryEntry *entry) {
++  const OsdiDescriptor *descr = entry->descriptor;
++  size_t needed = offsetof(OsdiDescriptor, absdelay_info) +
++                  sizeof(const OsdiAbsDelayInfo *);
++  if ((size_t)entry->descriptor_size < needed || !descr->absdelay_info) {
++    return 0;
++  }
++  return descr->absdelay_count;
++}
++
++extern int osdi_absdelay_setup(SMPmatrix *matrix, const OsdiRegistryEntry *entry,
++                               GENinstance *gen_inst) {
++  const OsdiDescriptor *descr = entry->descriptor;
++  uint32_t count = osdi_absdelay_count(entry);
++  OsdiExtraInstData *extra = osdi_extra_instance_data(entry, gen_inst);
++  void *inst = osdi_instance_data(entry, gen_inst);
++
++  osdi_absdelay_free(entry, gen_inst);
++  if (!count) {
++    return (OK);
++  }
++
++  uint32_t *node_mapping =
++      (uint32_t *)(((char *)inst) + descr->node_mapping_offset);
++  extra->absdelay = TMALLOC(OsdiAbsDelayRuntime, count);
++  if (!extra->absdelay) {
++    return (E_NOMEM);
++  }
++  memset(extra->absdelay, 0, sizeof(OsdiAbsDelayRuntime) * count);
++
++  for (uint32_t i = 0; i < count; i++) {
++    const OsdiAbsDelayInfo *info = &descr->absdelay_info[i];
++    OsdiAbsDelayRuntime *rt = &extra->absdelay[i];
++
++    rt->output = node_mapping[info->output_node];
++    rt->input_hi = info->input_node_1 == UINT32_MAX
++                       ? 0
++                       : node_mapping[info->input_node_1];
++    rt->input_lo = info->input_node_2 == UINT32_MAX
++                       ? 0
++                       : node_mapping[info->input_node_2];
++    rt->delay_off = info->delay_offset;
++    rt->max_delay_off = info->max_delay_offset;
++
++    /* The row is the simulator's, so its matrix entries are not in the
++     * descriptor's list and have to be made here. */
++    if (!rt->output) {
++      continue;
++    }
++    rt->jac_out = SMPmakeElt(matrix, (int)rt->output, (int)rt->output);
++    if (!rt->jac_out) {
++      return (E_NOMEM);
++    }
++    if (rt->input_hi) {
++      rt->jac_hi = SMPmakeElt(matrix, (int)rt->output, (int)rt->input_hi);
++      if (!rt->jac_hi) {
++        return (E_NOMEM);
++      }
++    }
++    if (rt->input_lo) {
++      rt->jac_lo = SMPmakeElt(matrix, (int)rt->output, (int)rt->input_lo);
++      if (!rt->jac_lo) {
++        return (E_NOMEM);
++      }
++    }
++    rt->coo_out = rt->jac_out;
++    rt->coo_hi = rt->jac_hi;
++    rt->coo_lo = rt->jac_lo;
++  }
++  return (OK);
++}
++
++extern void osdi_absdelay_free(const OsdiRegistryEntry *entry,
++                               GENinstance *gen_inst) {
++  OsdiExtraInstData *extra = osdi_extra_instance_data(entry, gen_inst);
++  uint32_t count = osdi_absdelay_count(entry);
++  if (!extra->absdelay) {
++    return;
++  }
++  for (uint32_t i = 0; i < count; i++) {
++    tfree(extra->absdelay[i].hist_t);
++    tfree(extra->absdelay[i].hist_v);
++  }
++  tfree(extra->absdelay);
++  extra->absdelay = NULL;
++}
++
++static void absdelay_push(OsdiAbsDelayRuntime *rt, double at, double val) {
++  if (rt->hist_len == rt->hist_cap) {
++    uint32_t cap = rt->hist_cap ? rt->hist_cap * 2 : 64;
++    rt->hist_t = TREALLOC(double, rt->hist_t, cap);
++    rt->hist_v = TREALLOC(double, rt->hist_v, cap);
++    rt->hist_cap = cap;
++  }
++  rt->hist_t[rt->hist_len] = at;
++  rt->hist_v[rt->hist_len] = val;
++  rt->hist_len++;
++}
++
++/* Record this evaluation and read the history back at t - td. */
++extern void osdi_absdelay_eval(CKTcircuit *ckt, const OsdiRegistryEntry *entry,
++                               GENinstance *gen_inst, bool is_tran) {
++  uint32_t count = osdi_absdelay_count(entry);
++  if (!count) {
++    return;
++  }
++  OsdiExtraInstData *extra = osdi_extra_instance_data(entry, gen_inst);
++  void *inst = osdi_instance_data(entry, gen_inst);
++  if (!extra->absdelay) {
++    return;
++  }
++  double time = is_tran ? ckt->CKTtime : 0.0;
++
++  for (uint32_t i = 0; i < count; i++) {
++    OsdiAbsDelayRuntime *rt = &extra->absdelay[i];
++    double input = 0.0;
++    if (rt->input_hi) {
++      input += ckt->CKTrhsOld[rt->input_hi];
++    }
++    if (rt->input_lo) {
++      input -= ckt->CKTrhsOld[rt->input_lo];
++    }
++
++    /* The delay the model worked out this evaluation. 4.5.7's rules for it --
++     * never negative, bounded by maxdelay, and frozen at its first value when
++     * there is no maxdelay -- are applied by the model, so this is just a read. */
++    double delay = *(double *)(((char *)inst) + rt->delay_off);
++    if (delay < 0.0) {
++      delay = 0.0;
++    }
++    rt->delay = delay;
++    rt->has_max = rt->max_delay_off != UINT32_MAX;
++    rt->max_delay =
++        rt->has_max ? *(double *)(((char *)inst) + rt->max_delay_off) : delay;
++
++    if (!rt->started) {
++      rt->started = true;
++      rt->at = time;
++      rt->input_now = input;
++    } else if (time != rt->at) {
++      /* Time moving on means the solver accepted the point that was being
++       * evaluated, so it joins the history. Time moving back means it rejected
++       * it, and everything from the new time onwards has to go. */
++      while (rt->hist_len && rt->hist_t[rt->hist_len - 1] >= time) {
++        rt->hist_len--;
++      }
++      if (rt->at < time) {
++        absdelay_push(rt, rt->at, rt->input_now);
++      }
++      rt->at = time;
++    }
++    rt->input_now = input;
++
++    /* Nothing older than the window can be asked for again. Without maxdelay the
++     * delay cannot change, so the window is the delay itself. */
++    double window = rt->has_max && rt->max_delay > 0.0 ? rt->max_delay : delay;
++    uint32_t drop = 0;
++    while (drop + 1 < rt->hist_len && rt->hist_t[drop + 1] <= time - window) {
++      drop++;
++    }
++    if (drop) {
++      memmove(rt->hist_t, rt->hist_t + drop,
++              sizeof(double) * (rt->hist_len - drop));
++      memmove(rt->hist_v, rt->hist_v + drop,
++              sizeof(double) * (rt->hist_len - drop));
++      rt->hist_len -= drop;
++    }
++
++    double target = time - delay;
++    rt->slope = 0.0;
++    if (!rt->hist_len || target >= rt->at) {
++      /* "In DC and operating point analyses, absdelay() returns the value of its
++       * input", which is also where a transient starts from. */
++      rt->delayed = input;
++      rt->slope = 1.0;
++      continue;
++    }
++    if (target <= rt->hist_t[0]) {
++      /* Older than anything remembered: "the output remains at input(0)". */
++      rt->delayed = rt->hist_v[0];
++      continue;
++    }
++    for (uint32_t k = rt->hist_len; k-- > 0;) {
++      if (target < rt->hist_t[k]) {
++        continue;
++      }
++      double lo_at = rt->hist_t[k];
++      double lo_val = rt->hist_v[k];
++      double hi_at = k + 1 < rt->hist_len ? rt->hist_t[k + 1] : rt->at;
++      double hi_val = k + 1 < rt->hist_len ? rt->hist_v[k + 1] : rt->input_now;
++      double span = hi_at - lo_at;
++      double frac = span > 0.0 ? (target - lo_at) / span : 0.0;
++      rt->delayed = lo_val + frac * (hi_val - lo_val);
++      /* Only the live interval ends at the value being solved for, so only there
++       * does the delayed output depend on the input of this iteration. */
++      if (k + 1 == rt->hist_len) {
++        rt->slope = frac;
++      }
++      break;
++    }
++  }
++}
++
++/* The row the model left empty: f = input(t - td) - output, in SPICE's form,
++ * where the matrix takes df/dx and the right-hand side takes (df/dx) x - f. */
++extern void osdi_absdelay_load(CKTcircuit *ckt, const OsdiRegistryEntry *entry,
++                               GENinstance *gen_inst) {
++  uint32_t count = osdi_absdelay_count(entry);
++  if (!count) {
++    return;
++  }
++  OsdiExtraInstData *extra = osdi_extra_instance_data(entry, gen_inst);
++  if (!extra->absdelay) {
++    return;
++  }
++
++  for (uint32_t i = 0; i < count; i++) {
++    OsdiAbsDelayRuntime *rt = &extra->absdelay[i];
++    if (!rt->output || !rt->jac_out) {
++      continue;
++    }
++    double input = 0.0;
++    if (rt->input_hi) {
++      input += ckt->CKTrhsOld[rt->input_hi];
++    }
++    if (rt->input_lo) {
++      input -= ckt->CKTrhsOld[rt->input_lo];
++    }
++
++    *rt->jac_out -= 1.0;
++    if (rt->jac_hi) {
++      *rt->jac_hi += rt->slope;
++    }
++    if (rt->jac_lo) {
++      *rt->jac_lo -= rt->slope;
++    }
++    /* The output's own term cancels, which is why this does not need it. */
++    ckt->CKTrhs[rt->output] += rt->slope * input - rt->delayed;
++  }
++}
++
++/* In a small-signal analysis the delay is a phase shift: 4.5.7 gives
++ * Output(w) = Input(w) exp(-j w td), with td "evaluated as a constant at a
++ * particular time", which is the operating point this analysis linearized. */
++extern void osdi_absdelay_ac_load(CKTcircuit *ckt,
++                                  const OsdiRegistryEntry *entry,
++                                  GENinstance *gen_inst) {
++  uint32_t count = osdi_absdelay_count(entry);
++  if (!count) {
++    return;
++  }
++  OsdiExtraInstData *extra = osdi_extra_instance_data(entry, gen_inst);
++  if (!extra->absdelay) {
++    return;
++  }
++
++  for (uint32_t i = 0; i < count; i++) {
++    OsdiAbsDelayRuntime *rt = &extra->absdelay[i];
++    if (!rt->output || !rt->jac_out) {
++      continue;
++    }
++    double phase = ckt->CKTomega * rt->delay;
++    double re = cos(phase);
++    double im = -sin(phase);
++
++    rt->jac_out[0] -= 1.0;
++    if (rt->jac_hi) {
++      rt->jac_hi[0] += re;
++      rt->jac_hi[1] += im;
++    }
++    if (rt->jac_lo) {
++      rt->jac_lo[0] -= re;
++      rt->jac_lo[1] -= im;
++    }
++  }
++}
++
++#ifdef KLU
++#include "ngspice/klu-binding.h"
++/* The COO pointers SMPmakeElt handed out are only keys once the matrix has been
++ * converted; this is the same lookup init_matrix_klu does for the model's own
++ * entries. */
++static int absdelay_bind_one(BindElement *bindings, size_t nz, double *coo,
++                             double **csc, double **csc_cplx) {
++  BindElement tmp;
++  BindElement *matched;
++  if (!coo) {
++    *csc = NULL;
++    *csc_cplx = NULL;
++    return (OK);
++  }
++  tmp.COO = coo;
++  tmp.CSC = NULL;
++  tmp.CSC_Complex = NULL;
++  matched = (BindElement *)bsearch(&tmp, bindings, nz, sizeof(BindElement),
++                                   BindCompare);
++  if (!matched) {
++    printf("Ptr %p not found in BindStruct Table\n", coo);
++    return (E_PANIC);
++  }
++  *csc = matched->CSC;
++  *csc_cplx = matched->CSC_Complex;
++  return (OK);
++}
++
++extern int osdi_absdelay_bind_csc(SMPmatrix *matrix,
++                                  const OsdiRegistryEntry *entry,
++                                  GENinstance *gen_inst) {
++  uint32_t count = osdi_absdelay_count(entry);
++  if (!count) {
++    return (OK);
++  }
++  OsdiExtraInstData *extra = osdi_extra_instance_data(entry, gen_inst);
++  if (!extra->absdelay) {
++    return (OK);
++  }
++  BindElement *bindings = matrix->SMPkluMatrix->KLUmatrixBindStructCOO;
++  size_t nz = (size_t)matrix->SMPkluMatrix->KLUmatrixLinkedListNZ;
++
++  for (uint32_t i = 0; i < count; i++) {
++    OsdiAbsDelayRuntime *rt = &extra->absdelay[i];
++    int err = absdelay_bind_one(bindings, nz, rt->coo_out, &rt->csc_out,
++                                &rt->csc_cplx_out);
++    if (err != (OK)) {
++      return err;
++    }
++    err = absdelay_bind_one(bindings, nz, rt->coo_hi, &rt->csc_hi,
++                            &rt->csc_cplx_hi);
++    if (err != (OK)) {
++      return err;
++    }
++    err = absdelay_bind_one(bindings, nz, rt->coo_lo, &rt->csc_lo,
++                            &rt->csc_cplx_lo);
++    if (err != (OK)) {
++      return err;
++    }
++    rt->jac_out = rt->csc_out;
++    rt->jac_hi = rt->csc_hi;
++    rt->jac_lo = rt->csc_lo;
++  }
++  return (OK);
++}
++
++extern void osdi_absdelay_update_csc(const OsdiRegistryEntry *entry,
++                                     GENinstance *gen_inst, bool complex) {
++  uint32_t count = osdi_absdelay_count(entry);
++  if (!count) {
++    return;
++  }
++  OsdiExtraInstData *extra = osdi_extra_instance_data(entry, gen_inst);
++  if (!extra->absdelay) {
++    return;
++  }
++  for (uint32_t i = 0; i < count; i++) {
++    OsdiAbsDelayRuntime *rt = &extra->absdelay[i];
++    rt->jac_out = complex ? rt->csc_cplx_out : rt->csc_out;
++    rt->jac_hi = complex ? rt->csc_cplx_hi : rt->csc_hi;
++    rt->jac_lo = complex ? rt->csc_cplx_lo : rt->csc_lo;
++  }
++}
++#endif
++
+ static void eval(const OsdiDescriptor *descr, const GENinstance *gen_inst,
+                  void *inst, OsdiExtraInstData *extra_inst_data,
+                  const void *model, const OsdiSimInfo *sim_info) {
+@@ -202,7 +583,10 @@
+             osdi_extra_instance_data(entry, gen_inst);
+ 
+ #pragma omp task firstprivate(gen_inst, inst, extra_inst_data, model)
+-        eval(descr, gen_inst, inst, extra_inst_data, model, &sim_info);
++        {
++          eval(descr, gen_inst, inst, extra_inst_data, model, &sim_info);
++          osdi_absdelay_eval(ckt, entry, gen_inst, is_tran);
++        }
+       }
+     }
+   }
+@@ -223,6 +607,7 @@
+           osdi_extra_instance_data(entry, gen_inst);
+       load(ckt, gen_inst, model, inst, extra_inst_data, is_tran, is_init_tran,
+            descr);
++      osdi_absdelay_load(ckt, entry, gen_inst);
+       eval_flags |= extra_inst_data->eval_flags;
+     }
+   }
+@@ -237,12 +622,14 @@
+       OsdiExtraInstData *extra_inst_data =
+           osdi_extra_instance_data(entry, gen_inst);
+       eval(descr, gen_inst, inst, extra_inst_data, model, &sim_info);
++      osdi_absdelay_eval(ckt, entry, gen_inst, is_tran);
+ 
+       /* init small signal analysis does not require loading values into
+        * matrix/rhs*/
+       if (!is_init_smsig) {
+         load(ckt, gen_inst, model, inst, extra_inst_data, is_tran, is_init_tran,
+              descr);
++        osdi_absdelay_load(ckt, entry, gen_inst);
+         eval_flags |= extra_inst_data->eval_flags;
+       }
+     }
+--- a/src/osdi/osdiacld.c
++++ b/src/osdi/osdiacld.c
+@@ -38,6 +38,8 @@
+       // operating point iterations
+       descr->load_jacobian_resist(inst, model);
+       descr->load_jacobian_react(inst, model, ckt->CKTomega);
++      /* the delayed-output rows, as a phase shift (VAMS-2023 4.5.7) */
++      osdi_absdelay_ac_load(ckt, entry, gen_inst);
+     }
+   }
+   return (OK);

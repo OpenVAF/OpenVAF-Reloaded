@@ -323,6 +323,84 @@ impl Diagnostic for PreprocessorDiagnostic {
                         "keyword directives may only appear outside of design elements".to_owned(),
                     ])
             }
+            PreprocessorDiagnostic::MissingTransitionTime { span } => {
+                let span = span.to_file_span(&sm);
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: span.file,
+                        range: span.range.into(),
+                        message: "expected a transition time".to_owned(),
+                    }])
+                    .with_notes(vec![
+                        "10.3: '`default_transition <transition_time>', where the time is a real \
+                         number such as 1n"
+                            .to_owned(),
+                    ])
+            }
+            PreprocessorDiagnostic::NegativeTransitionTime { span } => {
+                let span = span.to_file_span(&sm);
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: span.file,
+                        range: span.range.into(),
+                        message: "negative transition time".to_owned(),
+                    }])
+                    .with_notes(vec![
+                        "4.5.8: a rise time and a fall time 'shall be non-negative'".to_owned()
+                    ])
+            }
+            PreprocessorDiagnostic::TransitionInDesignElement { span } => {
+                let span = span.to_file_span(&sm);
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: span.file,
+                        range: span.range.into(),
+                        message: "directive is used inside a module".to_owned(),
+                    }])
+                    .with_notes(vec![
+                        "10.3: the directive 'can be used only outside of module definitions'"
+                            .to_owned(),
+                        "help: move it above the module, where it applies to every transition \
+                         filter the module contains"
+                            .to_owned(),
+                    ])
+            }
+            PreprocessorDiagnostic::UnknownDisciplineQualifier { span, .. } => {
+                let span = span.to_file_span(&sm);
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: span.file,
+                        range: span.range.into(),
+                        message: "not a net type".to_owned(),
+                    }])
+                    .with_notes(vec![
+                        "10.2: '`default_discipline [discipline [ qualifier ] ]', where the \
+                         qualifier is one of integer, real, reg, wreal, wire, tri, wand, triand, \
+                         wor, trior, trireg, tri0, tri1, supply0, supply1"
+                            .to_owned(),
+                    ])
+            }
+            PreprocessorDiagnostic::UnreachableDisciplineQualifier { span, ref qualifier } => {
+                let span = span.to_file_span(&sm);
+                Report::warning()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: span.file,
+                        range: span.range.into(),
+                        message: format!("no net can be of type '{qualifier}'"),
+                    }])
+                    .with_notes(vec![
+                        "info: the default would be in force and apply to nothing".to_owned(),
+                        "help: Verilog-A declares nets without a net type, so only an \
+                         unqualified directive (or one qualified 'wire', their default type) \
+                         reaches them"
+                            .to_owned(),
+                    ])
+            }
         };
 
         report.with_message(self.to_string())

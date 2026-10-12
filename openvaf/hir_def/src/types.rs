@@ -1,4 +1,4 @@
-use std::iter::successors;
+use std::iter::{once, successors};
 
 // use std::iter::successors;
 use stdx::impl_display;
@@ -27,8 +27,23 @@ impl_display! {
         Void => "void";
         String => "string";
         EmptyArray => "_[0:0]";
-        Array{ty,len} => "{}[0:{}]",ty,len;
+        // An array says its dimensions in the order they are declared in,
+        // outermost first, which the nesting of the type runs the other way round
+        // from -- hence a function rather than a format string.
+        Array{ty,len} => "{}",array_dims(ty,*len);
     }
+}
+
+/// An array type's shape, e.g. `real[0:1][0:2]` for `real m[0:1][0:2]`.
+///
+/// A declared range may start anywhere (`real g[2:5]`), but a type knows only how
+/// many elements each of its dimensions has, so it says so from zero.
+fn array_dims(elem: &Type, len: u32) -> std::string::String {
+    let mut res = elem.base_type().to_string();
+    for len in once(len).chain(elem.dim()) {
+        res.push_str(&format!("[0:{}]", len.saturating_sub(1)));
+    }
+    res
 }
 
 impl Type {
@@ -101,6 +116,7 @@ impl Type {
         curr
     }
 
+    /// This type with `dim`'s dimensions wrapped around it, outermost first.
     #[must_use]
     pub fn to_dim(self, dim: &[u32]) -> Type {
         let mut ty = self;
@@ -110,9 +126,11 @@ impl Type {
         ty
     }
 
+    /// The element count of each dimension, outermost first: the order they are
+    /// declared in, and the order [`Self::to_dim`] reads them back.
     pub fn dim(&self) -> Vec<u32> {
         if let Type::Array { ref ty, len } = *self {
-            let mut dims: Vec<_> = successors(Some((ty, len)), |(ty, _)| {
+            successors(Some((ty, len)), |(ty, _)| {
                 if let Type::Array { ref ty, len } = ***ty {
                     Some((ty, len))
                 } else {
@@ -120,9 +138,7 @@ impl Type {
                 }
             })
             .map(|(_, len)| len)
-            .collect();
-            dims.reverse();
-            dims
+            .collect()
         } else {
             vec![]
         }

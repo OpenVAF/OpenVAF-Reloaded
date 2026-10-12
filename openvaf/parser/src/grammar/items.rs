@@ -87,8 +87,10 @@ pub(super) fn var_decl(p: &mut Parser, m: Marker) {
 fn var(p: &mut Parser) -> bool {
     let m = p.start();
     name_r(p, TokenSet::new(&[T!['['], T![,], T![=], T![;]]));
-    // Optional array dimension, e.g. `real den[order:0];`.
-    if p.at(T!['[']) {
+    // Optional array dimensions, e.g. `real den[order:0];`. VAMS-2023 3.2 allows
+    // more than one -- `integer flag_array[0:8][0:3];` is its own example -- and
+    // every one of them is a dimension of the same array.
+    while p.at(T!['[']) {
         let dim = p.start();
         p.bump(T!['[']);
         expr(p);

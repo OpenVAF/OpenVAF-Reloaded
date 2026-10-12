@@ -1,0 +1,20 @@
+* last_crossing, VAMS-2023 4.5.10
+* in     : a 200 kHz sine, so rising zero crossings sit at exactly 0, 5, 10, 15, 20 us
+* lc     : the raw last_crossing reading -- negative until the first crossing
+* period : latest - previous crossing, the LRM's own use of the function
+
+Vin in 0 SIN(0 1 200k)
+
+Nm  in lc period lcmod
+.model lcmod lcmeas()
+
+Rl lc     0 1e12
+Rp period 0 1e12
+
+.control
+pre_osdi last_crossing.osdi
+tran 20n 24u
+wrdata lc_out.txt v(lc) v(period) v(in)
+.endc
+
+.end

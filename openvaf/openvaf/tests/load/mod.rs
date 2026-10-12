@@ -48,6 +48,15 @@ impl OsdiDescriptor {
         unsafe { slice::from_raw_parts(self.jacobian_entries, self.num_jacobian_entries as usize) }
     }
 
+    pub fn absdelay_entries(&self) -> &[OsdiAbsDelayInfo] {
+        if self.absdelay_count == 0 {
+            return &[];
+        }
+        // # SAFETY: OsdiDescriptor can only be constructed from FFI and is assumed to
+        // contain valid data
+        unsafe { slice::from_raw_parts(self.absdelay_info, self.absdelay_count as usize) }
+    }
+
     pub fn check_init_result(&self, res: OsdiInitInfo) -> Result<()> {
         if (res.flags & EVAL_RET_FLAG_FATAL) != 0 {
             bail!("Verilog-A $fatal was called")
@@ -486,6 +495,13 @@ impl Debug for OsdiDescriptor {
             }
             wn!("{} states", self.num_states);
             wn!("has bound_step {}", self.bound_step_offset != u32::MAX);
+            // Only when used, so that a module that asks for nothing says nothing.
+            if self.breakpoint_offset != u32::MAX {
+                wn!("asks for timepoints");
+            }
+            if self.discontinuity_offset != u32::MAX {
+                wn!("announces discontinuities");
+            }
             // instance_size and model_size are arch-specific (depend on struct alignment)
             // so we omit them from snapshots to allow cross-platform testing
             Ok(())

@@ -241,10 +241,15 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
         let ret_flags = builder.ret_allocated.unwrap();
         unsafe { builder.store(ret_flags, cx.const_int(0)) };
 
-        builder.callbacks =
-            general_callbacks(intern, &mut builder, ret_flags, unsafe { &*handle }, unsafe {
-                &*simparam
-            });
+        builder.callbacks = general_callbacks(
+            intern,
+            &mut builder,
+            ret_flags,
+            unsafe { &*handle },
+            unsafe { &*simparam },
+            // A model's own setup belongs to no instance and to no timepoint.
+            cx.const_null_ptr(),
+        );
         for (call_id, call) in intern.callbacks.iter_enumerated() {
             if let CallBackKind::ParamInfo(ParamInfoKind::Invalid, param) = call {
                 if !self.module.info.params[param].is_instance {
@@ -488,6 +493,7 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
         // store for use in eval() function
         unsafe { inst_data.store_temperature(&mut builder, instance, &*temperature) };
         unsafe { inst_data.store_connected_ports(&mut builder, instance, &*connected_terminals) };
+        unsafe { inst_data.init_retained(&builder, instance) };
 
         // Debug: Setting up trivial callbacks
         let trivial_cb = cx.trivial_callbacks(&[]);
@@ -512,10 +518,14 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
         }
 
         let invalid_param_err = Self::invalid_param_err(cx);
-        builder.callbacks =
-            general_callbacks(intern, &mut builder, ret_flags, unsafe { &*handle }, unsafe {
-                &*simparam
-            });
+        builder.callbacks = general_callbacks(
+            intern,
+            &mut builder,
+            ret_flags,
+            unsafe { &*handle },
+            unsafe { &*simparam },
+            instance,
+        );
         for (call_id, call) in intern.callbacks.iter_enumerated() {
             let cb = match call {
                 CallBackKind::ParamInfo(ParamInfoKind::Invalid, param) => {

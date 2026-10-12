@@ -34,6 +34,16 @@ error: type mismatch: expected real value but found string literal
 27 |         @(above("a string")) y = 5.0;
    |                 ^^^^^^^^^^ expected real value
 
+warning[L018]: 'absdelta' does not schedule an event yet
+   --> /event_functions_err.va:21:9
+   |
+21 |         @(absdelta(V(d))) y = 3.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = the event expression is checked but takes no part in scheduling
+   = the guarded statement runs on every evaluation, not per event
+   = unscheduled_event is set to warn by default
+
 error: event function 'cross' is not allowed here
    --> /event_functions_err.va:30:13
    |

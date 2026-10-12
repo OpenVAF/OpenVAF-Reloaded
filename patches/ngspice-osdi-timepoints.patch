@@ -1,0 +1,170 @@
+--- a/src/osdi/osdi.h
++++ b/src/osdi/osdi.h
+@@ -233,6 +233,18 @@
+   void (*load_noise_params)(void *inst, void *model, double *power, double *exponent);
+   uint32_t absdelay_count;
+   const OsdiAbsDelayInfo *absdelay_info;
++  /* The timepoint protocol. Where in the instance data the model leaves the
++   * instant it wants a timepoint placed at (an absolute time in seconds, +inf for
++   * none), and the lowest degree of discontinuity it announced at the point just
++   * solved (VAMS-2023 9.17.1, negative for none). UINT32_MAX when the module never
++   * asks or never announces. Read after `eval`, acted on at `accept`. */
++  uint32_t breakpoint_offset;
++  uint32_t discontinuity_offset;
++  /* Called once per accepted timepoint, with `eval`'s own arguments, after the
++   * solution is final and before the next step is attempted. NULL when the model
++   * has no accepted-point work. It is what VAMS-2023 9.4.1's "at the end of the
++   * current simulation time" needs. */
++  void (*accept)(void *handle, void *inst, void *model, OsdiSimInfo *info);
+ }OsdiDescriptor;
+ 
+ 
+--- a/src/osdi/osdiext.h
++++ b/src/osdi/osdiext.h
+@@ -27,6 +27,7 @@
+ extern int OSDItemp(GENmodel *, CKTcircuit *);
+ extern int OSDIacLoad(GENmodel *, CKTcircuit *);
+ extern int OSDItrunc(GENmodel *, CKTcircuit *, double *);
++extern int OSDIaccept(CKTcircuit *, GENmodel *);
+ extern int OSDIpzLoad(GENmodel *, CKTcircuit *, SPcomplex *);
+ extern int OSDInoise(int, int, GENmodel *, CKTcircuit *, Ndata *, double *);
+ 
+--- a/src/osdi/osdiinit.c
++++ b/src/osdi/osdiinit.c
+@@ -197,6 +197,7 @@
+   OSDIinfo->DEVacLoad = OSDIacLoad;
+   OSDIinfo->DEVpzLoad = OSDIpzLoad;
+   OSDIinfo->DEVtrunc = OSDItrunc;
++  OSDIinfo->DEVaccept = OSDIaccept;
+   OSDIinfo->DEVnoise = OSDInoise;
+ 
+   #ifdef KLU
+--- a/src/osdi/osditrunc.c
++++ b/src/osdi/osditrunc.c
+@@ -11,6 +11,126 @@
+ 
+ #include "ngspice/cktdefs.h"
+ #include "osdidefs.h"
++
++#include <math.h>
++#include <stddef.h>
++#include <stdlib.h>
++#include <stdio.h>
++
++/* Whether the object file's descriptor reaches far enough to hold a field.
++ * Everything past the OSDI 0.4 tail is optional, so a field is only there to read
++ * when the size the file reported covers it. */
++static bool osdi_has_field(const OsdiRegistryEntry *entry, size_t off, size_t size) {
++  return (size_t)entry->descriptor_size >= off + size;
++}
++
++/* Whether to act on a request for a timepoint. See the comment at the use. */
++static bool osdi_want_breakpoints(void) {
++  const char *env = getenv("OSDI_TIMEPOINT_BREAKPOINTS");
++  return env != NULL && env[0] != '0' && env[0] != '\0';
++}
++
++/* The timepoint protocol: what the model asked of the integrator during the
++ * timepoint that has just been accepted.
++ *
++ * Both requests are numbers in the instance data, written by `eval` and read here,
++ * which is how `$bound_step` and `absdelay` already reach this simulator. See
++ * docs/osdi-timepoint-protocol.md in OpenVAF-reloaded.
++ *
++ *   breakpoint       an instant the model wants a timepoint at, which `timer`,
++ *                    `transition` and the Z-filters know exactly. CKTsetBreak puts
++ *                    a point there -- and cuts the next step as well, which is why
++ *                    this half is off unless asked for; see the comment at the use.
++ *   discontinuity    a degree announced at the point just solved. The solution is
++ *                    not continuous there, so the history behind it does not
++ *                    describe what comes next: restart at order one, which is what
++ *                    ngspice itself does on the first point after a breakpoint
++ *                    (dctran.c). The order recovers by itself from there.
++ */
++int OSDIaccept(CKTcircuit *ckt, GENmodel *in_model) {
++  OsdiRegistryEntry *entry = osdi_reg_entry_model(in_model);
++  const OsdiDescriptor *descr = entry->descriptor;
++
++  bool has_accept = osdi_has_field(entry, offsetof(OsdiDescriptor, accept),
++                                   sizeof(void (*)(void))) &&
++                    descr->accept != NULL;
++  bool has_breakpoint =
++      osdi_has_field(entry, offsetof(OsdiDescriptor, breakpoint_offset),
++                     sizeof(uint32_t)) &&
++      descr->breakpoint_offset != UINT32_MAX;
++  bool has_discontinuity =
++      osdi_has_field(entry, offsetof(OsdiDescriptor, discontinuity_offset),
++                     sizeof(uint32_t)) &&
++      descr->discontinuity_offset != UINT32_MAX;
++
++  if (getenv("OSDI_TP_TRACE")) {
++    fprintf(stderr, "[osdi] accept: size %u, offsetof(accept) %zu, accept %s\n",
++            entry->descriptor_size, offsetof(OsdiDescriptor, accept),
++            has_accept ? "yes" : "no");
++  }
++
++  if (!has_breakpoint && !has_discontinuity && !has_accept) {
++    return OK;
++  }
++
++  for (GENmodel *model = in_model; model; model = model->GENnextModel) {
++    void *model_data = osdi_model_data(model);
++    for (GENinstance *inst = model->GENinstances; inst;
++         inst = inst->GENnextInstance) {
++
++      /* The model's own accepted-point work: a `$fstrobe` line composed during
++       * the evaluations of this point is written here, from the evaluation that
++       * converged, and a point the solver went back on leaves none behind. */
++      if (has_accept) {
++        OsdiNgspiceHandle handle =
++            (OsdiNgspiceHandle){.kind = 3, .name = inst->GENname};
++        descr->accept(&handle, osdi_instance_data(entry, inst), model_data, NULL);
++      }
++
++      /* Off by default, and measured: a breakpoint in ngspice both places the
++       * point and cuts the next step to a tenth of the last one, so honouring a
++       * request costs a cluster of small steps (sim_regression/timer: 835
++       * timepoints against 509) while the model's own `$bound_step` cap already
++       * lands on the instant exactly. What a request buys here is robustness
++       * rather than cost -- an instant cannot be missed by a last-bit rounding the
++       * way a cap can -- so it is the user's call. */
++      if (has_breakpoint && osdi_want_breakpoints()) {
++        double at = *(double *)(((char *)inst) + entry->inst_offset +
++                                descr->breakpoint_offset);
++        /* Only an instant still ahead is a request: the one just solved is not
++         * one, and CKTsetBreak calls a breakpoint in the past a fatal error. */
++        if (isfinite(at) && at > ckt->CKTtime + ckt->CKTminBreak) {
++          int error = CKTsetBreak(ckt, at);
++          if (error) {
++            return error;
++          }
++        }
++      }
++
++      if (has_discontinuity) {
++        double degree = *(double *)(((char *)inst) + entry->inst_offset +
++                                    descr->discontinuity_offset);
++        if (degree >= 0.0) {
++          if (getenv("OSDI_TP_TRACE")) {
++            fprintf(stderr, "[osdi] discontinuity degree %g at t=%e (order %d)\n",
++                    degree, ckt->CKTtime, ckt->CKTorder);
++          }
++          /* Restarting the integration is only worth anything to a method that
++           * carries history across the point. Gear does; trapezoidal is a one-step
++           * method whose only past value is the derivative at the point just
++           * solved, which is the post-jump one and is what the next step wants, so
++           * cutting its order would spend an order of accuracy for nothing.
++           * Measured both ways in sim_regression/timepoints. */
++          if (ckt->CKTintegrateMethod == GEAR) {
++            ckt->CKTorder = 1;
++          }
++        }
++      }
++    }
++  }
++
++  return OK;
++}
+ 
+ int OSDItrunc(GENmodel *in_model, CKTcircuit *ckt, double *timestep) {
+   OsdiRegistryEntry *entry = osdi_reg_entry_model(in_model);

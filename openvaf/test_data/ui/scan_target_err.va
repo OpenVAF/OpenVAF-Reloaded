@@ -1,0 +1,40 @@
+// VAMS-2023 9.5.4: every argument after a scan's format is written to, so every
+// one of them has to be something that can be written and has to be able to hold
+// what its conversion produces. Neither is something the signature can say,
+// because those arguments are variadic.
+module scan_target_err;
+    parameter real p = 1.0;
+
+    real tv[0:3];
+    real r;
+    integer i, n;
+    string s;
+
+    analog begin
+        i = 0;
+        n = 0;
+        r = 0.0;
+
+        // a parameter is not a place: 4.2.3 makes it constant for the analysis
+        n = $sscanf("3.5", "%e", p);
+        // nor is a literal, an expression, or a probe
+        n = $sscanf("4.5", "%e", 7);
+        n = $sscanf("6.5", "%e", i + 1);
+
+        // there is no conversion between a string and a number, in either
+        // direction
+        n = $sscanf("alpha", "%s", r);
+        n = $sscanf("7.5", "%e", s);
+
+        // and these are fine: a variable, an element of an array at an index the
+        // model computes, and a conversion the target can hold after a cast
+        n = $sscanf("1.5 2.5", "%e %e", tv[i], tv[i + 1]);
+        n = $sscanf("8", "%d", r);
+        n = $sscanf("3", "%e", i);
+        n = $sscanf("beta", "%s", s);
+
+        // more conversions than arguments: the scan stops where they run out,
+        // which is what its return value is for
+        n = $sscanf("1.5 2.5", "%e %e", r);
+    end
+endmodule

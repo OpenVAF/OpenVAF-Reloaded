@@ -36,6 +36,7 @@ pub fn main_command() -> Command {
             supported_targets(),
             target_cpu(),
             codegen_opts(),
+            absdelay(),
             interface(),
             expand(),
             run_mode(),
@@ -58,6 +59,7 @@ pub const SUPPORTED_TARGETS: &str = "supported-targets";
 pub const LINTS: &str = "lints";
 pub const TARGET_CPU: &str = "target_cpu";
 pub const CODEGEN: &str = "codegen";
+pub const ABSDELAY: &str = "absdelay";
 pub const INPUT: &str = "input";
 pub const INCLUDE: &str = "include";
 pub const OUTPUT: &str = "output";
@@ -172,6 +174,28 @@ fn codegen_opts() -> Arg {
         .value_name("OPT[=VALUE]")
         .action(ArgAction::Append)
         .required(false)
+        .value_hint(ValueHint::Other)
+}
+
+fn absdelay() -> Arg {
+    Arg::new(ABSDELAY)
+        .long(ABSDELAY)
+        .help("How absdelay (VAMS-2023 4.5.7) is realized.")
+        .long_help(
+            "How absdelay (VAMS-2023 4.5.7) is realized.\n\n\
+             simulator (default): the delay is handed to the simulator through the OSDI \
+             descriptor (OsdiAbsDelayInfo), which owns the input's history and stamps the \
+             output row. Exact, and the output row is only stamped there -- a simulator that \
+             does not implement the protocol leaves it empty and its matrix singular.\n\n\
+             in-model[:DEPTH]: the model keeps the history itself, in DEPTH retained \
+             (time, value) pairs read by linear interpolation, and caps $bound_step at their \
+             spacing. Runs on any OSDI simulator; the delay is resolved to that spacing \
+             (window/(DEPTH-2)) rather than exactly, and the run takes at least that many \
+             steps per delay window. DEPTH defaults to 32.",
+        )
+        .value_name("MODE")
+        .required(false)
+        .default_value("simulator")
         .value_hint(ValueHint::Other)
 }
 

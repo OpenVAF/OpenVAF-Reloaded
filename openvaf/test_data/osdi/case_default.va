@@ -1,0 +1,40 @@
+`include "disciplines.vams"
+
+// An analog operator in the `default` arm of a `case`. The default arm is lowered
+// into the block the last condition falls through to, and that block used to
+// still be open, so an operator that branches read a variable through a
+// placeholder phi that was then filled in somewhere else. `transition()` there
+// crashed the compiler with "attempted to read undefined value".
+//
+// The same choice written as `if`/`else` always worked, so the two are built side
+// by side here on one input: whatever the `case` arm produces, the `if` arm has to
+// produce as well.
+//
+// Voltage contributions put each equation on a branch flow unknown, where the
+// residual is the value itself once the output node is held at zero.
+module case_default(in, viacase, viaif);
+    input in;
+    output viacase, viaif;
+    electrical in, viacase, viaif;
+
+    // Not zero, so the live arm is the default one.
+    parameter integer mode = 1;
+    parameter real tr = 4.0;
+
+    real a, b;
+
+    analog begin
+        case (mode)
+            0: a = transition(V(in), 0.0, 1.0);
+            default: a = transition(V(in), 0.0, tr);
+        endcase
+
+        if (mode == 0)
+            b = transition(V(in), 0.0, 1.0);
+        else
+            b = transition(V(in), 0.0, tr);
+
+        V(viacase) <+ a;
+        V(viaif) <+ b;
+    end
+endmodule

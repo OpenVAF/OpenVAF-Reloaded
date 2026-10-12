@@ -1,0 +1,32 @@
+`include "disciplines.vams"
+
+// VAMS-2023 A.6.5: the analog event functions take `analog_expression_or_null`
+// arguments, so an argument may be omitted and the ones after it keep their
+// position. 5.10.3.1's own sample-and-hold passes `enable` as the fifth argument
+// of `cross` with the two tolerances left to the simulator.
+module event_null_args(in, out, smpl);
+    input in, smpl;
+    output out;
+    electrical in, out, smpl;
+
+    parameter real thresh = 0.0;
+    parameter integer dir = 1;
+    parameter integer en = 1;
+
+    real state;
+
+    analog begin
+        // cross ( expr [ , dir [ , time_tol [ , expr_tol [ , enable ] ] ] ] )
+        @(cross(V(smpl) - thresh, dir, , , en)) state = V(in);
+        // a trailing null argument is still an argument
+        @(cross(V(smpl) - thresh, , , )) state = V(in);
+        // above ( expr [ , time_tol [ , expr_tol [ , enable ] ] ] )
+        @(above(V(smpl) - thresh, , , en)) state = V(in);
+        // timer ( start_time [ , period [ , time_tol [ , enable ] ] ] )
+        @(timer(0.0, , , en)) state = V(in);
+        // absdelta ( expr , delta [ , time_tol [ , expr_tol [ , enable ] ] ] )
+        @(absdelta(V(in), 0.1, , , en)) state = V(in);
+
+        V(out) <+ transition(state, 0.0, 10n);
+    end
+endmodule
