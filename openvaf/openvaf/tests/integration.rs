@@ -1741,6 +1741,82 @@ fn test_transition_pwl() -> Result<()> {
     Ok(())
 }
 
+/// The timepoint protocol: what a model asks of the integrator, and what it tells
+/// it (see `docs/osdi-timepoint-protocol.md`).
+///
+/// Both halves are a number the model leaves in its instance data for the
+/// simulator to read after an evaluation, which is how `$bound_step` and
+/// `absdelay` already reach a simulator. The mock simulator reads them the same
+/// way; what it does *with* them is a real simulator's business, so what is
+/// checked here is that the right number is there at the right time.
+///
+///   * `timer` knows its next instant exactly, so it asks for a timepoint there
+///     rather than only capping the step on the way to it. The request moves to
+///     the next event once the current one is consumed, and no further.
+///   * the handler flips the output, which is a discontinuity in the value itself:
+///     degree 0, announced at the instant it happens and at no other evaluation.
+fn test_timepoints() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+
+    let desc = test_descriptor(&openvaf_test_data("osdi").join("timepoints.va"))?;
+    // The protocol is in the descriptor, so a simulator can tell whether a model
+    // speaks it before running anything.
+    assert_ne!(desc.breakpoint_offset, u32::MAX);
+    assert_ne!(desc.discontinuity_offset, u32::MAX);
+
+    let model = desc.new_model();
+    model.process_params()?;
+    let mut instance = model.new_instance();
+    let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+
+    // One accepted timestep of 1 s, returning the output and the two requests.
+    let mut step = |instance: &OsdiInstance,
+                    model: &OsdiModel,
+                    sim: &mut MockSimulation,
+                    first: bool| {
+        if !first {
+            sim.next_iter();
+            sim.advance_time(1.0);
+        }
+        sim.set_voltage("in", 0.0);
+        sim.set_voltage("out", 0.0);
+        instance.eval(model, sim, EvalFlags::empty());
+        instance.load_dae(model, sim);
+        (sim.read_residual("flow(out)").0, sim.requested_breakpoint, sim.announced_discontinuity)
+    };
+
+    // t = 0: nothing has happened yet, and the first event is at 2 s.
+    let (out, at, deg) = step(&instance, &model, &mut sim, true);
+    float_cmp::assert_approx_eq!(f64, out, 0.0, epsilon = 1e-9);
+    float_cmp::assert_approx_eq!(f64, at, 2.0, epsilon = 1e-9);
+    assert!(deg < 0.0, "nothing announced at t = 0, got {deg}");
+
+    // t = 1: still waiting for the same instant, which is what makes the request a
+    // request and not an event.
+    let (out, at, deg) = step(&instance, &model, &mut sim, false);
+    float_cmp::assert_approx_eq!(f64, out, 0.0, epsilon = 1e-9);
+    float_cmp::assert_approx_eq!(f64, at, 2.0, epsilon = 1e-9);
+    assert!(deg < 0.0, "nothing announced at t = 1, got {deg}");
+
+    // t = 2: the event fires. The output jumps, the jump is announced as degree 0,
+    // and the next instant asked for is one period later.
+    let (out, at, deg) = step(&instance, &model, &mut sim, false);
+    float_cmp::assert_approx_eq!(f64, out, 1.0, epsilon = 1e-9);
+    float_cmp::assert_approx_eq!(f64, at, 6.0, epsilon = 1e-9);
+    float_cmp::assert_approx_eq!(f64, deg, 0.0, epsilon = 1e-9);
+
+    // t = 3: the announcement is about one point, not about the state it left
+    // behind, so it is gone while the output stays.
+    let (out, at, deg) = step(&instance, &model, &mut sim, false);
+    float_cmp::assert_approx_eq!(f64, out, 1.0, epsilon = 1e-9);
+    float_cmp::assert_approx_eq!(f64, at, 6.0, epsilon = 1e-9);
+    assert!(deg < 0.0, "nothing announced at t = 3, got {deg}");
+
+    Ok(())
+}
+
 /// VAMS-2023 3.2: multi-dimensional arrays, against arithmetic.
 ///
 /// A multi-dimensional array is one array with one place per element, so what has
@@ -2255,5 +2331,5 @@ harness! {
     Test::from_dir_filtered("vacask_spice", &vacask_spice_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice")),
     // VACASK simplified SPICE models
     Test::from_dir_filtered("vacask_spice_sn", &vacask_spice_sn_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice/sn")),
-    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros),Test::new("laplace_roots", &test_laplace_roots),Test::new("slew", &test_slew),Test::new("cross_detect", &test_cross_detect),Test::new("above_detect", &test_above_detect),Test::new("last_crossing", &test_last_crossing),Test::new("var_persistence", &test_var_persistence),Test::new("timer_detect", &test_timer_detect),Test::new("rng_stream", &test_rng_stream),Test::new("transition_pwl", &test_transition_pwl),Test::new("table_model", &test_table_model),Test::new("zi_filter", &test_zi_filter),Test::new("absdelay", &test_absdelay),Test::new("absdelay_in_model", &test_absdelay_in_model),Test::new("timer_resched", &test_timer_resched),Test::new("case_default", &test_case_default),Test::new("file_io", &test_file_io),Test::new("file_scan", &test_file_scan),Test::new("global_events", &test_global_events),Test::new("scan_target", &test_scan_target),Test::new("directives", &test_directives),Test::new("multidim", &test_multidim)]
+    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros),Test::new("laplace_roots", &test_laplace_roots),Test::new("slew", &test_slew),Test::new("cross_detect", &test_cross_detect),Test::new("above_detect", &test_above_detect),Test::new("last_crossing", &test_last_crossing),Test::new("var_persistence", &test_var_persistence),Test::new("timer_detect", &test_timer_detect),Test::new("rng_stream", &test_rng_stream),Test::new("transition_pwl", &test_transition_pwl),Test::new("table_model", &test_table_model),Test::new("zi_filter", &test_zi_filter),Test::new("absdelay", &test_absdelay),Test::new("absdelay_in_model", &test_absdelay_in_model),Test::new("timer_resched", &test_timer_resched),Test::new("case_default", &test_case_default),Test::new("file_io", &test_file_io),Test::new("file_scan", &test_file_scan),Test::new("global_events", &test_global_events),Test::new("scan_target", &test_scan_target),Test::new("directives", &test_directives),Test::new("multidim", &test_multidim),Test::new("timepoints", &test_timepoints)]
 }

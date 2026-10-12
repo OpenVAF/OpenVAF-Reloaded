@@ -495,6 +495,13 @@ impl Debug for OsdiDescriptor {
             }
             wn!("{} states", self.num_states);
             wn!("has bound_step {}", self.bound_step_offset != u32::MAX);
+            // Only when used, so that a module that asks for nothing says nothing.
+            if self.breakpoint_offset != u32::MAX {
+                wn!("asks for timepoints");
+            }
+            if self.discontinuity_offset != u32::MAX {
+                wn!("announces discontinuities");
+            }
             // instance_size and model_size are arch-specific (depend on struct alignment)
             // so we omit them from snapshots to allow cross-platform testing
             Ok(())

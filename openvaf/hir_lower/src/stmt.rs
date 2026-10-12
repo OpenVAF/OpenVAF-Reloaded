@@ -147,6 +147,11 @@ impl BodyLoweringCtx<'_, '_, '_> {
         };
         let bound = self.ctx.make_select(due, |_s, taken| if taken { remaining } else { never });
         self.bound_step(bound);
+        // And ask for the instant itself, which a simulator that reads the request
+        // can place exactly instead of walking up to it. The cap above stays: it is
+        // what every simulator honours.
+        let instant = self.ctx.make_select(due, |_s, taken| if taken { new_next } else { never });
+        self.request_breakpoint(instant);
 
         let fired = match enabled {
             Some(en) => self.and(reached, en),

@@ -101,9 +101,10 @@ pub enum BodyValidationDiagnostic {
         found: Type,
     },
 
-    /// VAMS-2023 9.17.1: `$discontinuity(n)` for a non-negative degree is accepted
-    /// but announces nothing, because OSDI has no channel for it. Only the
-    /// `$discontinuity(-1)` form that pairs with `$limit` (9.17.3) does anything.
+    /// VAMS-2023 9.17.1: `$discontinuity(n)` for a non-negative degree is announced
+    /// through the timepoint protocol, which no released simulator reads yet, so
+    /// the model is told what its announcement depends on. The
+    /// `$discontinuity(-1)` form belongs to `$limit` (9.17.3) and is unaffected.
     IgnoredDiscontinuity {
         stmt: StmtId,
         expr: ExprId,
@@ -1111,9 +1112,10 @@ impl ExprValidator<'_, '_> {
             }
             BuiltIn::sscanf | BuiltIn::fscanf => self.validate_scan(args),
             BuiltIn::discontinuity => {
-                // The `$discontinuity(-1)` form is part of `$limit` (9.17.3) and is
-                // lowered; every other degree is dropped, so say so rather than let
-                // a model claim a discontinuity that never reaches the integrator.
+                // The `$discontinuity(-1)` form is part of `$limit` (9.17.3). Every
+                // other degree is announced through the timepoint protocol, and
+                // whether it arrives is the simulator's half of that, which is what
+                // the diagnostic is about.
                 let is_limit_form =
                     args.first().is_some_and(|&arg| self.as_signed_int(arg) == Some(-1));
                 if !is_limit_form {

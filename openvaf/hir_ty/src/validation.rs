@@ -313,19 +313,26 @@ impl Diagnostic for BodyValidationDiagnosticWrapped<'_> {
                 let FileSpan { range, file } = self.expr_src(expr);
 
                 Report::warning()
-                    .with_message("'$discontinuity' is ignored".to_owned())
+                    .with_message(
+                        "'$discontinuity' reaches a simulator that reads the timepoint protocol"
+                            .to_owned(),
+                    )
                     .with_labels(vec![Label {
                         style: LabelStyle::Primary,
                         file_id: file,
                         range: range.into(),
-                        message: "the discontinuity is not announced".to_owned(),
+                        message: "announced, but only honoured by a simulator that reads it"
+                            .to_owned(),
                     }])
                     .with_notes(vec![
-                        "OSDI cannot announce a discontinuity, so the integrator keeps its history and step order"
+                        "info: the degree is left in the instance data at the descriptor's \
+                         'discontinuity_offset' (docs/osdi-timepoint-protocol.md)"
                             .to_owned(),
-                        "help: '$bound_step' does reach the simulator and can cap the step across the jump"
+                        "info: a simulator that does not read it keeps its history and its step \
+                         order across the jump, which is what every released one does today"
                             .to_owned(),
-                        "note: '$discontinuity(-1)' is supported; it pairs with '$limit' (VAMS-2023 9.17.3)"
+                        "help: ngspice: patches/ngspice-osdi-timepoints.patch, or cap the step \
+                         across the jump with '$bound_step'"
                             .to_owned(),
                     ])
             }

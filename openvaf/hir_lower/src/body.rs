@@ -1,7 +1,7 @@
 use ahash::AHashSet;
 use hir::{AssignmentLhs, BodyRef, CaseCond, Event, ExprId, Node, Stmt, StmtId, Type, Variable};
 use mir::builder::InstBuilder;
-use mir::{Block, Value};
+use mir::{Block, Value, F_N_ONE, F_ZERO};
 use stdx::iter::zip;
 
 use crate::ctx::LoweringCtx;
@@ -284,6 +284,52 @@ impl<'c1, 'c2> BodyLoweringCtx<'_, 'c1, 'c2> {
             step_size
         };
         self.ctx.def_place(PlaceKind::BoundStep, step_size);
+    }
+
+    /// Ask the simulator for a timepoint at `instant`, an absolute time.
+    ///
+    /// The earliest request of an evaluation wins, the way `$bound_step`'s smallest
+    /// cap does and for the same reason: an operator that wants a series of points
+    /// asks for its next one at every evaluation, so keeping one loses nothing.
+    /// `f64::MAX` (or any infinity) means "nothing wanted", which is what the slot
+    /// holds when no call is made.
+    ///
+    /// This is always an addition to the cap, never a replacement. A simulator that
+    /// does not read the request still places the point by having its step capped,
+    /// so the model behaves the same either way and only costs fewer timepoints
+    /// where the request is honoured. See `docs/osdi-timepoint-protocol.md`.
+    pub fn request_breakpoint(&mut self, instant: Value) {
+        let instant = if self.ctx.get_place(PlaceKind::Breakpoint).is_some() {
+            let prev = self.ctx.use_place(PlaceKind::Breakpoint);
+            let earlier = self.ctx.ins().flt(instant, prev);
+            self.lower_select_with(earlier, |_| instant, |_| prev)
+        } else {
+            instant
+        };
+        self.ctx.def_place(PlaceKind::Breakpoint, instant);
+    }
+
+    /// Announce a discontinuity of degree `degree` at the current time (VAMS-2023
+    /// 9.17.1).
+    ///
+    /// The lowest degree announced during an evaluation wins, because a jump in the
+    /// value itself is more than a jump in a derivative of it, and a simulator that
+    /// can only restart its integration should hear about the worse one. A negative
+    /// degree is the `$limit` form of 9.17.3 and announces nothing here, so it
+    /// cannot overwrite a real announcement with the slot's own "none" value.
+    pub fn announce_discontinuity(&mut self, degree: Value) {
+        let announced = self.ctx.ins().fge(degree, F_ZERO);
+        let degree = if self.ctx.get_place(PlaceKind::Discontinuity).is_some() {
+            let prev = self.ctx.use_place(PlaceKind::Discontinuity);
+            let none_yet = self.ctx.ins().flt(prev, F_ZERO);
+            let worse = self.ctx.ins().flt(degree, prev);
+            let take = self.or(none_yet, worse);
+            let take = self.and(take, announced);
+            self.lower_select_with(take, |_| degree, |_| prev)
+        } else {
+            self.lower_select_with(announced, |_| degree, |_| F_N_ONE)
+        };
+        self.ctx.def_place(PlaceKind::Discontinuity, degree);
     }
 
     pub fn nodes_from_args(

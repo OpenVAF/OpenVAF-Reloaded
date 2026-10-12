@@ -120,6 +120,15 @@ pub struct MockSimulation {
     pub state_2: Vec<f64>,
     pub noise_dense: Vec<f64>,
     pub absdelay: Vec<AbsDelay>,
+    /// The timepoint protocol, read out of the instance data after each
+    /// evaluation: the instant the model asked for a point at (`f64::INFINITY`
+    /// when it asked for none) and the degree of discontinuity it announced
+    /// (negative when it announced none). A real simulator would act on these; a
+    /// test only has to see them.
+    pub requested_breakpoint: f64,
+    pub announced_discontinuity: f64,
+    breakpoint_offset: u32,
+    discontinuity_offset: u32,
 }
 impl MockSimulation {
     fn new() -> MockSimulation {
@@ -143,6 +152,10 @@ impl MockSimulation {
             state_2: Vec::new(),
             noise_dense: Vec::new(),
             absdelay: Vec::new(),
+            requested_breakpoint: f64::INFINITY,
+            announced_discontinuity: -1.0,
+            breakpoint_offset: u32::MAX,
+            discontinuity_offset: u32::MAX,
             time: 0.0,
         }
     }
@@ -293,6 +306,8 @@ impl OsdiInstance {
                 ..AbsDelay::default()
             });
         }
+        sim.breakpoint_offset = self.descriptor.breakpoint_offset;
+        sim.discontinuity_offset = self.descriptor.discontinuity_offset;
         sim.build_jacobian();
 
         // populate matrix ptrs
@@ -437,6 +452,18 @@ impl OsdiInstance {
                 .then(|| unsafe { self.read_instance_f64(max_delay_offset) });
             sim.absdelay[i].update(sim.time, input, delay, max_delay);
         }
+        // The same shape for the timepoint protocol: the model leaves its requests
+        // in the instance data and the simulator reads them back.
+        sim.requested_breakpoint = if sim.breakpoint_offset == u32::MAX {
+            f64::INFINITY
+        } else {
+            unsafe { self.read_instance_f64(sim.breakpoint_offset) }
+        };
+        sim.announced_discontinuity = if sim.discontinuity_offset == u32::MAX {
+            -1.0
+        } else {
+            unsafe { self.read_instance_f64(sim.discontinuity_offset) }
+        };
         EvalRetFlags::from_bits(flags).unwrap()
     }
 

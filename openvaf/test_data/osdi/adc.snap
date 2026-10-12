@@ -46,3 +46,4 @@ jacobian (flow(out[6]), out[6]) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_E
 jacobian (flow(out[7]), out[7]) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
 0 states
 has bound_step true
+asks for timepoints

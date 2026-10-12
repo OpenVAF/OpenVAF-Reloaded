@@ -1405,8 +1405,17 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 //     We have a function for that now.
                 if self.ctx.inside_lim && Some(-1) == self.body.as_literalsignedint(&args[0]) {
                     self.ctx.call(CallBackKind::LimDiscontinuity, &[]);
-                } else {
-                    // TODO implement support for discontinuity?
+                } else if !self.ctx.no_equations {
+                    // 9.17.1: every other degree is an announcement about the point
+                    // being solved, which goes to the simulator as one. Without
+                    // retained state (the init function, verilogae) there is no
+                    // instance data to leave it in and nothing to tell either.
+                    let degree = self.lower_expr(args[0]);
+                    let degree = match self.resolved_ty(args[0]) {
+                        Type::Real => degree,
+                        ty => self.ctx.insert_cast(degree, &ty, &Type::Real),
+                    };
+                    self.announce_discontinuity(degree);
                 }
                 GRAVESTONE
             }
@@ -1973,6 +1982,8 @@ impl BodyLoweringCtx<'_, '_, '_> {
         let ahead = self.ctx.ins().fgt(remaining, F_ZERO);
         let bound = self.ctx.make_select(ahead, |_s, b| if b { remaining } else { no_bound });
         self.bound_step(bound);
+        let instant = self.ctx.make_select(ahead, |_s, b| if b { next } else { no_bound });
+        self.request_breakpoint(instant);
 
         // -- the difference equation ------------------------------------------
         // Shifted histories, as they would be if this evaluation takes a sample.
@@ -2537,6 +2548,8 @@ impl BodyLoweringCtx<'_, '_, '_> {
             let aim = self.fmax(togo, tol);
             let bound = self.ctx.make_select(want, |_s, b| if b { aim } else { no_bound });
             self.bound_step(bound);
+            let instant = self.ctx.make_select(want, |_s, b| if b { at } else { no_bound });
+            self.request_breakpoint(instant);
         }
 
         self.ctx.store_retained(s_tgt, target);
@@ -2563,6 +2576,8 @@ impl BodyLoweringCtx<'_, '_, '_> {
         let aim = self.fmax(togo, tol);
         let bound = self.ctx.make_select(want, |_s, b| if b { aim } else { no_bound });
         self.bound_step(bound);
+        let instant = self.ctx.make_select(want, |_s, b| if b { arrival } else { no_bound });
+        self.request_breakpoint(instant);
 
         cur
     }

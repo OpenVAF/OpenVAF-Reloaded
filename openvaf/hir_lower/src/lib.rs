@@ -189,6 +189,13 @@ pub enum PlaceKind {
     ParamMin(Parameter),
     ParamMax(Parameter),
     BoundStep,
+    /// The instant a model asked for a timepoint at, as an absolute time: the
+    /// earliest of the requests made during one evaluation, or `f64::MAX` when
+    /// none was made. See `docs/osdi-timepoint-protocol.md`.
+    Breakpoint,
+    /// The lowest degree of discontinuity announced during one evaluation
+    /// (VAMS-2023 9.17.1), or a negative value when none was.
+    Discontinuity,
     /// Whether a named event (VAMS-2023 5.10.4) has been triggered during this
     /// evaluation of the analog block. `false` at the start of the block, set by
     /// `-> ev;` and read by `@(ev)`.
@@ -207,7 +214,9 @@ impl PlaceKind {
 
             PlaceKind::ImplicitResidual { .. }
             | PlaceKind::Contribute { .. }
-            | PlaceKind::BoundStep => Type::Real,
+            | PlaceKind::BoundStep
+            | PlaceKind::Breakpoint
+            | PlaceKind::Discontinuity => Type::Real,
             PlaceKind::ParamMin(param) | PlaceKind::ParamMax(param) | PlaceKind::Param(param) => {
                 param.ty(db)
             }

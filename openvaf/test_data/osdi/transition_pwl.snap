@@ -21,3 +21,4 @@ jacobian (flow(fast), fast) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY
 jacobian (flow(fast), in) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
 0 states
 has bound_step true
+asks for timepoints

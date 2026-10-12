@@ -559,6 +559,7 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
             Self::build_store_results(&mut builder, llfunc, &flags, CALC_NOISE, &store_noise);
 
             inst_data.store_bound_step(instance, &builder);
+            inst_data.store_timepoint_requests(instance, &builder);
             for delay in &inst_data.absdelay {
                 inst_data.store_eval_output_slot(delay.delay, instance, &builder);
                 if let Some(max_delay) = delay.max_delay {

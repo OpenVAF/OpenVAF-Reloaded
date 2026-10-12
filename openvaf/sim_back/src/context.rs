@@ -46,7 +46,9 @@ impl<'a> Context<'a> {
                 | PlaceKind::ImplicitResidual { .. }
                 | PlaceKind::CollapseImplicitEquation(_)
                 | PlaceKind::IsVoltageSrc(_)
-                | PlaceKind::BoundStep => true,
+                | PlaceKind::BoundStep
+                | PlaceKind::Breakpoint
+                | PlaceKind::Discontinuity => true,
                 PlaceKind::Var(var) => module.op_vars.contains_key(&var),
                 _ => false,
             },
@@ -122,7 +124,13 @@ impl<'a> Context<'a> {
         } else {
             for (kind, val) in self.intern.outputs.iter() {
                 if matches!(kind, PlaceKind::Var(var) if self.module.op_vars.contains_key(var))
-                    || matches!(kind, PlaceKind::CollapseImplicitEquation(_) | PlaceKind::BoundStep)
+                    || matches!(
+                        kind,
+                        PlaceKind::CollapseImplicitEquation(_)
+                            | PlaceKind::BoundStep
+                            | PlaceKind::Breakpoint
+                            | PlaceKind::Discontinuity
+                    )
                 {
                     // The output value may be `None` if it was never materialized (e.g. a
                     // `$bound_step()` whose value got eliminated). `unwrap_unchecked()` would

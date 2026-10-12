@@ -232,6 +232,11 @@ pub struct OsdiInstanceData<'ll> {
     pub absdelay: Vec<AbsDelaySlots>,
     pub jacobian: TiVec<MatrixEntryId, MatrixEntry>,
     pub bound_step: Option<EvalOutputSlot>,
+    /// The instant the model asked for a timepoint at, and the degree of
+    /// discontinuity it announced: the two halves of the timepoint protocol in
+    /// `docs/osdi-timepoint-protocol.md`, each present only if the module uses it.
+    pub breakpoint: Option<EvalOutputSlot>,
+    pub discontinuity: Option<EvalOutputSlot>,
 }
 
 #[derive(Clone, Copy)]
@@ -291,12 +296,14 @@ impl<'ll> OsdiInstanceData<'ll> {
             .iter()
             .map(|source| NoiseSource::new(source, module, &mut eval_outputs, ty_f64))
             .collect();
-        let bound_step = module.intern.outputs.get(&PlaceKind::BoundStep).and_then(|val| {
-            let mut val = val.expand()?;
+        let mut eval_output_slot = |place| {
+            let mut val = module.intern.outputs.get(&place)?.expand()?;
             val = strip_optbarrier(module.eval, val);
-            let slot = eval_outputs.insert_full(val, ty_f64).0;
-            Some(slot)
-        });
+            Some(eval_outputs.insert_full(val, ty_f64).0)
+        };
+        let bound_step = eval_output_slot(PlaceKind::BoundStep);
+        let breakpoint = eval_output_slot(PlaceKind::Breakpoint);
+        let discontinuity = eval_output_slot(PlaceKind::Discontinuity);
         let absdelay = module
             .intern
             .absdelay
@@ -372,6 +379,8 @@ impl<'ll> OsdiInstanceData<'ll> {
             absdelay,
             jacobian,
             bound_step,
+            breakpoint,
+            discontinuity,
         }
     }
 
@@ -388,6 +397,26 @@ impl<'ll> OsdiInstanceData<'ll> {
     pub fn bound_step_elem(&self) -> Option<u32> {
         let elem = self.eval_output_slot_elem(self.bound_step?);
         Some(elem)
+    }
+
+    /// The timepoint protocol's two slots, stored where `store_bound_step` stores
+    /// its own: the simulator reads them out of the instance data after `eval`.
+    pub unsafe fn store_timepoint_requests(
+        &self,
+        ptr: &'ll llvm_sys::LLVMValue,
+        builder: &mir_llvm::Builder<'_, '_, 'll>,
+    ) {
+        for slot in [self.breakpoint, self.discontinuity].into_iter().flatten() {
+            self.store_eval_output_slot(slot, ptr, builder);
+        }
+    }
+
+    pub fn breakpoint_elem(&self) -> Option<u32> {
+        Some(self.eval_output_slot_elem(self.breakpoint?))
+    }
+
+    pub fn discontinuity_elem(&self) -> Option<u32> {
+        Some(self.eval_output_slot_elem(self.discontinuity?))
     }
 
     pub fn absdelay_offsets(&self, target_data: &LLVMTargetDataRef) -> Vec<(u32, u32)> {

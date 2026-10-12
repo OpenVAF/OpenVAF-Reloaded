@@ -2,7 +2,8 @@ use ahash::{AHashMap, AHashSet};
 use hir::{CompilationDB, Node, Type, Variable};
 use mir::builder::{InsertBuilder, InstBuilder};
 use mir::{
-    Block, DataFlowGraph, FuncRef, Inst, Opcode, SourceLoc, Value, FALSE, F_ZERO, INFINITY, TRUE,
+    Block, DataFlowGraph, FuncRef, Inst, Opcode, SourceLoc, Value, FALSE, F_N_ONE, F_ZERO,
+    INFINITY, TRUE,
 };
 use mir_build::{FuncInstBuilder, FunctionBuilder, Place};
 use typed_indexmap::TiSet;
@@ -133,6 +134,10 @@ impl<'a, 'c> LoweringCtx<'a, 'c> {
                 // no named event has been triggered yet when the block starts
                 PlaceKind::NamedEvent(_) => FALSE,
                 PlaceKind::BoundStep => INFINITY,
+                // No timepoint asked for and no discontinuity announced, until one
+                // is: a request is per evaluation, not per timestep.
+                PlaceKind::Breakpoint => INFINITY,
+                PlaceKind::Discontinuity => F_N_ONE,
             };
             let entry = self.func.func.layout.entry_block().unwrap();
             self.func.def_var_at(place, init, entry);
