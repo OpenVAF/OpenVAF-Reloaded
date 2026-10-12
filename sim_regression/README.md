@@ -312,27 +312,57 @@ worst value error: 0.000e+00 V
 
 ### Why the file is read all at once
 
-Not for speed. **A read advances the file whether or not the timepoint has
-changed**, and an analog block is evaluated several times for one timepoint, so a
-`$fgets` in an event handler consumes a record per Newton iteration rather than
-per event. The first version of this model read a record per event and swallowed
-three of the four before the simulation had left t = 0.
+Not for speed, and not any more out of necessity. **A read used to advance the
+file whether or not the timepoint had changed**, and an analog block is evaluated
+several times for one timepoint, so a `$fgets` in an event handler consumed a
+record per Newton iteration rather than per event: the first version of this model
+read a record per event and swallowed three of the four before the simulation had
+left t = 0. Reads advance once per timepoint now, and `vecstream` below is the
+same job done as a stream. What loading the file into arrays still buys is knowing
+every stamp in advance, at the cost of a cap on how many there can be.
 
-So the records are loaded into arrays once and stepped through from there. That
-runs into the same thing from the other side -- 5.10.2 puts `@(initial_step)` in
-force "during the solution of the first point", which is all of its iterations --
-and the answer is `$rewind` at the top of the block: every run of it then reads
-the same records into the same places, so running several times costs nothing and
-changes nothing. Writing has the same shape and the same answer: `filelog` opens
-its files in `@(initial_step)` and `$fopen` hands back the descriptor it already
-opened rather than truncating the file again.
+Either way `@(initial_step)` is the awkward part: 5.10.2 puts it in force "during
+the solution of the first point", which is all of its iterations. The `$rewind` at
+the top of the block says outright that every run of it reads the same records
+into the same places, and it is what made the idiom work before the reads
+themselves were per timepoint. Writing has the same shape and the same answer:
+`filelog` opens its files in `@(initial_step)` and `$fopen` hands back the
+descriptor it already opened rather than truncating the file again.
 
-There is no way for a model to ask "is this the first evaluation of this
-timepoint", or the last: `$fstrobe` has the answer built in now, through the accept
-callback of `docs/osdi-timepoint-protocol.md`, but it is the runtime that holds its
-line and nothing a model writes can get at the same moment. Reading one record per
-accepted timepoint needs the model's own code to run there, which is the part of
-that protocol still to come.
+A model still has no way to ask "is this the first evaluation of this timepoint",
+or the last; `$fstrobe` has the answer built in, through the accept callback of
+`docs/osdi-timepoint-protocol.md`. What it no longer needs to ask is whether a
+read has already happened.
+
+## vecstream — passing
+
+The same job as `vecsrc` and the opposite shape: the file is read once through, a
+record at a time, with no arrays and no rewinding. 9.5.4's reads are sequential,
+so this is what the clause reads like when a source is written straight from it,
+and it is the only shape a file of a million records can have.
+
+The netlist drives a diode load, which makes the solver reject timepoints: a
+rejected timepoint is one whose reads must not count. `ntaken` carries how many
+records the model has taken, so the waveform says how much of the file was
+consumed, and the analyzer requires that to be the number of records that were
+due.
+
+```
+records in the file 40, due by 30.0 us 30, taken 30
+records whose level the waveform holds: 30 of 30, worst error 0.000e+00
+```
+
+Both runs, under a simulator that confirms its timepoints and one that does not,
+give that. What this case measures is the change that made it possible: with reads
+advancing per evaluation, the same model took 3 of the 30 records that were due
+and held the right level for 4 of 30.
+
+The record count is also a check that two kinds of per-timepoint state agree. It
+is a retained counter, so a rejected point rolls it back; the file position is
+rolled back by the same rule, and the analyzer requires the count never to go
+backwards in the waveform. A value kept from a record the file has moved past
+would be a source that had lost its place, which is the first thing this case
+caught.
 
 ## global_events — passing
 

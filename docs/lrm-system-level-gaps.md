@@ -25,7 +25,7 @@ and all three are reachable across the ABI now, through the descriptor tail that
 
 | What a model needs | ngspice has it as | OSDI exposes | State |
 | --- | --- | --- | --- |
-| Know a timestep was accepted | `DEVaccept` (e.g. `vsrcacct.c`) | `accept` | implemented; `$fstrobe` writes **7789 lines instead of 9114**, none from a point the solver went back on |
+| Know a timestep was accepted | `DEVaccept` (e.g. `vsrcacct.c`) | `accept` | implemented; the line, the records read and the retained values of a point are all final when it is. `$fstrobe` writes **7789 lines instead of 9114**, none from a point the solver went back on |
 | Land a point at an exact time | `CKTsetBreak(ckt, t)` | `breakpoint_offset` | implemented, and `bound_step` remains the cheaper way |
 | Announce a discontinuity | breakpoint + `CKTorder = 1` | `discontinuity_offset` | implemented; **14.8x** more accurate after a jump |
 
@@ -81,11 +81,13 @@ followed `absdelay`'s precedent, a descriptor-level protocol where the simulator
 owns the time-dependent part, and it gates far less than it first appeared: a
 cleanup, not a prerequisite.
 
-What the accept callback does not do yet is run the model's own code. It writes a
-line the runtime is holding, which is what `$fstrobe` needed; reading one record
-per accepted timepoint (9.5) and committing retained state without the `$abstime`
-proxy both need generated code to run at an accepted point, which is the same
-next step for both and needs no further ABI.
+What the callback carries is everything that is final exactly when a timepoint
+is: the `$fstrobe` line composed at it (9.4.1), the records its reads consumed
+(9.5.4), and the values it retained for the next timestep (4.5.10). The descriptor
+points at a function generated per module, because where a module keeps its state
+is known only to the compiler, and the runtime does the rest. Without the call all
+three fall back to `$abstime` moving forward, which is the same thing for every
+point a solver does not go back on.
 
 ## Tier 0 — compiles, and then no simulator can run it
 
@@ -560,7 +562,7 @@ write a PLL in this". So, by part, with the state of each measured in
 | Phase noise | `noise_table` / `flicker_noise` / `white_noise` (4.6) | works; the table has to be an array literal or a file, not a parameter array |
 | Delay line, DLL | `absdelay` (4.5.7) | works, both realizations — see Tier 0 |
 | Jitter or period logging | `$fstrobe` / `$fdisplay` to a file (9.5) | works; `sim_regression/filelog` checks a jitter sequence the model wrote itself |
-| Stimulus from a file of vectors | `$fgets` and `$sscanf` (9.5.4) | works; `sim_regression/vecsrc` drives a source from a file and checks the waveform against it |
+| Stimulus from a file of vectors | `$fgets` and `$sscanf` (9.5.4) | works, loaded into arrays (`sim_regression/vecsrc`) or streamed a record at a time (`sim_regression/vecstream`), both checked against the file |
 | Sigma-delta state for fractional-N | multi-dimensional arrays | works; `sim_regression/multidim` measures a matrix of them against its own arithmetic |
 | A bare `transition(x)` with a file-wide edge rate | `` `default_transition `` (10.3) | works; `sim_regression/directives` measures the ramp it sets |
 
@@ -661,23 +663,32 @@ what to read out of the text and `r` says what holds it.
 break. For a file with one record per line, which is what a vector file is, that
 is the same thing.
 
-### Reading advances the file, and evaluation repeats
+### Reading advances the file once per timepoint
 
-The trap that cost the most here, and it belongs to the language rather than to
+The trap that cost the most here, and it belonged to the language rather than to
 9.5: **an analog block is evaluated several times for one timepoint, and a read
-advances the file every time.** A `$fgets` in an event handler consumes a record
-per Newton iteration rather than per event -- measured, three of four records
+advanced the file every time.** A `$fgets` in an event handler consumed a record
+per Newton iteration rather than per event, measured as three of four records
 swallowed before the simulation had left t = 0.
 
-A model cannot ask whether this is the first evaluation of a timepoint. `$strobe`
-can, because the guard is built into it; nothing else can reach it. So the way to
-read a file is to make the reading idempotent: `$rewind` and then read, so that
-repeating it reads the same thing. `sim_regression/vecsrc` loads its records that
-way and steps through them with `timer`.
+9.5's reads are sequential, and the rate that a sequence of records can be read at
+is per timepoint: a model has no way to be evaluated once. So a read-only
+descriptor now remembers where it stood when the point began, every evaluation of
+that point starts its reads there, and the point advances the file by what the
+model read once. With the accept callback at the top of this page, "the point"
+means the accepted point, so one the solver goes back on consumes nothing.
 
-That is also what `$fopen` does for writing, by handing back a descriptor it has
-already opened rather than opening the file again, and it is one more argument for
-the accept callback at the top of this page.
+`sim_regression/vecstream` is what that makes possible: a vector source written
+the way the clause reads, a record at a time, with no arrays and no rewinding.
+Before, it took 3 of the 30 records that were due and held the right level for 4
+of 30; after, 30 and 30. `sim_regression/vecsrc` does the same job the other way,
+loading the whole file into arrays inside `@(initial_step)` with a `$rewind` to
+make the repeated loading harmless, which is now a choice rather than the only
+way to read a file.
+
+A model still cannot ask whether this is the first evaluation of a timepoint;
+`$strobe` can, because the guard is built into it. What it no longer needs to ask
+is whether a read has already happened.
 
 ### A retained string
 
@@ -758,12 +769,21 @@ tasks (9.5, see above), and the compiler directives of 10.2 through 10.6.
     would replace), and a timepoint can be confirmed, which is what `$fstrobe`
     needed in order to mean what 9.4.1 says (7789 lines instead of 9114, none from
     a point the solver went back on).
-19. **A generated accept function** — the callback above runs a runtime function,
-    which is all a held `$fstrobe` line needs. Two things want the model's *own*
-    code to run at an accepted point instead, and neither needs further ABI: a
-    read that happens once per accepted timepoint rather than once per evaluation,
-    which is what 9.5's sequential reads mean and what `sim_regression/vecsrc`
-    rewinds to work around; and committing retained state because the point was
-    accepted rather than because `$abstime` moved, which is the proxy every
-    operator with retained state currently shares and the one hole in it (a step
-    rejected and retried at the same time is indistinguishable from progress).
+19. ~~**A generated accept function**~~ — done. The descriptor points at a
+    function generated per module, which hands the runtime the state only the
+    compiler can locate: so 9.5's reads advance once per accepted timepoint
+    (`sim_regression/vecstream`, 3 of 30 records before and 30 of 30 after) and
+    retained state commits because a point was accepted rather than because
+    `$abstime` moved. Probing the proxy it replaces did not find it wrong, which
+    was worth knowing: the lowering rewrites every retained slot at the end of
+    every evaluation, so a rejected point leaves nothing stale behind. What the
+    callback adds is that reads and retained state cannot disagree about what a
+    timepoint was.
+20. **Array parameters** — 3.4.4's own form,
+    `parameter real c[0:2] = '{1, 2, 3};`, is a parse error on the subscript, for
+    one dimension as well as for several. It is the limit that keeps turning up
+    elsewhere on this page: a filter's coefficients, a noise table and a vector of
+    thresholds are all things a netlist wants to set per model card, and all of
+    them currently have to be a literal in the source or a file read at run time.
+    Found while implementing item 17, which is also where the row-major machinery
+    it would need came from.

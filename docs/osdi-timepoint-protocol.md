@@ -156,26 +156,46 @@ the callback existed, down to the iteration it picks. The first accepted point o
 run is written that way too, because its line is composed before the first `accept`
 arrives.
 
-### What it does not buy yet
+### What else it carries
 
-Two of the three things this page listed as waiting for the callback are still
-waiting, and both are bigger than the write side:
+The two other things this page listed as waiting for the callback are done with it
+too, and what the descriptor points at is now a function generated per module,
+because where a module keeps its state is known only to the compiler. The ABI above
+did not change for that.
 
-1. **A model reading one record per timepoint.** 9.5's reads advance the file on
-   every evaluation, so `sim_regression/vecsrc` makes its reads idempotent by
-   rewinding. A read in an accepted-point task happens exactly once per point, but
-   it has to *be* in the model's own code rather than in the runtime: that needs
-   the callback to run generated code, not a runtime function.
-2. **Retained state without `$abstime`.** Everything this tree keeps across
-   timesteps commits by noticing that `$abstime` has moved. The proxy has a hole
-   the callback would close: the solver can reject a step and retry at the same
-   time, and a commit keyed on "the time changed" cannot tell that apart from
-   progress. Reaching it needs the same generated-code callback, and it touches
-   every operator with retained state, so it is its own piece of work.
+**Reads that advance once per timepoint.** 9.5's reads are sequential: each takes
+the next record. Taken literally in a block that is evaluated many times for one
+point, that is a record per Newton iteration, which is a rate nothing in the clause
+suggests and which no model can work with: a file of one record per timepoint is
+consumed two to three times too fast. So a read-only descriptor remembers where it
+stood when the point began, every evaluation of that point starts its reads there,
+and the point advances the file by what the model read once. With the callback,
+"the point" means the accepted point, so a point the solver goes back on consumes
+nothing. `sim_regression/vecstream` is a vector source written the way the clause
+reads, a record at a time with no arrays and no rewinding, which could not be
+written at all before:
 
-Both are the same next step: a *generated* accept function in the module, which the
-descriptor's field points at instead of the runtime's own. The ABI above does not
-change for it.
+```
+                              records taken    records whose level the
+                              of 30 due        waveform holds
+before                         3               4 of 30
+after                         30              30 of 30
+```
+
+**Retained state that commits because a point was accepted.** Everything this tree
+keeps across timesteps used to commit by noticing that `$abstime` had moved
+forward. Probing that proxy did not find it wrong: a rejected step is retried at an
+earlier time, which the comparison sees, and the lowering rewrites every retained
+slot at the end of every evaluation, so a rejected point cannot leave a stale value
+behind either. Measured on 300 rejections in a model whose state is written only
+under a condition, and again on one written only inside an `@(cross)` handler: no
+committed value came from a point that was not accepted.
+
+What made it worth wiring anyway is that retained state and file positions are one
+state. Rolling a rejected point's reads back while its retained counter commits
+leaves a model holding a value from a record the file has moved past, which is a
+source that has lost its place. So both now commit at the accepted point when the
+simulator says there was one, and both fall back to `$abstime` when it does not.
 
 ## What this does not propose
 
@@ -216,6 +236,13 @@ the first-evaluation reading that `$fstrobe` has now left behind.
 * `sim_regression/filelog` runs the same model twice when `NGSPICE_TIMEPOINTS` is
   set, and requires that the accepting run write fewer lines and none from a
   timepoint the solver went back on.
+* `openvaf/test_data/osdi/read_point.va` plus `test_read_point`: one record per
+  point, with every evaluation of a point seeing the same record, and a point that
+  is evaluated and never accepted leaving the file and the record count where it
+  found them. That last part is the one case `$abstime` cannot recognize on its
+  own, because the next attempt is at a later time either way.
+* `sim_regression/vecstream`: the streaming vector source above, run under both
+  binaries, with the file as the reference.
 * `patches/ngspice-osdi-timepoints.patch` is the ngspice side, on top of
   `patches/ngspice-absdelay-history.patch` (which is where the per-entry descriptor
   size comes from). `OSDI_TP_TRACE=1` prints each announcement as it arrives, which

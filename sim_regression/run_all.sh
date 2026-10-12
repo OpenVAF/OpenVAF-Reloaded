@@ -84,6 +84,45 @@ run_absdelay() {
 # pump, a divider and an oscillator, closed into a loop that has to lock. It takes
 # longer than the rest of the suite together and its numbers are worth reading
 # whether or not it passed, so they are always printed.
+# A vector source that streams its file, a record at a time (VAMS-2023 9.5.4).
+# The numbers are worth seeing on a pass, so this one prints them, and it runs
+# under both binaries when there is a second: the stream has to keep its place
+# whether the simulator confirms its timepoints or the model has to infer it.
+run_vecstream() {
+    dir=vecstream
+    cd "$here/$dir" || return 1
+
+    if ! "$OV" vecstream.va -o vecstream.osdi >/dev/null 2>&1; then
+        printf '%-14s COMPILE FAILED\n' "$dir"
+        "$OV" vecstream.va -o vecstream.osdi
+        fail=1
+        return
+    fi
+
+    ok=1
+    out=""
+    for ng in "$NG" ${NGSPICE_TIMEPOINTS:+"$NGSPICE_TIMEPOINTS"}; do
+        rm -f vstream_out.txt
+        "$ng" -b vecstream.cir > vecstream.log 2>&1
+        if log=$(python3 "../analyze_vecstream.py" 2>&1); then
+            out="$out$log
+"
+        else
+            out="$out$log
+"
+            ok=0
+        fi
+    done
+
+    if [ "$ok" = 1 ]; then
+        printf '%-14s PASS\n' "$dir"
+    else
+        printf '%-14s FAIL\n' "$dir"
+        fail=1
+    fi
+    printf '%s' "$out" | sed 's/^/  /'
+}
+
 run_pll() {
     dir=pll
     cd "$here/$dir" || return 1
@@ -193,6 +232,7 @@ run multidim      xtalk         xt_out.txt analyze_multidim.py
 run_absdelay
 run_timepoints
 run_filelog
+run_vecstream
 run_pll
 
 exit $fail
