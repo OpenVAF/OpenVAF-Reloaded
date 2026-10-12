@@ -520,6 +520,12 @@ impl Parameter {
         db.param_ty(self.id)
     }
 
+    /// Lowest declared index of each dimension of an array parameter, outermost
+    /// first (`real c[2:5][0:1]` -> `[2, 0]`). Empty for a scalar.
+    pub fn array_lows(self, db: &CompilationDB) -> Box<[i32]> {
+        db.param_data(self.id).array_lows.clone()
+    }
+
     pub fn get_attr(&self, db: &CompilationDB, ast: &AstCache, name: &str) -> Option<ast::Attr> {
         ast.resolve_attribute(name, self.id.lookup(db).ast_id(db).erased())
     }

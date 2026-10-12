@@ -663,14 +663,24 @@ impl BodyLoweringCtx<'_, '_, '_> {
     }
 
     /// Lower `arr = rhs` where `arr` is an array variable. The right-hand side can
-    /// only be an assignment pattern, another array variable, or one row of a
-    /// multi-dimensional one (the type checker rejects everything else); all three
-    /// are written element by element.
+    /// only be an assignment pattern, another array variable or array parameter, or
+    /// one row of a multi-dimensional one (the type checker rejects everything
+    /// else); all of them are written element by element.
     fn assign_whole_array(&mut self, var: hir::Variable, rhs: ExprId) {
         let len = self.array_len(var);
         match self.body.get_expr(rhs) {
             Expr::Array(_) => {
                 self.write_pattern(var, 0, len, rhs);
+            }
+            // `v = c;` where `c` is an array parameter (VAMS-2023 3.4.4): the same
+            // copy, from the values the simulator supplied.
+            Expr::Read(hir::Ref::Parameter(param)) => {
+                let src_ty = param.ty(self.ctx.db).base_type().clone();
+                for i in 0..len.min(self.array_len(param)) {
+                    let elem = self.ctx.use_param(ParamKind::ParamElement(param, i));
+                    let elem = self.cast_elem(var, elem, &src_ty);
+                    self.ctx.def_place(PlaceKind::VarElement(var, i), elem);
+                }
             }
             Expr::Read(hir::Ref::Variable(src_var)) => {
                 for i in 0..len.min(self.array_len(src_var)) {

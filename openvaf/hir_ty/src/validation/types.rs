@@ -6,7 +6,7 @@ use hir_def::nameres::{DefMap, ScopeDefItem};
 use hir_def::{
     AliasParamId, Branch, BranchId, BranchKind, DisciplineId, ItemLoc, ItemTree,
     LocalDisciplineAttrId, LocalNatureAttrId, Lookup, ModuleId, ModuleLoc, NatureId, NodeId,
-    NodeTypeDecl, Path, ScopeId,
+    NodeTypeDecl, ParamId, Path, ScopeId,
 };
 use syntax::ast::ArgListOwner;
 use syntax::name::Name;
@@ -32,6 +32,7 @@ pub enum TypeValidationDiagnostic {
     MultipleGnds(DuplicateItem<ErasedAstId, NodeId>),
     PortWithoutDirection { decl: ErasedAstId, name: Name },
     NodeWithoutDiscipline { decl: ErasedAstId, name: Name },
+    ArrayParamWithoutType { decl: ErasedAstId, name: Name },
     UnknownDefaultDiscipline { decl: ErasedAstId, name: Name, discipline: Name },
     ExpectedPort { node: NodeId, src: ErasedAstId },
     IncompatibleBranch { branch: BranchId, node1: NodeId, node2: NodeId },
@@ -79,6 +80,7 @@ impl TypeValidationCtx<'_> {
                 ScopeDefItem::NodeId(node) => self.verify_node(*node, loc),
                 ScopeDefItem::BranchId(branch) => self.verify_branch(*branch),
                 ScopeDefItem::AliasParamId(alias) => self.verify_alias(*alias),
+                ScopeDefItem::ParamId(param) => self.verify_param(*param),
                 _ => (),
             }
         }
@@ -106,6 +108,21 @@ impl TypeValidationCtx<'_> {
                 self.report(TypeValidationDiagnostic::PathError { err, src });
                 None
             }
+        }
+    }
+
+    /// VAMS-2023 3.4.1: "the type of a string parameter (see 3.4.6) and any of the
+    /// array parameters (see 3.4.4) is mandatory". A parameter's type is otherwise
+    /// taken from its value, and an assignment pattern says nothing about what its
+    /// elements hold.
+    fn verify_param(&mut self, param: ParamId) {
+        let data = self.db.param_data(param);
+        if data.array_without_ty {
+            let decl = param.lookup(self.db.upcast()).ast_id(self.db.upcast()).erased();
+            self.report(TypeValidationDiagnostic::ArrayParamWithoutType {
+                decl,
+                name: data.name.clone(),
+            });
         }
     }
 

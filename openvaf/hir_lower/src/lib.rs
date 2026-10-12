@@ -88,6 +88,12 @@ impl TryFrom<CurrentKind> for BranchWrite {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ParamKind {
     Param(Parameter),
+    /// Element `idx` of an array parameter (VAMS-2023 3.4.4), in row-major order.
+    ///
+    /// The simulator keeps the array in one slot and overrides it as a whole, so
+    /// there is one `given` flag for the parameter; the model reads one element at
+    /// a time, so there is one input per element.
+    ParamElement(Parameter, u32),
     Abstime,
     EnableIntegration,
     EnableLim,
@@ -95,11 +101,18 @@ pub enum ParamKind {
     NewState(LimitState),
     /// The value a retained slot held at the end of the previous accepted timestep.
     PrevRetained(RetainedState),
-    Voltage { hi: Node, lo: Option<Node> },
+    Voltage {
+        hi: Node,
+        lo: Option<Node>,
+    },
     Current(CurrentKind),
     Temperature,
-    ParamGiven { param: Parameter },
-    PortConnected { port: Node },
+    ParamGiven {
+        param: Parameter,
+    },
+    PortConnected {
+        port: Node,
+    },
     ParamSysFun(ParamSysFun),
     HiddenState(Variable),
     ImplicitUnknown(ImplicitEquation),
@@ -186,6 +199,8 @@ pub enum PlaceKind {
     IsVoltageSrc(BranchWrite),
     /// A parameter during param initiliztion is mutable (write default in case its not given)
     Param(Parameter),
+    /// Element `idx` of an array parameter during its initialization.
+    ParamElement(Parameter, u32),
     ParamMin(Parameter),
     ParamMax(Parameter),
     BoundStep,
@@ -220,6 +235,9 @@ impl PlaceKind {
             PlaceKind::ParamMin(param) | PlaceKind::ParamMax(param) | PlaceKind::Param(param) => {
                 param.ty(db)
             }
+            // One element of an array parameter holds the array's base type, the
+            // same way one element of an array variable does.
+            PlaceKind::ParamElement(param, _) => param.ty(db).base_type().clone(),
             PlaceKind::IsVoltageSrc(_)
             | PlaceKind::CollapseImplicitEquation(_)
             | PlaceKind::NamedEvent(_) => Type::Bool,

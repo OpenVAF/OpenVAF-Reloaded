@@ -117,7 +117,19 @@ pub(super) fn parameter_decl(p: &mut Parser, m: Marker) {
 const PARAM_RECOVER: TokenSet = MODULE_ITEM_OR_ATTR_RECOVERY.union(TokenSet::new(&[T![,], T![;]]));
 fn parameter(p: &mut Parser) -> bool {
     let m = p.start();
-    name_r(p, TokenSet::new(&[T![,], T![;]]));
+    name_r(p, TokenSet::new(&[T!['['], T![=], T![,], T![;]]));
+    // A parameter array says its range between its name and its value, the way a
+    // variable array does: VAMS-2023 3.4.4 declares `parameter real poles[0:3] =
+    // '{...}`, and 3.4.8 gives a dimension per range for as many as there are.
+    while p.at(T!['[']) {
+        let dim = p.start();
+        p.bump(T!['[']);
+        expr(p);
+        p.expect(T![:]);
+        expr(p);
+        p.expect(T![']']);
+        dim.complete(p, DIMENSION);
+    }
     p.expect(T![=]);
     expr(p);
     while !p.at_ts(PARAM_RECOVER) {

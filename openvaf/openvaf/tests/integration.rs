@@ -1741,6 +1741,67 @@ fn test_transition_pwl() -> Result<()> {
     Ok(())
 }
 
+/// VAMS-2023 3.4.4: a parameter array.
+///
+/// What a simulator has to see is one parameter of `len` elements that it sets in
+/// one go, which is what makes `.model m foo g=[4 5 6]` possible; what the model
+/// has to see is the elements, in row-major order (3.4.8). Each output of the model
+/// is one reading of one array, so a default can be told from an override.
+fn test_array_param() -> Result<()> {
+    let desc = test_descriptor(&openvaf_test_data("osdi").join("array_param.va"))?;
+
+    // The descriptor's own account of the shape, which is the half a simulator
+    // reads: a parameter with elements, and how many of them an override needs.
+    let (g, g_len) = desc.param("g");
+    assert_eq!(g_len, 3, "g has three elements");
+    assert_eq!(desc.param("m").1, 6, "a 2x3 array is six elements in one slot");
+    assert_eq!(desc.param("k").1, 2, "an integer array");
+    assert_eq!(desc.param("s").1, 2, "a range sized by another parameter");
+    assert_eq!(desc.param("sel").1, 0, "a scalar is not a vector");
+    let m = desc.param("m").0;
+    let k = desc.param("k").0;
+    let sel = desc.param("sel").0;
+
+    const OUTPUTS: [&str; 6] = ["one", "all", "matrix", "ints", "loc", "sized"];
+    let read = |model: &OsdiModel| -> Result<Vec<f64>> {
+        let mut instance = model.new_instance();
+        let mut sim = instance.mock_simulation(model, desc.num_terminals, 300.0)?;
+        for node in OUTPUTS {
+            sim.set_voltage(node, 0.0);
+        }
+        instance.eval(model, &mut sim, EvalFlags::empty());
+        instance.load_dae(model, &mut sim);
+        Ok(OUTPUTS.iter().map(|node| sim.read_residual(&format!("flow({node})")).0).collect())
+    };
+
+    // Nothing given: every element comes from the assignment pattern.
+    //
+    //   one = g[0], all = 1+2+3, matrix = m[1][1], ints = 7+9, loc = 0.5+1.5,
+    //   sized = 10*s[0] + s[1]
+    let model = desc.new_model();
+    model.process_params()?;
+    assert_eq!(read(&model)?, vec![1.0, 6.0, 22.0, 16.0, 2.0, 45.0], "the declared defaults");
+
+    // Given: the override replaces the array as a whole, and the elements arrive
+    // in the order the simulator wrote them. `matrix` is the one that says so:
+    // m[1][1] is the fifth element of six, which is row-major and nothing else.
+    let model = desc.new_model();
+    model.set_real_param_vec(g, &[40.0, 50.0, 60.0]);
+    model.set_real_param_vec(m, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    model.set_int_param_vec(k, &[1, 2]);
+    model.set_int_param(sel, 2);
+    model.process_params()?;
+    assert_eq!(read(&model)?, vec![60.0, 150.0, 5.0, 3.0, 2.0, 45.0], "what was given");
+
+    // One element outside the declared range is an invalid parameter: 3.4.4's
+    // range applies to every element, not to the array as some whole.
+    let model = desc.new_model();
+    model.set_real_param_vec(g, &[1.0, 500.0, 3.0]);
+    assert!(model.process_params().is_err(), "500 is outside g's `from [0:100]`");
+
+    Ok(())
+}
+
 /// VAMS-2023 9.5.4: a read takes the next record, and what "next" counts in is
 /// the timepoint rather than the evaluation.
 ///
@@ -2503,5 +2564,5 @@ harness! {
     Test::from_dir_filtered("vacask_spice", &vacask_spice_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice")),
     // VACASK simplified SPICE models
     Test::from_dir_filtered("vacask_spice_sn", &vacask_spice_sn_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice/sn")),
-    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros),Test::new("laplace_roots", &test_laplace_roots),Test::new("slew", &test_slew),Test::new("cross_detect", &test_cross_detect),Test::new("above_detect", &test_above_detect),Test::new("last_crossing", &test_last_crossing),Test::new("var_persistence", &test_var_persistence),Test::new("timer_detect", &test_timer_detect),Test::new("rng_stream", &test_rng_stream),Test::new("transition_pwl", &test_transition_pwl),Test::new("table_model", &test_table_model),Test::new("zi_filter", &test_zi_filter),Test::new("absdelay", &test_absdelay),Test::new("absdelay_in_model", &test_absdelay_in_model),Test::new("timer_resched", &test_timer_resched),Test::new("case_default", &test_case_default),Test::new("file_io", &test_file_io),Test::new("file_scan", &test_file_scan),Test::new("global_events", &test_global_events),Test::new("scan_target", &test_scan_target),Test::new("directives", &test_directives),Test::new("multidim", &test_multidim),Test::new("timepoints", &test_timepoints),Test::new("accept", &test_accept),Test::new("read_point", &test_read_point)]
+    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros),Test::new("laplace_roots", &test_laplace_roots),Test::new("slew", &test_slew),Test::new("cross_detect", &test_cross_detect),Test::new("above_detect", &test_above_detect),Test::new("last_crossing", &test_last_crossing),Test::new("var_persistence", &test_var_persistence),Test::new("timer_detect", &test_timer_detect),Test::new("rng_stream", &test_rng_stream),Test::new("transition_pwl", &test_transition_pwl),Test::new("table_model", &test_table_model),Test::new("zi_filter", &test_zi_filter),Test::new("absdelay", &test_absdelay),Test::new("absdelay_in_model", &test_absdelay_in_model),Test::new("timer_resched", &test_timer_resched),Test::new("case_default", &test_case_default),Test::new("file_io", &test_file_io),Test::new("file_scan", &test_file_scan),Test::new("global_events", &test_global_events),Test::new("scan_target", &test_scan_target),Test::new("directives", &test_directives),Test::new("multidim", &test_multidim),Test::new("timepoints", &test_timepoints),Test::new("accept", &test_accept),Test::new("read_point", &test_read_point),Test::new("array_param", &test_array_param)]
 }

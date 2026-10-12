@@ -1,4 +1,4 @@
-error: invalid $table_model: data column 1 has to be an array of constants. 9.21.1 captures the data source on the first call and ignores later changes, and the table is compiled into the model, so an array the module fills in at run time cannot be read here: write the samples as an array literal, or put them in a data file
+error: invalid $table_model: data column 1 has to be an array of constants. 9.21.1 captures the data source on the first call and ignores later changes, and the table is compiled into the model, so an array the module fills in at run time -- or one a model card sets -- cannot be read here: write the samples as an array literal, or put them in a data file
    --> /table_model_err.va:24:15
    |
 24 |         acc = $table_model(V(a, b), col_x, col_f);

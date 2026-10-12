@@ -934,6 +934,24 @@ impl Diagnostic for TypeValidationDiagnosticWrapped<'_> {
                         format!("help: add a discipline with 'electrical {name}'"),
                     ])
             }
+            TypeValidationDiagnostic::ArrayParamWithoutType { decl, ref name } => {
+                let src = self.parse.to_file_span(self.map.get_syntax(decl).range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("'{name}' is an array and has no type"),
+                    }])
+                    .with_message(format!("no type for array parameter '{name}'"))
+                    .with_notes(vec![
+                        "info: a parameter's type is otherwise taken from its value, and an \
+                         assignment pattern does not say what its elements hold (VAMS-2023 3.4.1)"
+                            .to_owned(),
+                        format!("help: declare it as 'parameter real {name}[...]' or 'parameter integer {name}[...]'"),
+                    ])
+            }
             TypeValidationDiagnostic::UnknownDefaultDiscipline {
                 decl,
                 ref name,

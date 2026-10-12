@@ -132,6 +132,7 @@ impl<'a, 'c> LoweringCtx<'a, 'c> {
                 PlaceKind::FunctionReturn { .. }
                 | PlaceKind::FunctionArg { .. }
                 | PlaceKind::Param(_)
+                | PlaceKind::ParamElement(..)
                 | PlaceKind::ParamMin(_)
                 | PlaceKind::ParamMax(_) => return place,
 

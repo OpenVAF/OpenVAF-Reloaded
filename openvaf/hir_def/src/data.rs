@@ -146,6 +146,11 @@ pub struct ParamData {
     pub ty: Option<Type>,
     /// `localparam` declarations are never externally overridable (LRM).
     pub is_local: bool,
+    /// Lowest declared index of each dimension of an array parameter, outermost
+    /// first. Empty for a scalar.
+    pub array_lows: Box<[i32]>,
+    /// Whether the declaration carried a range but no type (VAMS-2023 3.4.1).
+    pub array_without_ty: bool,
 }
 
 impl ParamData {
@@ -156,6 +161,8 @@ impl ParamData {
             name: param.name.clone(),
             ty: param.ty.clone(),
             is_local: param.is_local,
+            array_lows: param.array_lows.clone(),
+            array_without_ty: param.array_without_ty,
         })
     }
 }

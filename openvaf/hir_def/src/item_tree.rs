@@ -305,6 +305,14 @@ pub struct Param {
     pub name: Name,
     pub ty: Option<Type>,
     pub is_local: bool,
+    /// Lowest declared index of each dimension of an array parameter, outermost
+    /// first (`real c[2:5][0:1]` -> `[2, 0]`). Empty for a scalar.
+    pub array_lows: Box<[i32]>,
+    /// Whether the declaration carries a range but no type. VAMS-2023 3.4.1
+    /// requires an array parameter to be given one; the element type is taken as
+    /// real so that the declaration still makes sense, and type validation reports
+    /// it.
+    pub array_without_ty: bool,
     pub ast_id: AstId<ast::Param>,
 }
 

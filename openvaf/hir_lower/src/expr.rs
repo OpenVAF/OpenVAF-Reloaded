@@ -13,8 +13,8 @@ use hir::signatures::{
 use hir::table_model;
 use hir::zi_filter;
 use hir::{
-    Body, BodyRef, BuiltIn, Expr, ExprId, Literal, /*ParamSysFun,*/ Ref, ResolvedFun, Stmt,
-    Type,
+    Body, BodyRef, BuiltIn, CompilationDB, Expr, ExprId, Literal, /*ParamSysFun,*/ Ref,
+    ResolvedFun, Stmt, Type,
 };
 use mir::builder::InstBuilder;
 use mir::{Opcode, Value, FALSE, F_ZERO, GRAVESTONE, INFINITY, TRUE, ZERO};
@@ -47,6 +47,47 @@ pub(crate) struct ArrayLayout {
     pub base: i32,
 }
 
+/// What an array index chain is rooted at.
+///
+/// VAMS-2023 3.4.4's parameter arrays are indexed exactly the way 3.2's variable
+/// arrays are, so the shape machinery is the same for both. What differs is where
+/// an element comes from: a variable's element is a place the model writes, a
+/// parameter's is a value the simulator supplies.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ArrayBase {
+    Var(hir::Variable),
+    Param(hir::Parameter),
+}
+
+impl From<hir::Variable> for ArrayBase {
+    fn from(var: hir::Variable) -> Self {
+        ArrayBase::Var(var)
+    }
+}
+
+impl From<hir::Parameter> for ArrayBase {
+    fn from(param: hir::Parameter) -> Self {
+        ArrayBase::Param(param)
+    }
+}
+
+impl ArrayBase {
+    pub(crate) fn ty(self, db: &CompilationDB) -> Type {
+        match self {
+            ArrayBase::Var(var) => var.ty(db),
+            ArrayBase::Param(param) => param.ty(db),
+        }
+    }
+
+    /// Lowest declared index of each dimension, outermost first.
+    pub(crate) fn lows(self, db: &CompilationDB) -> Box<[i32]> {
+        match self {
+            ArrayBase::Var(var) => var.array_lows(db),
+            ArrayBase::Param(param) => param.array_lows(db),
+        }
+    }
+}
+
 /// Where an index chain lands in the places that back an array.
 pub(crate) enum FlatIndex {
     /// Every index is a literal: this element, or none at all if one of them is
@@ -66,6 +107,15 @@ impl BodyLoweringCtx<'_, '_, '_> {
             Expr::Read(Ref::Variable(var)) => self.ctx.read_variable(var),
             Expr::Read(Ref::ParamSysFun(param)) => {
                 self.ctx.use_param(ParamKind::ParamSysFun(param))
+            }
+            // An array parameter has no single value: it is read one element at a
+            // time (`lower_index`), copied whole (`assign_whole_array`) or passed to
+            // an operator that takes an array (`array_coeffs`). Reaching here with
+            // one means type checking rejected the expression already.
+            Expr::Read(Ref::Parameter(param))
+                if matches!(param.ty(self.ctx.db), Type::Array { .. } | Type::EmptyArray) =>
+            {
+                F_ZERO
             }
             Expr::Read(Ref::Parameter(param)) => self.ctx.use_param(ParamKind::Param(param)),
             Expr::Read(Ref::FunctionReturn(fun)) => {
@@ -328,17 +378,18 @@ impl BodyLoweringCtx<'_, '_, '_> {
     /// A multi-dimensional array is one array: VAMS-2023 3.2 declares
     /// `integer flag_array[0:8][0:3]` as a single variable, and it is backed by one
     /// MIR place per element, in row-major order.
-    pub(crate) fn array_len(&self, var: hir::Variable) -> u32 {
-        self.array_layout(var).map_or(0, |layout| layout.len)
+    pub(crate) fn array_len(&self, base: impl Into<ArrayBase>) -> u32 {
+        self.array_layout(base).map_or(0, |layout| layout.len)
     }
 
-    /// How an array variable's elements are laid out across its MIR places.
-    pub(crate) fn array_layout(&self, var: hir::Variable) -> Option<ArrayLayout> {
-        let dims = var.ty(self.ctx.db).dim();
+    /// How an array's elements are laid out across the MIR values that back it.
+    pub(crate) fn array_layout(&self, base: impl Into<ArrayBase>) -> Option<ArrayLayout> {
+        let base = base.into();
+        let dims = base.ty(self.ctx.db).dim();
         if dims.is_empty() {
             return None;
         }
-        let lows = var.array_lows(self.ctx.db);
+        let lows = base.lows(self.ctx.db);
         let mut strides = vec![1u32; dims.len()];
         for k in (0..dims.len().saturating_sub(1)).rev() {
             strides[k] = strides[k + 1] * dims[k + 1];
@@ -349,11 +400,12 @@ impl BodyLoweringCtx<'_, '_, '_> {
         Some(ArrayLayout { dims, lows, strides, len, base })
     }
 
-    /// `m[i][j]` -> `(m, [i, j])`, for an index chain rooted at a variable.
+    /// `m[i][j]` -> `(m, [i, j])`, for an index chain rooted at an array variable
+    /// or an array parameter.
     ///
     /// The indices come back outermost first, which is the order their dimensions
     /// are declared in.
-    pub(crate) fn index_chain(&self, expr: ExprId) -> Option<(hir::Variable, Vec<ExprId>)> {
+    pub(crate) fn index_chain_base(&self, expr: ExprId) -> Option<(ArrayBase, Vec<ExprId>)> {
         let mut indices = Vec::new();
         let mut cur = expr;
         loop {
@@ -364,10 +416,31 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 }
                 Expr::Read(Ref::Variable(var)) => {
                     indices.reverse();
-                    return Some((var, indices));
+                    return Some((ArrayBase::Var(var), indices));
+                }
+                Expr::Read(Ref::Parameter(param)) => {
+                    indices.reverse();
+                    return Some((ArrayBase::Param(param), indices));
                 }
                 _ => return None,
             }
+        }
+    }
+
+    /// The same chain, when it is rooted at a variable: a parameter is not a place,
+    /// so an assignment has nothing to write to.
+    pub(crate) fn index_chain(&self, expr: ExprId) -> Option<(hir::Variable, Vec<ExprId>)> {
+        match self.index_chain_base(expr)? {
+            (ArrayBase::Var(var), indices) => Some((var, indices)),
+            (ArrayBase::Param(_), _) => None,
+        }
+    }
+
+    /// Read one element of an array, by its position in row-major order.
+    pub(crate) fn use_element(&mut self, base: ArrayBase, pos: u32) -> Value {
+        match base {
+            ArrayBase::Var(var) => self.ctx.use_place(PlaceKind::VarElement(var, pos)),
+            ArrayBase::Param(param) => self.ctx.use_param(ParamKind::ParamElement(param, pos)),
         }
     }
 
@@ -420,10 +493,11 @@ impl BodyLoweringCtx<'_, '_, '_> {
     /// position at a time.
     pub(crate) fn array_row_values(
         &mut self,
-        var: hir::Variable,
+        base: impl Into<ArrayBase>,
         indices: &[ExprId],
     ) -> Option<Vec<Value>> {
-        let layout = self.array_layout(var)?;
+        let base = base.into();
+        let layout = self.array_layout(base)?;
         if indices.is_empty() || indices.len() >= layout.dims.len() {
             return None;
         }
@@ -434,16 +508,17 @@ impl BodyLoweringCtx<'_, '_, '_> {
         match self.flat_index(&layout, indices)? {
             FlatIndex::Const(Some(start)) => {
                 for i in 0..row {
-                    values.push(self.ctx.use_place(PlaceKind::VarElement(var, start + i)));
+                    let elem = self.use_element(base, start + i);
+                    values.push(elem);
                 }
             }
             // Out of the declared range: diagnosed during type checking.
             FlatIndex::Const(None) => return None,
             FlatIndex::Dynamic(idx_val) => {
                 for i in 0..row {
-                    let mut res = self.ctx.use_place(PlaceKind::VarElement(var, i));
+                    let mut res = self.use_element(base, i);
                     for r in 1..layout.len / row {
-                        let elem = self.ctx.use_place(PlaceKind::VarElement(var, r * row + i));
+                        let elem = self.use_element(base, r * row + i);
                         let r_const = self.ctx.iconst(layout.base + (r * row) as i32);
                         let cond = self.ctx.ins().ieq(idx_val, r_const);
                         let prev = res;
@@ -462,11 +537,11 @@ impl BodyLoweringCtx<'_, '_, '_> {
     /// the array was declared with. A constant index reads its place directly, a
     /// computed one builds a select chain over every element.
     fn lower_index(&mut self, expr: ExprId) -> Value {
-        let Some((var, indices)) = self.index_chain(expr) else {
-            // only array-variable indexing is supported
+        let Some((base, indices)) = self.index_chain_base(expr) else {
+            // only arrays are indexable
             return F_ZERO;
         };
-        let Some(layout) = self.array_layout(var) else {
+        let Some(layout) = self.array_layout(base) else {
             return F_ZERO;
         };
         // Fewer indices than dimensions is a row rather than an element, which is
@@ -475,15 +550,13 @@ impl BodyLoweringCtx<'_, '_, '_> {
             return F_ZERO;
         }
         match self.flat_index(&layout, &indices) {
-            Some(FlatIndex::Const(Some(pos))) => {
-                self.ctx.use_place(PlaceKind::VarElement(var, pos))
-            }
+            Some(FlatIndex::Const(Some(pos))) => self.use_element(base, pos),
             // Out of range: lower to 0 so compilation can continue.
             Some(FlatIndex::Const(None)) | None => F_ZERO,
             Some(FlatIndex::Dynamic(idx_val)) => {
-                let mut res = self.ctx.use_place(PlaceKind::VarElement(var, 0));
+                let mut res = self.use_element(base, 0);
                 for i in 1..layout.len {
-                    let elem = self.ctx.use_place(PlaceKind::VarElement(var, i));
+                    let elem = self.use_element(base, i);
                     let i_const = self.ctx.iconst(layout.base + i as i32);
                     let cond = self.ctx.ins().ieq(idx_val, i_const);
                     let prev = res;
@@ -492,6 +565,51 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 res
             }
         }
+    }
+
+    /// Lower element `pos` (row-major) of an array parameter's default value.
+    ///
+    /// VAMS-2023 3.4.4 initialises a parameter array with an assignment pattern and
+    /// 3.4.8 nests one per dimension, so the element is found by walking the
+    /// pattern a dimension at a time. A default that names another array parameter
+    /// takes that parameter's element instead. Anything else is a shape type
+    /// checking has already rejected, and lowers to zero.
+    pub(crate) fn lower_array_elem_default(
+        &mut self,
+        expr: ExprId,
+        pos: u32,
+        dims: &[u32],
+        elem_ty: &Type,
+    ) -> Value {
+        if let Expr::Read(Ref::Parameter(src)) = self.body.get_expr(expr) {
+            return self.ctx.use_param(ParamKind::ParamElement(src, pos));
+        }
+        let Some(elem) = self.pattern_elem(expr, pos, dims) else {
+            return if matches!(elem_ty, Type::Integer | Type::Bool) { ZERO } else { F_ZERO };
+        };
+        let val = self.lower_expr(elem);
+        // `'{1, 2, 3}` on a real array is three integer literals, and each element
+        // is a value of its own here, so the widening is per element rather than
+        // one cast over an array value.
+        let ty = self.resolved_ty(elem);
+        if &ty == elem_ty {
+            val
+        } else {
+            self.ctx.insert_cast(val, &ty, elem_ty)
+        }
+    }
+
+    /// The expression at position `pos` of a (possibly nested) assignment pattern.
+    fn pattern_elem(&self, expr: ExprId, pos: u32, dims: &[u32]) -> Option<ExprId> {
+        let Some((&dim, rest)) = dims.split_first() else { return Some(expr) };
+        let Expr::Array(vals) = self.body.try_get_expr(expr)? else { return None };
+        let stride: u32 = rest.iter().product();
+        let idx = if stride == 0 { 0 } else { pos / stride };
+        if idx >= dim {
+            return None;
+        }
+        let sub = *vals.get(idx as usize)?;
+        self.pattern_elem(sub, pos % stride.max(1), rest)
     }
 
     /// Evaluate a compile-time-constant real expression (literal, possibly
@@ -2678,15 +2796,14 @@ impl BodyLoweringCtx<'_, '_, '_> {
         // `'{-1,0,1}`) lowers to integer values. Widen each coefficient to real so
         // the residual math stays well-typed.
         match self.body.get_expr(arg) {
-            Expr::Read(Ref::Variable(var)) => {
-                let len = self.array_len(var);
-                let elem_ty = var.ty(self.ctx.db).base_type().clone();
-                (0..len)
-                    .map(|i| {
-                        let v = self.ctx.use_place(PlaceKind::VarElement(var, i));
-                        self.coeff_to_real(v, &elem_ty)
-                    })
-                    .collect()
+            // An array argument may name an array variable or an array parameter
+            // (VAMS-2023 4.5.1), which is what lets a filter take its coefficients
+            // from the model card.
+            Expr::Read(Ref::Variable(var)) => self.array_elem_coeffs(var),
+            Expr::Read(Ref::Parameter(param))
+                if matches!(param.ty(self.ctx.db), Type::Array { .. }) =>
+            {
+                self.array_elem_coeffs(param)
             }
             Expr::Array(elems) => elems
                 .iter()
@@ -2704,10 +2821,10 @@ impl BodyLoweringCtx<'_, '_, '_> {
             // other: a bank of them is a natural thing to keep in a matrix.
             Expr::Index { .. } => {
                 let row = self
-                    .index_chain(arg)
-                    .and_then(|(var, indices)| {
-                        let elem_ty = var.ty(self.ctx.db).base_type().clone();
-                        self.array_row_values(var, &indices).map(|vals| (vals, elem_ty))
+                    .index_chain_base(arg)
+                    .and_then(|(base, indices)| {
+                        let elem_ty = base.ty(self.ctx.db).base_type().clone();
+                        self.array_row_values(base, &indices).map(|vals| (vals, elem_ty))
                     })
                     .map(|(vals, elem_ty)| {
                         vals.into_iter().map(|v| self.coeff_to_real(v, &elem_ty)).collect()
@@ -2729,6 +2846,20 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 vec![self.coeff_to_real(v, &ty)]
             }
         }
+    }
+
+    /// Every element of an array, widened to real: the coefficient vector an
+    /// analog operator takes.
+    fn array_elem_coeffs(&mut self, base: impl Into<ArrayBase>) -> Vec<Value> {
+        let base = base.into();
+        let len = self.array_len(base);
+        let elem_ty = base.ty(self.ctx.db).base_type().clone();
+        (0..len)
+            .map(|i| {
+                let v = self.use_element(base, i);
+                self.coeff_to_real(v, &elem_ty)
+            })
+            .collect()
     }
 
     /// Widen an integer/bool coefficient value to real; reals pass through.

@@ -112,7 +112,21 @@ impl InferenceResult {
             _ => None,
         };
 
-        for stmt in &*body.entry_stmts {
+        // A parameter's body is its default value followed by the expressions of
+        // its bounds. For an array parameter the default is the array (an
+        // assignment pattern of the declared size) while a bound applies to each
+        // element, so from the first bound on the type to check against is the
+        // element type.
+        for (i, stmt) in body.entry_stmts.iter().enumerate() {
+            if i == 1 {
+                let elem = match &ctx.expr_stmt_ty {
+                    Some(ty @ Type::Array { .. }) => Some(ty.base_type().clone()),
+                    _ => None,
+                };
+                if elem.is_some() {
+                    ctx.expr_stmt_ty = elem;
+                }
+            }
             ctx.infere_stmt(*stmt);
         }
 
@@ -266,6 +280,26 @@ impl Ctx<'_> {
         }
         match self.result.expr_types[root] {
             Ty::Var(_, var) => Some((var, depth)),
+            _ => None,
+        }
+    }
+
+    /// The lowest declared index of each dimension of the array an index chain is
+    /// rooted at, and how many of them `expr` addresses.
+    ///
+    /// An array parameter is indexed the same way an array variable is (VAMS-2023
+    /// 3.4.4), so the bound an index has to be inside comes from whichever of the
+    /// two the chain is rooted at.
+    fn index_root_lows(&self, expr: ExprId) -> Option<(Box<[i32]>, usize)> {
+        let mut depth = 0;
+        let mut root = expr;
+        while let Expr::Index { base, .. } = self.body.exprs[root] {
+            depth += 1;
+            root = base;
+        }
+        match self.result.expr_types[root] {
+            Ty::Var(_, var) => Some((self.db.var_data(var).array_lows.clone(), depth)),
+            Ty::Param(_, param) => Some((self.db.param_data(param).array_lows.clone(), depth)),
             _ => None,
         }
     }
@@ -533,11 +567,10 @@ impl Ctx<'_> {
                 // range of that dimension is the one it has to be inside. Only the
                 // innermost base is a `Ty::Var`, so which dimension this is comes
                 // from how many indices stand between it and the variable.
-                if let (Some(Type::Array { len, .. }), Some((var, depth))) =
-                    (base_ty.to_value(), self.index_root(expr))
+                if let (Some(Type::Array { len, .. }), Some((lows, depth))) =
+                    (base_ty.to_value(), self.index_root_lows(expr))
                 {
                     if let Some(idx) = self.const_int_value(index) {
-                        let lows = &self.db.var_data(var).array_lows;
                         let lo = lows.get(depth - 1).copied().unwrap_or(0) as i64;
                         let hi = lo + len as i64 - 1;
                         if idx < lo || idx > hi {
@@ -554,6 +587,15 @@ impl Ctx<'_> {
                 }
                 match base_ty.to_value() {
                     Some(Type::Array { ty, .. }) => Ty::Val(*ty),
+                    // Indexing something with no dimensions. Saying so here matters:
+                    // the element type would otherwise be `Err`, which every
+                    // conversion accepts and no cast can be built for.
+                    Some(found) if found != Type::Err => {
+                        self.result
+                            .diagnostics
+                            .push(InferenceDiagnostic::NotAnArray { e: base, found });
+                        Ty::Val(Type::Err)
+                    }
                     _ => Ty::Val(Type::Err),
                 }
             }
@@ -1426,6 +1468,12 @@ pub enum InferenceDiagnostic {
         index: i64,
         lo: i64,
         hi: i64,
+    },
+
+    /// `x[0]` where `x` has no dimensions to index.
+    NotAnArray {
+        e: ExprId,
+        found: Type,
     },
 
     /// `m[i] = …` on an array of more dimensions than that: the destination is a

@@ -33,6 +33,21 @@ impl OsdiDescriptor {
         unsafe { slice::from_raw_parts(self.param_opvar, self.num_params as usize) }
     }
 
+    /// The id of a parameter, by the name a simulator looks it up with, and the
+    /// number of elements the descriptor says it has (0 for a scalar).
+    ///
+    /// The count is what makes a parameter a vector to the simulator: it is how
+    /// ngspice knows to parse `g=[4 5 6]`, and the exact size an override has to
+    /// have (VAMS-2023 3.4.4).
+    pub fn param(&self, name: &str) -> (u32, u32) {
+        let pos = self
+            .params()
+            .iter()
+            .position(|param| unsafe { osdi_str(*param.name) }.eq_ignore_ascii_case(name))
+            .unwrap_or_else(|| panic!("no parameter named '{name}'"));
+        (pos as u32, self.params()[pos].len)
+    }
+
     pub fn collapsible(&self) -> &[OsdiNodePair] {
         // SAFETY: self.data is a valid allocation and the descriptor is assumed valid
         unsafe { slice::from_raw_parts(self.collapsible, self.num_collapsible as usize) }
@@ -183,6 +198,47 @@ impl OsdiModel {
             unreachable!("invalid parameter access")
         }
         unsafe { ptr.write(val) };
+    }
+
+    pub fn set_int_param(&self, param: u32, val: i32) {
+        let ptr = self.descriptor.access(ptr::null_mut(), self.data, param, ACCESS_FLAG_SET);
+        let ptr = ptr as *mut i32;
+        if ptr.is_null() {
+            unreachable!("invalid parameter access")
+        }
+        unsafe { ptr.write(val) };
+    }
+
+    /// Override an array parameter the way a simulator does: one slot, the whole
+    /// array, of the exact declared size (VAMS-2023 3.4.4). This is the write
+    /// ngspice makes for a vector parameter, which is a `memcpy` of
+    /// `len * sizeof(double)` into what `access` returns.
+    pub fn set_real_param_vec(&self, param: u32, vals: &[f64]) {
+        assert_eq!(
+            self.descriptor.params()[param as usize].len as usize,
+            vals.len(),
+            "an array parameter is overridden by an array of its declared size"
+        );
+        let ptr = self.descriptor.access(ptr::null_mut(), self.data, param, ACCESS_FLAG_SET);
+        let ptr = ptr as *mut f64;
+        if ptr.is_null() {
+            unreachable!("invalid parameter access")
+        }
+        unsafe { ptr::copy_nonoverlapping(vals.as_ptr(), ptr, vals.len()) };
+    }
+
+    pub fn set_int_param_vec(&self, param: u32, vals: &[i32]) {
+        assert_eq!(
+            self.descriptor.params()[param as usize].len as usize,
+            vals.len(),
+            "an array parameter is overridden by an array of its declared size"
+        );
+        let ptr = self.descriptor.access(ptr::null_mut(), self.data, param, ACCESS_FLAG_SET);
+        let ptr = ptr as *mut i32;
+        if ptr.is_null() {
+            unreachable!("invalid parameter access")
+        }
+        unsafe { ptr::copy_nonoverlapping(vals.as_ptr(), ptr, vals.len()) };
     }
 
     pub fn new_instance(&self) -> OsdiInstance {
@@ -436,7 +492,6 @@ impl Debug for OsdiDescriptor {
 
         unsafe {
             for param in self.params() {
-                assert_eq!(param.len, 0);
                 w!("param ");
                 for i in 0..=param.num_alias {
                     if i != 0 {
@@ -445,6 +500,11 @@ impl Debug for OsdiDescriptor {
                     w!("{:?}", osdi_str(*param.name.add(i as usize)));
                 }
                 wn!();
+                // An array parameter is one parameter holding `len` elements
+                // (VAMS-2023 3.4.4); a scalar one says nothing here.
+                if param.len != 0 {
+                    wn!("elements = {}", param.len);
+                }
                 let desc = osdi_str(param.description);
                 let units = osdi_str(param.units);
                 let ty = ParameterFlags::from_bits(param.flags).unwrap();

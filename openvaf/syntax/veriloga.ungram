@@ -269,7 +269,7 @@ AliasParam =
 ParamRef =
   Path | SysFun
 
-Param = Name '=' default:Expr Constraint*
+Param = Name Dimension* '=' default:Expr Constraint*
 
 Constraint =
     ('from' | 'exclude') (Expr | Range)

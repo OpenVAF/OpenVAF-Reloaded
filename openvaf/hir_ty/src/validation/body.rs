@@ -963,8 +963,9 @@ impl ExprValidator<'_, '_> {
                                 "data column {} has to be an array of constants. 9.21.1 captures \
                                  the data source on the first call and ignores later changes, and \
                                  the table is compiled into the model, so an array the module \
-                                 fills in at run time cannot be read here: write the samples as an \
-                                 array literal, or put them in a data file",
+                                 fills in at run time -- or one a model card sets -- cannot be \
+                                 read here: write the samples as an array literal, or put them in \
+                                 a data file",
                                 i + 1
                             ),
                         );
@@ -1087,8 +1088,8 @@ impl ExprValidator<'_, '_> {
             format!(
                 "the {what} vector has to be an array of constants. Table 4-20 makes it a \
                  constant expression argument, and the filter is compiled into the model, so an \
-                 array the module computes at run time cannot be read here: write it as an array \
-                 literal"
+                 array the module computes at run time -- or one a model card sets -- cannot be \
+                 read here: write it as an array literal"
             ),
         );
     }
@@ -1268,7 +1269,29 @@ impl ExprValidator<'_, '_> {
             (
                 BuiltIn::noise_table | BuiltIn::noise_table_log,
                 Some(NOISE_TABLE_INLINE | NOISE_TABLE_INLINE_NAME),
-            ) => self.validate_const_expr(args[0]),
+            ) => {
+                self.validate_const_expr(args[0]);
+                // The table is built into the model, so its pairs have to be
+                // knowable here. Being a constant expression is not enough: an
+                // array parameter is one, and what a model card sets it to arrives
+                // long after the model was compiled.
+                if self.const_real_column(args[0]).is_none() {
+                    let name = if matches!(call, BuiltIn::noise_table_log) {
+                        "noise_table_log"
+                    } else {
+                        "noise_table"
+                    };
+                    self.operator_err(
+                        expr,
+                        name,
+                        "the table has to be an array of constants. 4.6.3 builds the spectrum \
+                         into the model, so a table a model card sets -- an array parameter -- \
+                         cannot be read here: write the pairs as an array literal, or name a data \
+                         file"
+                            .to_owned(),
+                    );
+                }
+            }
             (func @ (BuiltIn::simparam | BuiltIn::simparam_str), _) => {
                 if self.parent.ctx == BodyCtx::Const {
                     let known = if let Expr::Literal(Literal::String(name)) =

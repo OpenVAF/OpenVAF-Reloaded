@@ -370,7 +370,12 @@ impl CodegenCtx<'_, '_> {
                 }
 
                 let val = match kind {
+                    // VerilogAE's interface binds parameters by name and type
+                    // (`read_params`), and has no array type to bind an array
+                    // parameter's elements to, so they are left unbound the way the
+                    // parameters this arm defers are.
                     ParamKind::Param(_)
+                    | ParamKind::ParamElement(..)
                     | ParamKind::Voltage { .. }
                     | ParamKind::Current(_)
                     | ParamKind::HiddenState(_) => return BuilderVal::Undef,
@@ -726,7 +731,9 @@ impl CodegenCtx<'_, '_> {
                     | ParamKind::HiddenState(_) => {
                         unreachable!()
                     }
-                    ParamKind::Param(_) | ParamKind::ParamGiven { .. } => return BuilderVal::Undef,
+                    ParamKind::Param(_)
+                    | ParamKind::ParamElement(..)
+                    | ParamKind::ParamGiven { .. } => return BuilderVal::Undef,
                     ParamKind::Temperature => builder.cx.const_real(293f64),
                     ParamKind::PortConnected { .. } => builder.cx.const_bool(true),
                     ParamKind::ParamSysFun(param) => builder.cx.const_real(param.default_value()),

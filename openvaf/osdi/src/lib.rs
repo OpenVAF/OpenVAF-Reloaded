@@ -473,6 +473,25 @@ pub struct OsdiLimId(u32);
 impl_idx_from!(OsdiLimId(u32));
 impl_debug_display! {match OsdiLimId{OsdiLimId(id) => "lim{id}";}}
 
+/// The element type of an array parameter's storage.
+fn llelem_ty(arr_ty: &llvm_sys::LLVMType) -> &llvm_sys::LLVMType {
+    unsafe { &*llvm_sys::core::LLVMGetElementType(NonNull::from(arr_ty).as_ptr()) }
+}
+
+/// The indices that address element `elem` of the array held in field `field`.
+///
+/// An array parameter is one field holding the whole array, which is what lets a
+/// simulator set it in one go (VAMS-2023 3.4.4), so reaching an element walks the
+/// struct and then the array.
+fn param_elem_indices<'ll>(
+    cx: &CodegenCx<'_, 'll>,
+    field: u32,
+    elem: u32,
+) -> Box<[&'ll llvm_sys::LLVMValue]> {
+    vec![cx.const_unsigned_int(0), cx.const_unsigned_int(field), cx.const_unsigned_int(elem)]
+        .into_boxed_slice()
+}
+
 fn ty_len(ty: &Type) -> Option<u32> {
     match ty {
         Type::Array { ty, len } => Some(len * ty_len(ty).unwrap_or(1)),

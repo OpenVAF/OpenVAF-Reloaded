@@ -215,6 +215,16 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                                 .unwrap_or_else(|| model_data.param_loc(cx, param, model).unwrap())
                                 .into()
                         }
+                        // One element of an array parameter: the same slot, one step
+                        // in (VAMS-2023 3.4.4).
+                        ParamKind::ParamElement(param, elem) => {
+                            return inst_data
+                                .param_elem_loc(cx, OsdiInstanceParam::User(param), elem, instance)
+                                .unwrap_or_else(|| {
+                                    model_data.param_elem_loc(cx, param, elem, model).unwrap()
+                                })
+                                .into()
+                        }
                         ParamKind::Voltage { hi, lo } => {
                             let hi = get_prev_solve(SimUnknownKind::KirchoffLaw(hi));
                             if let Some(lo) = lo {
