@@ -205,6 +205,8 @@ pub struct OsdiDescriptor {
     pub load_noise_params: fn(*mut c_void, *mut c_void, *mut f64, *mut f64),
     pub absdelay_count: u32,
     pub absdelay_info: *const OsdiAbsDelayInfo,
+    pub breakpoint_offset: u32,
+    pub discontinuity_offset: u32,
 }
 impl OsdiDescriptor {
     pub fn access(

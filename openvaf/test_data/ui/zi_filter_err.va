@@ -1,0 +1,35 @@
+// VAMS-2023 4.5.12. Table 4-20 makes the two vectors constant expression
+// arguments, and the filter is compiled into the model, so each call below is a
+// different way of not being reducible here.
+`include "disciplines.vams"
+
+module zi_filter_err(a, b);
+    inout a, b;
+    electrical a, b;
+
+    real coeffs[0:1];
+    real acc;
+
+    analog begin
+        // Computed at run time, so the coefficients do not exist at compile time.
+        @(initial_step) begin
+            coeffs[0] = 1.0;
+            coeffs[1] = -0.5;
+        end
+        acc = zi_nd(V(a, b), {1.0}, coeffs, 1u);
+
+        // A root vector has to be pairs of a real and an imaginary part.
+        acc = acc + zi_zp(V(a, b), {0.5, 0.0}, {0.25, 0.0, 0.5}, 1u);
+
+        // A complex pole without its conjugate.
+        acc = acc + zi_np(V(a, b), {1.0}, {0.5, 0.5}, 1u);
+
+        // The filter does not determine its own output.
+        acc = acc + zi_nd(V(a, b), {1.0}, {0.0, 1.0}, 1u);
+
+        // "T [...] shall be positive."
+        acc = acc + zi_nd(V(a, b), {1.0}, {1.0}, 0.0);
+
+        I(a, b) <+ acc;
+    end
+endmodule

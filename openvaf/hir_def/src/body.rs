@@ -170,11 +170,14 @@ impl Body {
                 let expr = if let Some(expr) = ast.default() {
                     ctx.collect_expr(expr)
                 } else {
-                    let default_val = match db.var_data(var).ty {
+                    // An array has no scalar default -- its elements are managed one
+                    // by one during lowering -- so the placeholder is one of its
+                    // base type, which is also the type it is checked against. A
+                    // `string` array used to get a real placeholder and crash the
+                    // compiler trying to report the mismatch.
+                    let default_val = match db.var_data(var).ty.base_type() {
                         Type::Integer => Literal::Int(0),
-                        // Arrays have no scalar default (their elements are managed
-                        // per-element during lowering); use 0.0 as a placeholder.
-                        Type::Real | Type::Array { .. } => Literal::Float(Ieee64::with_float(0.0)),
+                        Type::Real => Literal::Float(Ieee64::with_float(0.0)),
                         Type::String => Literal::String(Box::from("")),
                         _ => unreachable!("invalid var type"),
                     };

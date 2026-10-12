@@ -1,0 +1,49 @@
+// VAMS-2023 10.3 and 10.2, in ngspice: the directives that supply a default.
+//
+// The file has two modules on purpose, one on each side of the directives, which
+// is what "applies to the text stream following the directive" means when the
+// stream is one file:
+//
+//   nodefault   declared above them. A bare `transition` here gets the negligible
+//               transition time 4.5.8 asks for when no directive is in force, so
+//               its output steps. Its ports have to declare their own discipline,
+//               because the default is not in force here either.
+//
+//   withdefault declared below them. The same bare filter ramps over the 1 us the
+//               directive names, and so does one that asks for a zero rise time:
+//               4.5.8 sends "unspecified or equal to zero (0.0)" to the same
+//               place. `named` says the time outright and is what the other two
+//               are measured against. None of its three outputs declares a
+//               discipline.
+`include "disciplines.vams"
+
+module nodefault(out, in);
+    inout out;
+    electrical out;
+    input in;
+    electrical in;
+
+    real x;
+
+    analog begin
+        x = V(in) > 2.5;
+        V(out) <+ transition(x);
+    end
+endmodule
+
+`default_transition 1u
+`default_discipline electrical
+
+module withdefault(bare, zero, named, in);
+    inout bare, zero, named;
+    input in;
+
+    real x;
+
+    analog begin
+        x = V(in) > 2.5;
+        V(bare)  <+ transition(x);
+        V(zero)  <+ transition(x, 0, 0);
+        V(named) <+ transition(x, 0, 1u);
+    end
+endmodule

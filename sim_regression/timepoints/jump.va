@@ -1,0 +1,46 @@
+// The timepoint protocol (docs/osdi-timepoint-protocol.md): a switch whose output
+// jumps, and which says so.
+//
+// The jump is triggered by a crossing, not by a timer, on purpose. A crossing
+// instant is a prediction, so `cross` only caps the step on the way to it and the
+// point it lands on is not a breakpoint: nothing tells the integrator that the
+// solution is discontinuous there. That is what `$discontinuity(0)` is for, and
+// `announce` is the only difference between the two instances in the netlist.
+//
+// There is no `transition()` here by design. A model that smooths its edges needs
+// none of this (9.17.1 says so itself); this is the case that does.
+//
+// One modelling note, learned the hard way while writing this: the state comes
+// from the *direction* of the crossing and not from re-reading the signal, because
+// `cross` steers the timestep onto the threshold. At the event instant
+// `V(ctrl) - thresh` is zero to the solver's accuracy, so `V(ctrl) > thresh` there
+// is a coin flip, and in this netlist it came up false every time.
+`include "disciplines.vams"
+
+module jump(out, ctrl);
+    inout out;
+    electrical out;
+    input ctrl;
+    electrical ctrl;
+
+    parameter real vhi = 5.0;
+    parameter real thresh = 2.5;
+    parameter integer announce = 1;
+
+    integer state;
+
+    analog begin
+        @(cross(V(ctrl) - thresh, +1)) begin
+            state = 1;
+            // 9.17.1: the value itself jumps, which is degree 0.
+            if (announce) $discontinuity(0);
+        end
+
+        @(cross(V(ctrl) - thresh, -1)) begin
+            state = 0;
+            if (announce) $discontinuity(0);
+        end
+
+        V(out) <+ vhi * state;
+    end
+endmodule

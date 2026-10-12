@@ -365,9 +365,15 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
             let collapsed_offset =
                 LLVMOffsetOfElement(*target_data, NonNull::from(inst_data.ty).as_ptr(), COLLAPSED)
                     as u32;
-            let bound_step_offset = inst_data.bound_step_elem().map_or(u32::MAX, |elem| {
-                LLVMOffsetOfElement(*target_data, NonNull::from(inst_data.ty).as_ptr(), elem) as u32
-            });
+            let elem_offset = |elem: Option<u32>| {
+                elem.map_or(u32::MAX, |elem| {
+                    LLVMOffsetOfElement(*target_data, NonNull::from(inst_data.ty).as_ptr(), elem)
+                        as u32
+                })
+            };
+            let bound_step_offset = elem_offset(inst_data.bound_step_elem());
+            let breakpoint_offset = elem_offset(inst_data.breakpoint_elem());
+            let discontinuity_offset = elem_offset(inst_data.discontinuity_elem());
 
             let state_idx_off =
                 LLVMOffsetOfElement(*target_data, NonNull::from(inst_data.ty).as_ptr(), STATE_IDX)
@@ -455,6 +461,8 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                 collapsible,
                 collapsed_offset,
                 bound_step_offset,
+                breakpoint_offset,
+                discontinuity_offset,
 
                 // TODO noise
                 num_noise_src: noise_sources.len() as u32,

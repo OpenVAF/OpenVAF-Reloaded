@@ -1,0 +1,35 @@
+// absdelay, VAMS-2023 4.5.7
+//
+//   fixed  a constant delay of 1 us, the typical case
+//   vary   Figure 4-4's schedule -- td of 2 us until t = 3 us, then 4 us until
+//          t = 5 us, then 1 us -- which only a `maxdelay` allows
+//   raw    the input, for reference
+//
+// The input is a 1 V/us ramp, so every expected value is arithmetic: the output
+// is `Input(max(t - td, 0))`, and the input before t = 0 is input(0) = 0.
+`include "disciplines.vams"
+
+module addelay(fixed, vary, raw, din);
+    inout fixed, vary, raw;
+    electrical fixed, vary, raw;
+    input din;
+    electrical din;
+
+    parameter real td = 1e-6 from (0:inf);
+    parameter real maxd = 5e-6 from (0:inf);
+
+    real delay;
+
+    analog begin
+        if ($abstime < 3e-6)
+            delay = 2e-6;
+        else if ($abstime < 5e-6)
+            delay = 4e-6;
+        else
+            delay = 1e-6;
+
+        V(fixed) <+ absdelay(V(din), td);
+        V(vary) <+ absdelay(V(din), delay, maxd);
+        V(raw) <+ V(din);
+    end
+endmodule

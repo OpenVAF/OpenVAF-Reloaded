@@ -1,0 +1,22 @@
+warning[L018]: 'final_step' does not select the last point
+   --> /event_or.va:21:9
+   |
+21 |         @(initial_step, final_step) state = 0.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = nothing in OSDI tells a model which point is the last one, so the event cannot be scheduled
+   = an analysis list is honoured, so the body is confined to the analyses it names, but runs at every evaluation of them
+   = help: a file does not need closing for what was written to it to arrive, and '$fclose' here closes it on the first evaluation
+   = unscheduled_event is set to warn by default
+
+warning[L018]: 'final_step' does not select the last point
+   --> /event_or.va:27:9
+   |
+27 |         @(initial_step("tran") or final_step("tran")) state = 0.0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ body is evaluated unconditionally
+   |
+   = nothing in OSDI tells a model which point is the last one, so the event cannot be scheduled
+   = an analysis list is honoured, so the body is confined to the analyses it names, but runs at every evaluation of them
+   = help: a file does not need closing for what was written to it to arrive, and '$fclose' here closes it on the first evaluation
+   = unscheduled_event is set to warn by default
+

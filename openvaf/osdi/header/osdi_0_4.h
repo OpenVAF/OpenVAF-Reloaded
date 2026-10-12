@@ -236,6 +236,20 @@ typedef struct OsdiDescriptor {
   void (*load_noise_params)(void *inst, void *model, double *power, double *exponent);
   uint32_t absdelay_count;
   const OsdiAbsDelayInfo *absdelay_info;
+  /* Where in the instance data the model leaves the instant it wants a timepoint
+   * placed at, as an absolute time in seconds, or UINT32_MAX when the module never
+   * asks for one. The slot holds +inf when nothing is wanted. A simulator should
+   * place a timepoint there (ngspice: CKTsetBreak), which also restarts the
+   * integration order at it. See docs/osdi-timepoint-protocol.md. */
+  uint32_t breakpoint_offset;
+  /* Where in the instance data the model leaves the lowest degree of discontinuity
+   * it announced at the current time (VAMS-2023 9.17.1), or UINT32_MAX when the
+   * module never announces one. The slot holds a negative value when nothing was
+   * announced; degree 0 is a jump in the value itself, 1 in its first derivative,
+   * and so on. The announcement is about the point that was just solved, so a
+   * simulator should restart the integration order there rather than place a new
+   * point. */
+  uint32_t discontinuity_offset;
 }OsdiDescriptor;
 
 typedef struct OsdiNature {

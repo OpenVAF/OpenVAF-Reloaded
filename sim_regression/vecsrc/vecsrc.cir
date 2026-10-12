@@ -1,0 +1,15 @@
+* A source driven by vectors.txt. The file is the reference: the analyzer reads
+* it and requires the waveform to be what it says.
+Nv out nrec vsrc
+.model vsrc vecsrc(tr=1n)
+Ro out  0 1e12
+Rn nrec 0 1e12
+
+.control
+pre_osdi vecsrc.osdi
+tran 50n 5u
+set filetype=ascii
+wrdata vs_out.txt v(out) v(nrec)
+.endc
+
+.end

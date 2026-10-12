@@ -1,0 +1,31 @@
+`include "disciplines.vams"
+
+// VAMS-2023 5.10.1: the event OR operator. The sample-and-hold below is the
+// LRM's own example from that clause, written verbatim.
+module event_or(in, out, smpl);
+    input in, smpl;
+    output out;
+    electrical in, out, smpl;
+
+    event armed;
+
+    integer vout;
+    real state;
+
+    analog begin
+        @(initial_step or cross(V(smpl) - 2.5, +1)) begin
+            vout = (V(in) > 2.5);
+        end
+
+        // a comma ORs event expressions just like `or`
+        @(initial_step, final_step) state = 0.0;
+
+        // global, monitored and named events mix freely
+        @(cross(V(smpl) - 1.0, -1) or armed or timer(1n)) state = V(in);
+
+        // an analysis list still belongs to the global event it follows
+        @(initial_step("tran") or final_step("tran")) state = 0.0;
+
+        V(out) <+ vout + state;
+    end
+endmodule

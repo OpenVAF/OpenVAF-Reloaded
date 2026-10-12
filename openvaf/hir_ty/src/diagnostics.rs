@@ -312,6 +312,27 @@ impl Diagnostic for InferenceDiagnosticWrapped<'_> {
                     .with_message("array index out of bounds")
                     .with_notes(vec![format!("help: the declared range is [{lo}:{hi}]")])
             }
+            InferenceDiagnostic::AssignToArrayRow { e, indexed, dims } => {
+                let src = self
+                    .parse
+                    .to_file_span(self.body_sm.expr_map_back[e].as_ref().unwrap().range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("{indexed} of {dims} dimensions are indexed"),
+                    }])
+                    .with_message("assignment to a row of a multi-dimensional array")
+                    .with_notes(vec![
+                        "info: a row is an array of its own, and an array is not a place"
+                            .to_owned(),
+                        format!(
+                            "help: index all {dims} dimensions, or copy the row element by element"
+                        ),
+                    ])
+            }
             InferenceDiagnostic::ExpectedProbe { e } => {
                 let src = self
                     .parse

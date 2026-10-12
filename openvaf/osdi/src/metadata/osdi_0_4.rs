@@ -449,6 +449,8 @@ pub struct OsdiDescriptor<'ll> {
     pub load_noise_params: &'ll llvm_sys::LLVMValue,
     pub absdelay_count: u32,
     pub absdelay_info: Vec<OsdiAbsDelayInfo>,
+    pub breakpoint_offset: u32,
+    pub discontinuity_offset: u32,
 }
 impl<'ll> OsdiDescriptor<'ll> {
     pub fn to_ll_val(
@@ -520,6 +522,8 @@ impl<'ll> OsdiDescriptor<'ll> {
             self.load_noise_params,
             ctx.const_unsigned_int(self.absdelay_count),
             ctx.const_arr_ptr(tys.osdi_abs_delay_info, &arr_51),
+            ctx.const_unsigned_int(self.breakpoint_offset),
+            ctx.const_unsigned_int(self.discontinuity_offset),
         ];
         let ty = tys.osdi_descriptor;
         ctx.const_struct(ty, &fields)
@@ -581,6 +585,8 @@ impl OsdiTyBuilder<'_, '_, '_> {
             ctx.ty_ptr(),
             ctx.ty_int(),
             ctx.ty_ptr(),
+            ctx.ty_int(),
+            ctx.ty_int(),
         ];
         let ty = ctx.ty_struct("OsdiDescriptor", &fields);
         self.osdi_descriptor = Some(ty);

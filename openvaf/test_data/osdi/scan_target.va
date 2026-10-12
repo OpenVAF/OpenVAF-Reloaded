@@ -1,0 +1,43 @@
+`include "disciplines.vams"
+
+// VAMS-2023 9.5.4: where the conversions of a scan go.
+//
+//   sum     two conversions into two elements of an array, at an index the model
+//           works out from a port voltage -- so which element each lands in is
+//           not something the compiler can fold away. The four elements are
+//           cleared first, and weighted by powers of ten on the way out, so the
+//           sum says exactly which two were written.
+//
+//   rout    `%d` into a real variable. The conversion says what is read out of
+//           the text ("8.75" through a `%d` is 8) and the variable says what
+//           holds it, so the two need a cast between them.
+//
+//   mout    `%e` into an integer variable, the same thing the other way round.
+//
+//   nconv   what the scan returns, which is how many conversions succeeded.
+//
+// Voltage contributions put each equation on a branch flow unknown, where the
+// residual is the value itself once the output node is held at zero.
+module scan_target(sel, sum, rout, mout, nconv);
+    input sel;
+    output sum, rout, mout, nconv;
+    electrical sel, sum, rout, mout, nconv;
+
+    real tv[0:3];
+    real r;
+    integer m, n, j, k;
+
+    analog begin
+        for (k = 0; k < 4; k = k + 1) tv[k] = 0.0;
+
+        j = (V(sel) > 0.5) ? 2 : 0;
+        n = $sscanf("1.5 2.5", "%e %e", tv[j], tv[j + 1]);
+        n = n + $sscanf("8.75", "%d", r);
+        n = n + $sscanf("3", "%e", m);
+
+        V(sum) <+ tv[0] + 10.0 * tv[1] + 100.0 * tv[2] + 1000.0 * tv[3];
+        V(rout) <+ r;
+        V(mout) <+ m;
+        V(nconv) <+ n;
+    end
+endmodule

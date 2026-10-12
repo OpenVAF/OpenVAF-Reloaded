@@ -1,0 +1,26 @@
+`include "disciplines.vams"
+
+// VAMS-2023 5.10.3.3: a periodic timer driving a sampler. There is no clock node
+// anywhere in the netlist -- the events come from the timer alone, and the
+// timepoints they land on are the ones `$bound_step` asked the solver for.
+module tsample(in, out, tick);
+    input in;
+    output out, tick;
+    electrical in, out, tick;
+
+    parameter real start = 1e-6;
+    parameter real period = 2e-6;
+
+    real state;
+    integer n;
+
+    analog begin
+        @(timer(start, period)) begin
+            state = V(in);
+            n = n + 1;
+        end
+
+        V(out)  <+ state;
+        V(tick) <+ n;
+    end
+endmodule

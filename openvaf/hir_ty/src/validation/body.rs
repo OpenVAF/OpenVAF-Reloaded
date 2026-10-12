@@ -3,11 +3,12 @@ use std::mem::replace;
 use ahash::{HashMap, HashSet};
 use hir_def::body::Body;
 use hir_def::{
-    expr::Event, BranchId, BuiltIn, DefWithBodyId, DisciplineId, Expr, ExprId, FunctionArgLoc,
-    Literal, Lookup, ModuleBodyKind, NatureId, NodeId, ParamId, Path, Stmt, StmtId, VarId,
+    expr::Event, expr::GlobalEvent, BranchId, BuiltIn, DefWithBodyId, DisciplineId, Expr, ExprId,
+    FunctionArgLoc, Literal, Lookup, ModuleBodyKind, NatureId, NodeId, ParamId, Path, Stmt, StmtId,
+    VarId,
 };
 use stdx::impl_display;
-use syntax::ast::AssignOp;
+use syntax::ast::{AssignOp, UnaryOp};
 use syntax::name::{AsIdent, Name};
 
 use crate::builtin::{
@@ -17,7 +18,11 @@ use crate::builtin::{
 use crate::db::HirTyDB;
 use crate::inference::{BranchWrite, InferenceResult, ResolvedFun};
 use crate::lower::BranchKind;
+use crate::scan::scan_conversions;
+use crate::table_model;
 use crate::types::{Signature, Ty};
+use crate::zi_filter;
+use hir_def::Type;
 
 // `EventFun` is an analog event function used outside `@(...)` (VAMS-2023 5.10.3).
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -63,6 +68,48 @@ pub enum BodyValidationDiagnostic {
         ctx: BodyCtx,
     },
 
+    /// VAMS-2023 5.10.3: an analog event function is name-resolved and type-checked
+    /// but takes no part in scheduling yet, so the guarded statement is evaluated on
+    /// every evaluation of the analog block instead of only when the event occurs.
+    UnscheduledEvent {
+        stmt: StmtId,
+        func: BuiltIn,
+    },
+
+    /// VAMS-2023 5.10.2: `@(final_step)` is "active during the solution of the last
+    /// point", and nothing in OSDI tells a model which point that is, so the body is
+    /// reached at every evaluation instead. An analysis list is honoured, so the
+    /// body is at least confined to the analyses it names.
+    UnconditionalFinalStep {
+        stmt: StmtId,
+    },
+
+    /// VAMS-2023 9.5.4: a scan writes each conversion into an argument, so an
+    /// argument has to name something that can be written to -- a variable, or one
+    /// element of an array.
+    ScanTargetNotAPlace {
+        arg: ExprId,
+    },
+
+    /// VAMS-2023 9.5.4: ... and that variable has to be able to hold what its
+    /// conversion produces. There is no conversion between a string and a number,
+    /// so `%s` into a real variable, or `%e` into a string one, is a type error.
+    ScanTargetTy {
+        arg: ExprId,
+        spec: char,
+        produces: Type,
+        found: Type,
+    },
+
+    /// VAMS-2023 9.17.1: `$discontinuity(n)` for a non-negative degree is announced
+    /// through the timepoint protocol, which no released simulator reads yet, so
+    /// the model is told what its announcement depends on. The
+    /// `$discontinuity(-1)` form belongs to `$limit` (9.17.3) and is unaffected.
+    IgnoredDiscontinuity {
+        stmt: StmtId,
+        expr: ExprId,
+    },
+
     WriteToInputArg {
         expr: ExprId,
         arg: FunctionArgLoc,
@@ -82,6 +129,13 @@ pub enum BodyValidationDiagnostic {
         stmt: StmtId,
     },
 
+    /// An analog operator whose constant arguments cannot be reduced at compile
+    /// time: a `$table_model` table or a Z-transform filter.
+    InvalidOperator {
+        expr: ExprId,
+        what: &'static str,
+        err: String,
+    },
     UnsupportedFunction {
         expr: ExprId,
         func: BuiltIn,
@@ -286,19 +340,73 @@ impl BodyValidator<'_> {
 
                 return;
             }
-            Stmt::EventControl { ref event, body } => {
-                let call = match *event {
-                    Event::Cross { call } => call,
-                    _ => None,
-                };
+            Stmt::EventControl { ref events, body } => {
+                // Each element of the event expression is validated on its own
+                // (VAMS-2023 5.10.1).
+                let calls: Vec<_> = events
+                    .iter()
+                    .filter_map(|event| match *event {
+                        Event::Cross { call } => call,
+                        _ => None,
+                    })
+                    .collect();
+                // Mirror `hir_lower`'s `EventControl`: the body is guarded only if
+                // *every* element of the event expression carries a runtime
+                // condition -- `initial_step` its first-evaluation flag, a named
+                // event its flag, `cross` its crossing. One element without one
+                // (`final_step`, `timer`, ...) leaves the whole body unconditional,
+                // however well the others schedule.
+                let all_scheduled = !events.is_empty()
+                    && events.iter().all(|event| match *event {
+                        Event::Global { kind, .. } => kind == GlobalEvent::InitialStep,
+                        Event::Named { event } => {
+                            matches!(self.infer.expr_types[event], Ty::Event(_))
+                        }
+                        Event::Cross { call: Some(call) } => matches!(
+                            self.infer.resolved_calls.get(&call),
+                            Some(ResolvedFun::BuiltIn(func)) if func.schedules_event()
+                        ),
+                        _ => false,
+                    });
+
+                // 5.10.2 puts `final_step` at the last point, and an analysis list
+                // narrows which analyses it applies to but says nothing about which
+                // point is the last one -- which no part of OSDI does either. So the
+                // body is reached at every evaluation, and that is worth saying: it
+                // is where a model puts the summary it writes once, and `$fclose` in
+                // it closes the file on the first evaluation instead of the last.
+                for event in events {
+                    if matches!(*event, Event::Global { kind: GlobalEvent::FinalStep, .. }) {
+                        self.diagnostics
+                            .push(BodyValidationDiagnostic::UnconditionalFinalStep { stmt });
+                    }
+                }
+
                 let old = replace(&mut self.ctx, BodyCtx::EventControl);
                 let old_event = replace(&mut self.in_event_control, true);
                 // The event expression is validated in the event context too: it may
                 // read natures (`@(cross(V(a)))`) but not use analog operators.
-                if let Some(call) = call {
+                for call in calls {
                     let old_call = replace(&mut self.event_call, Some(call));
                     self.validate_expr(call, stmt);
                     self.event_call = old_call;
+
+                    // `cross` decides whether the body runs (VAMS-2023 5.10.3.1),
+                    // so on its own it no longer warns; `above`, `timer` and
+                    // `absdelta` still take no part in scheduling. Either way the
+                    // warning stands if some other element of the same event
+                    // expression leaves the body unconditional, because then this
+                    // function does not end up scheduling anything either. Warn
+                    // instead of silently accepting a model whose behaviour is not
+                    // the one it describes.
+                    if let Some(ResolvedFun::BuiltIn(func)) = self.infer.resolved_calls.get(&call) {
+                        if func.is_event_fun() && !(func.schedules_event() && all_scheduled) {
+                            self.diagnostics.push(BodyValidationDiagnostic::UnscheduledEvent {
+                                stmt,
+                                func: *func,
+                            });
+                        }
+                    }
                 }
                 self.validate_stmt(body);
                 self.in_event_control = old_event;
@@ -681,6 +789,310 @@ impl ExprValidator<'_, '_> {
         self.parent.body.exprs[expr].walk_child_exprs(|child| self.validate_expr(child))
     }
 
+    /// An integer literal, or a negated one. Mirrors `hir::Body::as_literalsignedint`,
+    /// which is not reachable from validation.
+    fn as_signed_int(&self, expr: ExprId) -> Option<i32> {
+        match &self.parent.body.exprs[expr] {
+            Expr::Literal(Literal::Int(val)) => Some(*val),
+            Expr::UnaryOp { expr, op: UnaryOp::Neg } => match &self.parent.body.exprs[*expr] {
+                Expr::Literal(Literal::Int(val)) => Some(-val),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// VAMS-2023 9.5.4: every argument after the format is written to, so every one
+    /// of them has to be writable and has to fit what its conversion produces.
+    ///
+    /// Neither is something a signature can say. The arguments after the format are
+    /// variadic because how many there are, and what each holds, is what the format
+    /// says -- so the format is read here, as the lowering reads it, and the two
+    /// agree because they call the same function.
+    fn validate_scan(&mut self, args: &[ExprId]) {
+        let fmt = match args.get(1).map(|&arg| &self.parent.body.exprs[arg]) {
+            Some(Expr::Literal(Literal::String(fmt))) => fmt.clone(),
+            // Not a literal, which the signature has already rejected.
+            _ => return,
+        };
+
+        for (k, conv) in scan_conversions(&fmt).into_iter().enumerate() {
+            let arg = match args.get(2 + k) {
+                Some(&arg) if self.parent.body.exprs[arg] != Expr::Missing => arg,
+                // Fewer arguments than conversions: the scan stops where they run
+                // out, which is what the clause's return value is for.
+                _ => break,
+            };
+            match self.scan_target_ty(arg) {
+                Some(found) if conv.ty.is_assignable_to(&found) => (),
+                Some(found) => self.report(BodyValidationDiagnostic::ScanTargetTy {
+                    arg,
+                    spec: conv.spec,
+                    produces: conv.ty,
+                    found,
+                }),
+                None => self.report(BodyValidationDiagnostic::ScanTargetNotAPlace { arg }),
+            }
+        }
+    }
+
+    /// What the variable a scan argument names is declared as, or `None` when it
+    /// names no variable: a parameter, a probe, a literal, an expression.
+    fn scan_target_ty(&self, arg: ExprId) -> Option<Type> {
+        if let Expr::Index { base, .. } = self.parent.body.exprs[arg] {
+            // One element of an array variable, whatever the index: an index the
+            // model computes is a place too, written by choosing among the
+            // elements, the same as an ordinary assignment to one.
+            return match self.parent.infer.expr_types[base] {
+                Ty::Var(Type::Array { ref ty, .. }, _) => Some((**ty).clone()),
+                _ => None,
+            };
+        }
+        match self.parent.infer.expr_types[arg] {
+            Ty::Var(ref ty, _) => Some(ty.clone()),
+            _ => None,
+        }
+    }
+
+    fn operator_err(&mut self, expr: ExprId, what: &'static str, err: String) {
+        self.parent.diagnostics.push(BodyValidationDiagnostic::InvalidOperator { expr, what, err });
+    }
+
+    fn table_err(&mut self, expr: ExprId, err: String) {
+        self.operator_err(expr, "$table_model", err)
+    }
+
+    fn const_real(&self, expr: ExprId) -> Option<f64> {
+        match self.parent.body.exprs[expr] {
+            Expr::Literal(Literal::Float(f)) => Some(f.into()),
+            Expr::Literal(Literal::Int(i)) => Some(f64::from(i)),
+            Expr::UnaryOp { expr, op: UnaryOp::Neg } => Some(-self.const_real(expr)?),
+            Expr::UnaryOp { expr, op: UnaryOp::Identity } => self.const_real(expr),
+            _ => None,
+        }
+    }
+
+    /// One data column of the array form, which has to be an array of constants.
+    fn const_real_column(&self, arg: ExprId) -> Option<Vec<f64>> {
+        let elems = match self.parent.body.exprs[arg] {
+            Expr::Array(ref elems) => elems.clone(),
+            _ => return None,
+        };
+        elems.iter().map(|&e| self.const_real(e)).collect()
+    }
+
+    /// A table data file, resolved beside the compilation's root source file, the
+    /// way a `noise_table` data file is.
+    fn read_data_file(&self, name: &str) -> Option<String> {
+        let root = self.parent.owner.file(self.parent.db.upcast());
+        let dir = self.parent.db.file_path(root).parent()?;
+        let path = dir.join(name)?;
+        let abs = path.as_path()?;
+        std::fs::read_to_string(abs).ok()
+    }
+
+    /// VAMS-2023 9.21: `$table_model`.
+    ///
+    /// The table is built into the model at compile time, which is what lets the
+    /// lookup be ordinary arithmetic over the lookup expressions and so carry a
+    /// derivative into the Jacobian. Everything the table needs therefore has to
+    /// be knowable here, and whatever is not becomes a diagnostic. The lowering
+    /// repeats this build and can then assume it succeeds.
+    fn validate_table_model(&mut self, expr: ExprId, args: &[ExprId]) {
+        // The lookup inputs come first and the data source follows, so the inputs
+        // are the leading arguments that are neither a string nor an array.
+        let mut ndims = 0;
+        while ndims < args.len() {
+            match self.parent.infer.expr_types[args[ndims]].to_value() {
+                Some(Type::String | Type::Array { .. } | Type::EmptyArray) => break,
+                _ => ndims += 1,
+            }
+        }
+        if ndims == 0 || ndims >= args.len() {
+            // The signature table has already reported the shape of the call.
+            return;
+        }
+        let from_file =
+            matches!(self.parent.infer.expr_types[args[ndims]].to_value(), Some(Type::String));
+
+        let (rows, after) = if from_file {
+            let name = match self.parent.body.exprs[args[ndims]] {
+                Expr::Literal(Literal::String(ref name)) => name.to_string(),
+                _ => {
+                    self.table_err(
+                        expr,
+                        "the data file name has to be a string literal. 9.21 also allows a string \
+                         parameter, but the table is compiled into the model and a parameter's \
+                         value belongs to the simulator, so its default cannot be read here"
+                            .to_owned(),
+                    );
+                    return;
+                }
+            };
+            let text = match self.read_data_file(&name) {
+                Some(text) => text,
+                None => {
+                    self.table_err(
+                        expr,
+                        format!("cannot read the table data file '{name}' beside the source file"),
+                    );
+                    return;
+                }
+            };
+            match table_model::Rows::parse(&text) {
+                Ok(rows) => (rows, ndims + 1),
+                Err(err) => {
+                    self.table_err(expr, format!("{name}: {err}"));
+                    return;
+                }
+            }
+        } else {
+            // `table_model_array`: N independent columns and then the output.
+            let end = 2 * ndims + 1;
+            if args.len() < end {
+                return;
+            }
+            let mut cols = Vec::with_capacity(ndims + 1);
+            for (i, &arg) in args[ndims..end].iter().enumerate() {
+                match self.const_real_column(arg) {
+                    Some(col) => cols.push(col),
+                    None => {
+                        self.table_err(
+                            expr,
+                            format!(
+                                "data column {} has to be an array of constants. 9.21.1 captures \
+                                 the data source on the first call and ignores later changes, and \
+                                 the table is compiled into the model, so an array the module \
+                                 fills in at run time cannot be read here: write the samples as an \
+                                 array literal, or put them in a data file",
+                                i + 1
+                            ),
+                        );
+                        return;
+                    }
+                }
+            }
+            match table_model::Rows::from_columns(&cols) {
+                Ok(rows) => (rows, end),
+                Err(err) => {
+                    self.table_err(expr, err.0);
+                    return;
+                }
+            }
+        };
+
+        let spec = match args.get(after) {
+            Some(&arg) => match self.parent.body.exprs[arg] {
+                Expr::Literal(Literal::String(ref spec)) => spec.to_string(),
+                _ => {
+                    self.table_err(
+                        expr,
+                        "the control string has to be a string literal".to_owned(),
+                    );
+                    return;
+                }
+            },
+            None => String::new(),
+        };
+
+        let control = match table_model::Control::parse(&spec, ndims) {
+            Ok(control) => control,
+            Err(err) => {
+                self.table_err(expr, err.0);
+                return;
+            }
+        };
+        if let Err(err) = table_model::Table::build(&rows, &control) {
+            self.table_err(expr, err.0);
+        }
+    }
+
+    /// VAMS-2023 4.5.12: the Z-transform filters.
+    ///
+    /// Table 4-20 makes the two vectors, `T` and `t0` constant expression
+    /// arguments, so the filter is reduced to coefficients here and the lowering
+    /// can assume it succeeds. An array whose contents the module computes at run
+    /// time is not a constant expression, for the same reason a `$table_model`
+    /// data column is not: the filter is compiled into the model.
+    fn validate_zi_filter(&mut self, expr: ExprId, call: BuiltIn, args: &[ExprId]) {
+        use zi_filter::Side::{Coeffs, Roots};
+        let name = match call {
+            BuiltIn::zi_nd => "$zi_nd",
+            BuiltIn::zi_zd => "$zi_zd",
+            BuiltIn::zi_np => "$zi_np",
+            BuiltIn::zi_zp => "$zi_zp",
+            _ => return,
+        };
+        let (num_side, den_side) = match call {
+            BuiltIn::zi_nd => (Coeffs, Coeffs),
+            BuiltIn::zi_zd => (Roots, Coeffs),
+            BuiltIn::zi_np => (Coeffs, Roots),
+            BuiltIn::zi_zp => (Roots, Roots),
+            _ => return,
+        };
+        if args.len() < 4 {
+            // The signature table has already reported the shape of the call.
+            return;
+        }
+
+        // "The zeros argument may be represented as a null argument."
+        let num = match args.get(1) {
+            Some(&arg) if !matches!(self.parent.body.exprs[arg], Expr::Missing) => {
+                match self.const_real_column(arg) {
+                    Some(num) => Some(num),
+                    None => {
+                        self.zi_err(
+                            expr,
+                            name,
+                            if num_side == Roots { "zeros" } else { "numerator" },
+                        );
+                        return;
+                    }
+                }
+            }
+            _ => None,
+        };
+        let den = match self.const_real_column(args[2]) {
+            Some(den) => den,
+            None => {
+                self.zi_err(expr, name, if den_side == Roots { "poles" } else { "denominator" });
+                return;
+            }
+        };
+
+        // 4.5.14: a constant expression "remains static throughout an analysis",
+        // which a parameter does, and `T` and `t0` only feed the scheduling
+        // arithmetic rather than any coefficient, so they are lowered as values and
+        // need not be known here. A literal period can still be checked.
+        if let Some(period) = self.const_real(args[3]) {
+            if period <= 0.0 {
+                self.operator_err(
+                    expr,
+                    name,
+                    format!("the sampling period is {period}; 4.5.12 requires T to be positive"),
+                );
+                return;
+            }
+        }
+
+        if let Err(err) = zi_filter::Filter::build(num.as_deref(), num_side, &den, den_side) {
+            self.operator_err(expr, name, err.0);
+        }
+    }
+
+    fn zi_err(&mut self, expr: ExprId, name: &'static str, what: &str) {
+        self.operator_err(
+            expr,
+            name,
+            format!(
+                "the {what} vector has to be an array of constants. Table 4-20 makes it a \
+                 constant expression argument, and the filter is compiled into the model, so an \
+                 array the module computes at run time cannot be read here: write it as an array \
+                 literal"
+            ),
+        );
+    }
+
     fn validate_builtin(
         &mut self,
         name: &Option<Path>,
@@ -694,6 +1106,25 @@ impl ExprValidator<'_, '_> {
                 .parent
                 .diagnostics
                 .push(BodyValidationDiagnostic::UnsupportedFunction { expr, func: call }),
+            BuiltIn::table_model => self.validate_table_model(expr, args),
+            BuiltIn::zi_nd | BuiltIn::zi_np | BuiltIn::zi_zd | BuiltIn::zi_zp => {
+                self.validate_zi_filter(expr, call, args)
+            }
+            BuiltIn::sscanf | BuiltIn::fscanf => self.validate_scan(args),
+            BuiltIn::discontinuity => {
+                // The `$discontinuity(-1)` form is part of `$limit` (9.17.3). Every
+                // other degree is announced through the timepoint protocol, and
+                // whether it arrives is the simulator's half of that, which is what
+                // the diagnostic is about.
+                let is_limit_form =
+                    args.first().is_some_and(|&arg| self.as_signed_int(arg) == Some(-1));
+                if !is_limit_form {
+                    self.parent.diagnostics.push(BodyValidationDiagnostic::IgnoredDiscontinuity {
+                        stmt: self.stmt,
+                        expr,
+                    });
+                }
+            }
             BuiltIn::potential | BuiltIn::flow => self.check_access(
                 |_| IllegalCtxAccessKind::NatureAccess,
                 expr,

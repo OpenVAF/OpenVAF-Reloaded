@@ -1,0 +1,22 @@
+`include "disciplines.vams"
+
+// VAMS-2023 5.10.3.2's own sample-and-hold, written verbatim -- the clause's
+// example replaces `cross` with `above` in 5.10.3.1's module for exactly the
+// scenario this test drives: "If the voltage on the smpl port is above 2.5V
+// initially (at time=0), then use of the above() function ensures that the input
+// is sampled and passed to the output when solving for the initial state of the
+// circuit. If the voltage on the smpl port never crosses 2.5V in the positive
+// direction, then the cross() function of the previous example would never
+// trigger, even if the voltage on the smpl port is always above 2.5V."
+module above_init(in, out, smpl);
+    output out;
+    input in, smpl;
+    electrical in, out, smpl;
+    real state;
+
+    analog begin
+        @(above(V(smpl) - 2.5))
+            state = V(in);
+        V(out) <+ transition(state, 0, 10n);
+    end
+endmodule

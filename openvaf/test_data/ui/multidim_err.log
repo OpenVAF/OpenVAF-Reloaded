@@ -1,0 +1,25 @@
+error: array index out of bounds
+   --> /multidim_err.va:22:14
+   |
+22 |         m[0][3] = 1.0;
+   |              ^ index 3 is out of bounds
+   |
+   = help: the declared range is [0:2]
+
+error: array index out of bounds
+   --> /multidim_err.va:23:11
+   |
+23 |         m[2][0] = 1.0;
+   |           ^ index 2 is out of bounds
+   |
+   = help: the declared range is [0:1]
+
+error: assignment to a row of a multi-dimensional array
+   --> /multidim_err.va:26:9
+   |
+26 |         m[0] = row;
+   |         ^^^^ 1 of 2 dimensions are indexed
+   |
+   = info: a row is an array of its own, and an array is not a place
+   = help: index all 2 dimensions, or copy the row element by element
+

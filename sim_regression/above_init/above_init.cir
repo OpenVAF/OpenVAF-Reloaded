@@ -1,0 +1,20 @@
+* above() samples at initialization, VAMS-2023 5.10.3.2
+* in   : a ramp from 1 V to 6 V over 10 us, so the sampled value is 1 V and
+*        anything that tracks the input instead is unmistakable
+* smpl : held at 5 V for the whole run -- never crosses 2.5 V in any direction,
+*        so cross() has nothing to trigger on and out would stay at 0
+* out  : per the LRM, 1 V sampled while solving the initial state, held flat
+
+Vin   in   0 PWL(0 1 10u 6)
+Vsmpl smpl 0 DC 5
+
+Nsh   in   out smpl shmod
+.model shmod above_init()
+
+.control
+pre_osdi above_init.osdi
+tran 10n 10u
+wrdata ai_out.txt v(in) v(out) v(smpl)
+.endc
+
+.end

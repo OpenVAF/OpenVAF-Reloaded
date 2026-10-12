@@ -1,0 +1,20 @@
+* The same circuit as jump.cir with the announcement switched off, which is what
+* every released simulator sees whether a model announces or not.
+
+Vctrl ctrl 0 PULSE(0 5 0 5u 5u 1n 10u)
+
+Nsw out ctrl jmod
+.model jmod jump(announce=0)
+
+Rload out mid 1k
+Cload mid 0 1n
+
+.options method=gear maxord=4
+
+.control
+pre_osdi jump.osdi
+tran 20n 40u
+wrdata tp_off.txt v(out) v(mid) v(ctrl)
+.endc
+
+.end

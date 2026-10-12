@@ -71,7 +71,10 @@ impl LowerCtx<'_> {
                 });
 
                 let args = if let Some(args) = call.arg_list().map(|list| list.args()) {
-                    args.map(|arg| self.collect_expr(arg)).collect()
+                    // A null argument (`cross(V(d), dir, , , en)`) is collected as a
+                    // missing expression: it keeps its position, and inference leaves
+                    // the argument untyped instead of reporting a type mismatch.
+                    args.map(|arg| self.collect_opt_expr(arg.expr())).collect()
                 } else {
                     vec![]
                 };
@@ -190,18 +193,27 @@ impl LowerCtx<'_> {
     }
 
     fn collect_event_stmt(&mut self, event_stmt: &ast::EventStmt) -> StmtId {
-        let kind = if event_stmt.initial_step_token().is_some() {
+        // VAMS-2023 5.10.1: the event expressions ORed together by `or` (or by a
+        // comma). The body runs when any of them occurs.
+        let events = event_stmt.events().map(|event| self.collect_event_expr(&event)).collect();
+        let stmt = Stmt::EventControl { events, body: self.collect_opt_stmt(event_stmt.stmt()) };
+
+        self.alloc_stmt(stmt, AstPtr::new(event_stmt).cast().unwrap(), event_stmt.attrs())
+    }
+
+    fn collect_event_expr(&mut self, event_expr: &ast::EventExpr) -> Event {
+        let kind = if event_expr.initial_step_token().is_some() {
             GlobalEvent::InitialStep
-        } else if event_stmt.final_step_token().is_some() {
+        } else if event_expr.final_step_token().is_some() {
             GlobalEvent::FinalStep
         } else {
             // A bare path is a named event (VAMS-2023 5.10.4); everything else is a
-            // monitored event (`@(cross(...))` / `@(timer(...))`), preserved so MIR
+            // monitored event (`cross(...)` / `timer(...)`), preserved so MIR
             // lowering can give the variables it assigns cross-timestep retention.
             //
             // A call is collected as well, so that the event function and its
             // arguments are name-resolved and type-checked (VAMS-2023 5.10.3).
-            let event = match event_stmt.event() {
+            return match event_expr.event() {
                 Some(ast::Expr::PathExpr(path)) => {
                     Event::Named { event: self.collect_expr(ast::Expr::PathExpr(path)) }
                 }
@@ -210,20 +222,10 @@ impl LowerCtx<'_> {
                 }
                 _ => Event::Cross { call: None },
             };
-            let body = self.collect_opt_stmt(event_stmt.stmt());
-            let stmt = Stmt::EventControl { event, body };
-            return self.alloc_stmt(
-                stmt,
-                AstPtr::new(event_stmt).cast().unwrap(),
-                event_stmt.attrs(),
-            );
         };
 
-        let phases = event_stmt.sim_phases().map(|lit| lit.unescaped_value()).collect();
-        let event = Event::Global { kind, phases };
-        let stmt = Stmt::EventControl { event, body: self.collect_opt_stmt(event_stmt.stmt()) };
-
-        self.alloc_stmt(stmt, AstPtr::new(event_stmt).cast().unwrap(), event_stmt.attrs())
+        let phases = event_expr.sim_phases().map(|lit| lit.unescaped_value()).collect();
+        Event::Global { kind, phases }
     }
 
     fn collect_case_stmt(&mut self, case_stmt: &ast::CaseStmt) -> Stmt {
