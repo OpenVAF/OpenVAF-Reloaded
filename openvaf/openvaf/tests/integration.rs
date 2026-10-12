@@ -1741,6 +1741,94 @@ fn test_transition_pwl() -> Result<()> {
     Ok(())
 }
 
+/// VAMS-2023 9.5.4: a read takes the next record, and what "next" counts in is
+/// the timepoint rather than the evaluation.
+///
+/// `read_point.va` reads one record per point and reports the record it holds and
+/// how many it has taken. Three things are pinned:
+///
+///   * every evaluation of one point sees the same record, where before each
+///     evaluation took another one and a file of one record per timepoint was
+///     consumed two to three times too fast;
+///   * a point takes the records it reads, so the file advances once per point;
+///   * with the accept callback, a point the solver goes back on takes nothing,
+///     even when the next attempt is at a later time, which is the one case
+///     `$abstime` on its own cannot recognize.
+fn test_read_point() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+
+    const ITERS: usize = 3;
+
+    // One value per line, so the record a point holds says which point it is.
+    let recs = std::path::Path::new("openvaf_read_point_test.txt");
+    std::fs::write(recs, (1..=9).map(|k| format!("{}\n", 10 * k)).collect::<String>())?;
+
+    let desc = test_descriptor(&openvaf_test_data("osdi").join("read_point.va"))?;
+    let model = desc.new_model();
+    model.process_params()?;
+    let mut instance = model.new_instance();
+    let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+
+    let mut first = true;
+    // Evaluate one point `ITERS` times and return what each evaluation produced.
+    let mut point = |instance: &OsdiInstance, sim: &mut MockSimulation| {
+        let mut seen = Vec::new();
+        for _ in 0..ITERS {
+            if !first {
+                sim.next_iter();
+            }
+            first = false;
+            sim.set_voltage("out", 0.0);
+            sim.set_voltage("nrec", 0.0);
+            instance.eval(&model, sim, EvalFlags::empty());
+            instance.load_dae(&model, sim);
+            seen.push((sim.read_residual("flow(out)").0, sim.read_residual("flow(nrec)").0));
+        }
+        seen
+    };
+
+    // Three points, nothing confirming them: one record each, and every
+    // evaluation of a point sees that record and no other.
+    for k in 1..=3 {
+        let seen = point(&instance, &mut sim);
+        let want = (10.0 * k as f64, k as f64);
+        assert!(
+            seen.iter().all(|&(v, n)| (v - want.0).abs() < 1e-9 && (n - want.1).abs() < 1e-9),
+            "point {k} saw {seen:?}, want {ITERS} times {want:?}"
+        );
+        sim.advance_time(1.0);
+    }
+
+    // The fourth point, confirmed: the record it took is taken.
+    let seen = point(&instance, &mut sim);
+    assert_eq!(seen.last().copied().map(|(v, n)| (v, n)), Some((40.0, 4.0)), "the fourth point");
+    assert!(instance.accept(&model), "the descriptor offers no accept");
+    sim.advance_time(1.0);
+
+    // The fifth, not confirmed: it reads the fifth record, and that read is not
+    // the file's last word.
+    let seen = point(&instance, &mut sim);
+    assert_eq!(seen.last().copied(), Some((50.0, 5.0)), "the fifth point");
+    sim.advance_time(1.0);
+
+    // So the sixth point, although it is later, starts where the fifth did: the
+    // record the rejected point read is still there to read. Without the callback
+    // this is where `$abstime` is blind, because time moved on either way.
+    let seen = point(&instance, &mut sim);
+    assert_eq!(seen.last().copied(), Some((50.0, 5.0)), "the point after the rejected one");
+    assert!(instance.accept(&model), "the descriptor offers no accept");
+    sim.advance_time(1.0);
+
+    // And now the file carries on from there.
+    let seen = point(&instance, &mut sim);
+    assert_eq!(seen.last().copied(), Some((60.0, 6.0)), "the point after the accepted one");
+
+    let _ = std::fs::remove_file(recs);
+    Ok(())
+}
+
 /// VAMS-2023 9.4.1 through the accept callback: `$fstrobe` writes one line per
 /// *accepted* timepoint, from the evaluation that converged.
 ///
@@ -2415,5 +2503,5 @@ harness! {
     Test::from_dir_filtered("vacask_spice", &vacask_spice_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice")),
     // VACASK simplified SPICE models
     Test::from_dir_filtered("vacask_spice_sn", &vacask_spice_sn_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice/sn")),
-    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros),Test::new("laplace_roots", &test_laplace_roots),Test::new("slew", &test_slew),Test::new("cross_detect", &test_cross_detect),Test::new("above_detect", &test_above_detect),Test::new("last_crossing", &test_last_crossing),Test::new("var_persistence", &test_var_persistence),Test::new("timer_detect", &test_timer_detect),Test::new("rng_stream", &test_rng_stream),Test::new("transition_pwl", &test_transition_pwl),Test::new("table_model", &test_table_model),Test::new("zi_filter", &test_zi_filter),Test::new("absdelay", &test_absdelay),Test::new("absdelay_in_model", &test_absdelay_in_model),Test::new("timer_resched", &test_timer_resched),Test::new("case_default", &test_case_default),Test::new("file_io", &test_file_io),Test::new("file_scan", &test_file_scan),Test::new("global_events", &test_global_events),Test::new("scan_target", &test_scan_target),Test::new("directives", &test_directives),Test::new("multidim", &test_multidim),Test::new("timepoints", &test_timepoints),Test::new("accept", &test_accept)]
+    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros),Test::new("laplace_roots", &test_laplace_roots),Test::new("slew", &test_slew),Test::new("cross_detect", &test_cross_detect),Test::new("above_detect", &test_above_detect),Test::new("last_crossing", &test_last_crossing),Test::new("var_persistence", &test_var_persistence),Test::new("timer_detect", &test_timer_detect),Test::new("rng_stream", &test_rng_stream),Test::new("transition_pwl", &test_transition_pwl),Test::new("table_model", &test_table_model),Test::new("zi_filter", &test_zi_filter),Test::new("absdelay", &test_absdelay),Test::new("absdelay_in_model", &test_absdelay_in_model),Test::new("timer_resched", &test_timer_resched),Test::new("case_default", &test_case_default),Test::new("file_io", &test_file_io),Test::new("file_scan", &test_file_scan),Test::new("global_events", &test_global_events),Test::new("scan_target", &test_scan_target),Test::new("directives", &test_directives),Test::new("multidim", &test_multidim),Test::new("timepoints", &test_timepoints),Test::new("accept", &test_accept),Test::new("read_point", &test_read_point)]
 }

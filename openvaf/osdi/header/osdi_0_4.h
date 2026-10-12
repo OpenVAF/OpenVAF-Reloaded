@@ -253,13 +253,16 @@ typedef struct OsdiDescriptor {
   /* Called once per accepted timepoint, after the solution is final and before the
    * next step is attempted, with `eval`'s own arguments except that `info` may be
    * null: a simulator that has no `OsdiSimInfo` to hand at that moment passes none,
-   * and nothing in an accepted-point task needs one. NULL when the model has no
-   * accepted-point work, which is every module without `$fstrobe` in it.
+   * and nothing in an accepted-point task needs one. NULL when the module has
+   * nothing that an accepted point settles, which is a module with no state in it
+   * at all.
    *
-   * This is what 9.4.1's "at the end of the current simulation time" needs: a line
-   * composed during the evaluations of a point is written when the point is
-   * accepted, from the evaluation that converged, and not at all for a point the
-   * solver goes back on. */
+   * What it settles: a line composed during the evaluations of a point is written
+   * when the point is accepted, from the evaluation that converged, which is what
+   * 9.4.1's "at the end of the current simulation time" needs; the records the
+   * point's reads consumed are consumed (9.5.4); and the values it retained become
+   * what the next timestep reads back (4.5.10). A point the solver goes back on
+   * does none of the three. */
   void (*accept)(void *handle, void *inst, void *model, OsdiSimInfo *info);
 }OsdiDescriptor;
 

@@ -210,6 +210,94 @@ VA_SHARED void *va_fd[VA_NFD];
 VA_SHARED char *va_mcd_key[VA_NMCD];
 VA_SHARED char *va_fd_key[VA_NFD];
 
+/* ------------------------------------------------------------------------
+ * Where a read-only descriptor stood when the current timepoint began.
+ *
+ * 9.5.4's reads are sequential: each one takes the next record. An analog block
+ * is evaluated many times for one timepoint, so a read taken literally takes a
+ * record per Newton iteration, which is not a rate anything in the clause
+ * suggests: a file of one record per timepoint is then consumed two to three
+ * times too fast, and a table read inside `@(initial_step)` is read past its end
+ * by the iterations of the first point.
+ *
+ * So each read-only descriptor remembers where it stood when the point began, and
+ * every evaluation of that point starts its reads there. The point's reads are
+ * what advances the file, once, and they advance it by however much the model
+ * read:
+ *
+ *   `va_read_begin`  at the top of every evaluation: back to the mark.
+ *   `va_accept`      the point was accepted, so its reads stand: mark = here.
+ *   no accept call   the mark follows `$abstime` moving forward, which is the
+ *                    same thing for every point the solver does not go back on.
+ *
+ * Only a read-only descriptor is managed. A mode with `+` in it is a model mixing
+ * reads and writes, which has to position the stream itself between the two
+ * anyway (C99 7.19.5.3), and moving it from under such a model would be a
+ * surprise rather than a service.
+ * ---------------------------------------------------------------------- */
+VA_SHARED long va_fd_mark[VA_NFD];
+VA_SHARED double va_read_time;
+VA_SHARED bool va_read_time_set;
+
+/* Set by the first `accept` call; defined with the strobe lines it also governs.
+ * Everything that happens once per accepted point shares it, so that a library
+ * whose simulator makes the call never also infers one from `$abstime`. */
+extern bool va_accept_seen;
+
+/* A descriptor whose reads this manages: opened for reading and nothing else. The
+ * key is the mode followed by the name, so the mode is its leading characters. */
+static bool va_fd_read_only(uint32_t i) {
+  const char *mode = va_fd_key[i];
+  if (va_fd[i] == NULL || mode == NULL || mode[0] != 'r') {
+    return 0;
+  }
+  for (; *mode != '\0'; mode++) {
+    if (*mode == '+') {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+/* Every evaluation's reads start where the point's did. `abstime` is the point. */
+void va_read_begin(double abstime) {
+  uint32_t i;
+  /* Without an `accept` call, `$abstime` says what happened since the last one,
+   * and it is read exactly as `commit_retained` reads it: time moved on, so the
+   * reads of the point just left stand; time went backwards, so that point was
+   * rejected, and keeping the mark where it is undoes its reads; the same time
+   * again is another iteration of one point, which the seek below takes care of.
+   *
+   * The two have to agree, because a model's retained state and its file position
+   * are one state: a value kept from a record the file has moved past is a source
+   * that has lost its place.
+   */
+  bool advance = !va_accept_seen && (!va_read_time_set || abstime > va_read_time);
+  for (i = VA_FD_RESERVED; i < VA_NFD; i++) {
+    if (!va_fd_read_only(i)) {
+      continue;
+    }
+    if (advance) {
+      va_fd_mark[i] = ftell(va_fd[i]);
+    }
+    if (va_fd_mark[i] >= 0 && ftell(va_fd[i]) != va_fd_mark[i]) {
+      fseek(va_fd[i], va_fd_mark[i], 0 /* SEEK_SET */);
+    }
+  }
+  va_read_time = abstime;
+  va_read_time_set = 1;
+}
+
+/* The point was accepted, so what it read is read. */
+static void va_read_commit(void) {
+  uint32_t i;
+  for (i = VA_FD_RESERVED; i < VA_NFD; i++) {
+    if (va_fd_read_only(i)) {
+      va_fd_mark[i] = ftell(va_fd[i]);
+    }
+  }
+}
+
 /* "shall return zero if the file could not be opened" -- for both forms, which
  * is also why channel 0 is never handed out: its bit set alone would be 1. */
 int32_t va_fopen(const char *name, const char *mode) {
@@ -237,6 +325,7 @@ int32_t va_fopen(const char *name, const char *mode) {
     if (va_fd[i] == NULL) {
       va_fd[i] = f;
       va_fd_key[i] = key;
+      va_fd_mark[i] = 0;
       return (int32_t)(VA_FD_BIT | i);
     }
   }
@@ -401,7 +490,8 @@ VA_SHARED VaStrobe *va_strobes;
 VA_SHARED uint32_t va_nstrobes;
 /* Set by the first `accept` call. Until one arrives the simulator is assumed never
  * to make one, and a line is written as soon as it is composed at a new time,
- * which is what this task did before the callback existed. */
+ * which is what this task did before the callback existed. The read positions
+ * above are kept the same way, and share the flag. */
 VA_SHARED bool va_accept_seen;
 
 /* `handle` is the simulator's, and is only valid for the duration of the call it
@@ -506,8 +596,9 @@ void va_strobe(void *handle, void *inst, uint32_t lvl, int32_t site, int32_t des
   slot->line = line;
 }
 
-/* The descriptor's `accept`: the timepoint just evaluated is final, so every line
- * this instance composed during it is the line for it. */
+/* The descriptor's `accept`: the timepoint just evaluated is final. So every line
+ * this instance composed during it is the line for it, and whatever it read is
+ * read: a point the solver goes back on writes nothing and consumes nothing. */
 void va_accept(void *handle, void *inst, void *model, void *sim_info) {
   uint32_t i;
   (void)model;
@@ -518,6 +609,7 @@ void va_accept(void *handle, void *inst, void *model, void *sim_info) {
       va_strobe_write(&va_strobes[i], handle);
     }
   }
+  va_read_commit();
 }
 
 /* Nothing else holds the last line of a run: no further point arrives to push it
@@ -848,8 +940,10 @@ int analysis(void *sim_info_, char *name) {
  *   vals[2*i]     committed -- what the model reads as "the previous timestep"
  *   vals[2*i + 1] pending   -- what this timestep's evaluations have written
  *
- * `commit_retained` runs once at the top of every eval and uses `$abstime` to
- * decide what happened since the last call:
+ * `commit_retained` runs once at the top of every eval. When the simulator makes
+ * the `accept` call of the timepoint protocol, that call is what promotes them,
+ * and this only records the time. Otherwise it uses `$abstime` to decide what
+ * happened since the last call:
  *
  *   abstime >  *time   time moved on, so the evaluations at *time were accepted:
  *                      promote pending to committed.
@@ -1076,14 +1170,26 @@ char *retained_prev_str(double *src) {
   return val == NULL ? "" : val;
 }
 
+/* Promote every slot: what this timestep wrote is what the next one reads back.
+ *
+ * Copied as bytes rather than as a number, because a slot holding a string holds
+ * a pointer, and a pointer is not something arithmetic should be given the chance
+ * to touch. */
+void commit_retained_now(double *vals, uint32_t num) {
+  uint32_t i;
+  for (i = 0; i < num; i++) {
+    memcpy(&vals[2 * i], &vals[2 * i + 1], sizeof(double));
+  }
+}
+
 void commit_retained(double *vals, double *time, uint32_t num, double abstime) {
-  if (abstime > *time) {
-    for (uint32_t i = 0; i < num; i++) {
-      /* Copied as bytes rather than as a number, because a slot holding a
-       * string holds a pointer, and a pointer is not something arithmetic
-       * should be given the chance to touch. */
-      memcpy(&vals[2 * i], &vals[2 * i + 1], sizeof(double));
-    }
+  /* Once a simulator has said that a point was accepted, it says so for every
+   * accepted point, and the generated `accept` promotes these slots there. Going
+   * on `$abstime` as well would promote at a point that has not been accepted
+   * yet, which is the same mistake the read positions would make: a model's
+   * retained state and its file position are one state. */
+  if (!va_accept_seen && abstime > *time) {
+    commit_retained_now(vals, num);
   }
   *time = abstime;
 }

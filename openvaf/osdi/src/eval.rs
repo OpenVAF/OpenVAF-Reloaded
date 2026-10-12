@@ -1,6 +1,6 @@
 use core::ptr::NonNull;
 
-use hir_lower::{CallBackKind, CurrentKind, LimitState, ParamKind};
+use hir_lower::{CallBackKind, CurrentKind, FileOp, LimitState, ParamKind};
 use llvm_sys::core::{
     LLVMAppendBasicBlockInContext, LLVMBuildAlloca, LLVMBuildAnd, LLVMBuildBr, LLVMBuildCall2,
     LLVMBuildCondBr, LLVMBuildICmp, LLVMBuildInBoundsGEP2, LLVMBuildIntCast2, LLVMBuildLoad2,
@@ -153,6 +153,24 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                     cx.ty_void(),
                 );
                 builder.call(fun_ty, fun, &[vals, time, num, abstime]);
+            }
+        }
+
+        // 9.5.4's reads are sequential, and an analog block is evaluated many
+        // times for one timepoint: so each evaluation starts its reads where the
+        // point's reads started, and the point advances the file once. See the
+        // read-position note in `openvaf/osdi/stdlib.c`.
+        if intern.callbacks.raw.iter().any(|cb| matches!(cb, CallBackKind::File(FileOp::Gets))) {
+            unsafe {
+                let abstime = {
+                    let ptr = builder.struct_gep(sim_info_ty, sim_info, ABSTIME_OFFSET);
+                    builder.load(cx.ty_double(), ptr)
+                };
+                let fun = cx
+                    .get_func_by_name("va_read_begin")
+                    .expect("stdlib function va_read_begin is missing");
+                let fun_ty = cx.ty_func(&[cx.ty_double()], cx.ty_void());
+                builder.call(fun_ty, fun, &[abstime]);
             }
         }
 

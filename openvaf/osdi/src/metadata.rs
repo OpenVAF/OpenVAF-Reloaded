@@ -3,7 +3,7 @@ use std::iter::once;
 
 use hir::{CompilationDB, ParamSysFun, Type};
 use hir_def::db::HirDefDB;
-use hir_lower::{CallBackKind, CurrentKind};
+use hir_lower::CurrentKind;
 use lasso::{Rodeo, Spur};
 use llvm_sys::core::{
     LLVMConstArray2, LLVMConstInt, LLVMConstPtrToInt, LLVMGetArrayLength2, LLVMGetDataLayoutStr,
@@ -371,17 +371,7 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                         as u32
                 })
             };
-            let accept = if module
-                .intern
-                .callbacks
-                .raw
-                .iter()
-                .any(|cb| matches!(cb, CallBackKind::StrobeLine { .. }))
-            {
-                cx.get_func_by_name("va_accept").expect("stdlib function va_accept is missing")
-            } else {
-                cx.const_null_ptr()
-            };
+            let accept = if self.has_accept_work() { self.accept() } else { cx.const_null_ptr() };
             let bound_step_offset = elem_offset(inst_data.bound_step_elem());
             let breakpoint_offset = elem_offset(inst_data.breakpoint_elem());
             let discontinuity_offset = elem_offset(inst_data.discontinuity_elem());
