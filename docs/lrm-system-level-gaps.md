@@ -447,7 +447,7 @@ compile.
 | `` `default_discipline `` | 10.2 | Implemented. A net declared without a discipline gets the one the directive names, which is what 10.2's own example relies on. |
 | `` `default_transition `` | 10.3 | Implemented. The default rise and fall time of every transition filter that specifies neither, which is exactly how system-level models get written. |
 | Multi-dimensional arrays | 3.2, 3.3 | Implemented, for as many dimensions as a declaration gives. One row of one is readable but not assignable. |
-| Array parameters | 3.4.4 | Not implemented: `parameter real c[0:2] = '{1, 2, 3};` is a parse error on the subscript, for one dimension as well as for several. Found while implementing the row above. |
+| Array parameters | 3.4.4 | Implemented, of one dimension or several: one parameter of as many elements as it was declared with, which a model card sets in one go. The size is fixed when the model is compiled. |
 | `paramset` | 6.x | Parse error: `expected 'discipline', 'nature' or 'module'`. Matters more for device libraries than for system-level work. |
 
 ### The directives that supply a default
@@ -534,12 +534,64 @@ that back it are a contiguous run. `m[1] = v` is rejected instead: an
 assignment destination here is one place, and a row is a run of them. The
 diagnostic says so and says what to do.
 
-What is not implemented is the other half of 3.4.8's example: an array
-*parameter*, of one dimension or several, does not parse (3.4.4). It is in the
-table above as its own item now. Nor does an array's declaration initializer
-(`real g[0:1] = '{1, 2};`), which is rejected as a scalar type mismatch and
-would not be lowered if it were accepted: an array is initialized by an
-assignment pattern in the analog block, which does work, nested and all.
+What is still not implemented next to this is an array *variable's*
+declaration initializer (`real g[0:1] = '{1, 2};`), which is rejected as a scalar
+type mismatch: an array variable is initialized by an assignment pattern in the
+analog block, which does work, nested and all.
+
+### Array parameters
+
+The other half of 3.4.8's example: the coupling matrix there is a `parameter real
+c[0:2][0:2]`, not a variable, because the numbers a particular device was fitted
+with belong to the netlist rather than to the source. The declaration was a parse
+error on the subscript, for one dimension as much as for several.
+
+What the two halves need is not the same thing, which is why this is a separate
+item from the row above. An array variable is one MIR place per element and
+nothing outside the model ever sees it. An array parameter has to be two things at
+once: **one** parameter to the simulator, which sets it as a whole and of the
+exact declared size (3.4.4), and **one value per element** to the model, which
+reads them one at a time.
+
+OSDI already had the simulator's half. `OsdiParamOpvar` carries a `len`, the
+access function hands out one pointer per parameter whatever its type, and
+ngspice's `osdiparam.c` has always written a vector parameter as a `memcpy` of
+`len * sizeof(double)` and refused an override of the wrong length. That is
+3.4.4's exact-size rule, implemented by a simulator for a declaration the compiler
+could not parse. So no ABI change was needed, and `.model mfit polyres
+c=[1e-6 2e-3 5e-4 1e-4]` works the day the front end accepts the declaration.
+
+The model's half is a new input kind: `ParamKind::ParamElement(param, i)`, one per
+element in row-major order, alongside one `ParamGiven` flag for the array, since
+an override replaces all of it. Each element takes its default from its own
+position in the assignment pattern, and each is checked against the declared range.
+A `from [0:100]` applies to every element, so an array with one element outside it
+is an invalid parameter rather than a silently accepted one.
+
+Two things followed from being able to declare one.
+
+**An array parameter is also an array argument.** 4.5.1 says an analog operator
+that takes an array takes "an `array_identifier` (e.g. an array parameter or an
+array variable)", so a filter's coefficients can come from the model card:
+`laplace_nd(V(in), num, den)` with `den` a parameter array is what
+`sim_regression/arrayparam` measures, and the pole lands where the card says.
+The operators that build their table or their coefficients at *compile* time
+cannot take one, and now say so: `$table_model`, the `zi_*` filters and
+`noise_table` each reject an array parameter with a diagnostic, where
+`noise_table` would otherwise have accepted it (a parameter is a constant
+expression, which is what its check asked for) and compiled an empty spectrum.
+
+**Indexing something that is not an array crashed the compiler**, and had nothing
+to do with parameters: `x[0]` on a scalar typed as `Err`, and the cast inserted
+into an `Err` hit an `unreachable!`. It is a diagnostic now, for a variable as
+well as for a parameter, which is the first mistake anyone makes with a feature
+whose whole point is the subscript.
+
+What 3.4.4 allows and this does not is resizing: the declared range may be sized
+by a parameter, and the clause lets an override of that parameter change the array
+size. The size here is fixed when the model is compiled, because the simulator's
+slot has one. `parameter real s[0:n-1]` works and is sized by `n`'s default; a
+model card that sets `n` does not resize `s`.
 
 ## A PLL, part by part
 
@@ -554,12 +606,12 @@ write a PLL in this". So, by part, with the state of each measured in
 | Phase/frequency detector | `@(cross(V(ref) - vth, +1))`, arms cleared when both are up | works; `cross` steers the step onto each edge |
 | Phase error as a number | `last_crossing` (4.5.10) | works; crossing times exact to 0.00e+00 s in `sim_regression/last_crossing` |
 | Charge pump | `I(ctrl) <+ -transition(icp * (up - dn), 0, tr)` | works |
-| Loop filter | RC in the netlist, or `laplace_nd`/`laplace_zp` (4.5.11) | works |
+| Loop filter | RC in the netlist, or `laplace_nd`/`laplace_zp` (4.5.11) | works, and its coefficients can be an array parameter the model card sets (`sim_regression/arrayparam`) |
 | Oscillator, event-driven | `@(timer)` with the period recomputed per edge | works; period exact, and the control voltage settles where the arithmetic says |
 | Oscillator, phase-domain | `idtmod(freq, 0, 1, 0)` and a threshold | works, but nothing steers the timestep onto the wrap, so the edge lands where the solver stepped |
 | Divider | `@(cross)` counting, `transition` on the output | works; exactly one output edge per `ndiv` input edges |
 | Multi-modulus divider | an analog operator per `case` arm | works — it crashed the compiler until the `default`-arm fix above |
-| Phase noise | `noise_table` / `flicker_noise` / `white_noise` (4.6) | works; the table has to be an array literal or a file, not a parameter array |
+| Phase noise | `noise_table` / `flicker_noise` / `white_noise` (4.6) | works; the table has to be an array literal or a file, since it is built into the model; an array parameter is rejected rather than read as empty |
 | Delay line, DLL | `absdelay` (4.5.7) | works, both realizations — see Tier 0 |
 | Jitter or period logging | `$fstrobe` / `$fdisplay` to a file (9.5) | works; `sim_regression/filelog` checks a jitter sequence the model wrote itself |
 | Stimulus from a file of vectors | `$fgets` and `$sscanf` (9.5.4) | works, loaded into arrays (`sim_regression/vecsrc`) or streamed a record at a time (`sim_regression/vecstream`), both checked against the file |
@@ -574,10 +626,11 @@ step as jitter. The event-driven one places its own edges and therefore has none
 of that, at the cost of sampling the control voltage once per edge rather than
 continuously — which is what a real oscillator does anyway.
 
-So nothing on this page now blocks writing a PLL, measuring one, or driving one
-from a file, and nothing is left in the table above: what remains in Tier 4 is
-an array parameter, which a model can write as a scalar parameter per element,
-and the two 9.5 tasks a testbench does not reach for.
+So nothing on this page now blocks writing a PLL, measuring one, driving one
+from a file, or shaping one from its model card, and nothing is left in the table
+above: what remains in Tier 4 is `paramset`, which matters for device libraries
+rather than for system-level work, and the two 9.5 tasks a testbench does not
+reach for.
 
 ## 9.5 — files
 
@@ -779,11 +832,21 @@ tasks (9.5, see above), and the compiler directives of 10.2 through 10.6.
     every evaluation, so a rejected point leaves nothing stale behind. What the
     callback adds is that reads and retained state cannot disagree about what a
     timepoint was.
-20. **Array parameters** — 3.4.4's own form,
-    `parameter real c[0:2] = '{1, 2, 3};`, is a parse error on the subscript, for
-    one dimension as well as for several. It is the limit that keeps turning up
-    elsewhere on this page: a filter's coefficients, a noise table and a vector of
-    thresholds are all things a netlist wants to set per model card, and all of
-    them currently have to be a literal in the source or a file read at run time.
-    Found while implementing item 17, which is also where the row-major machinery
-    it would need came from.
+20. ~~**Array parameters**~~ — done, of one dimension or several. One parameter of
+    as many elements as it was declared with, which a model card sets in one go
+    (`.model mfit polyres c=[1e-6 2e-3 5e-4 1e-4]`) and the model reads an element
+    at a time, including as an operator's array argument (4.5.1), so a filter's
+    pole can come from the card. ngspice already had its half, `len` and the
+    exact-size check included, for a declaration the compiler could not parse.
+    `sim_regression/arrayparam` measures a fitted polynomial and a pole against
+    the numbers in the netlist, and against the same two devices written with one
+    parameter per element: 6019 of 6019 rows identical.
+21. **A noise table from a model card** — 4.6.3's `noise_table` builds its
+    spectrum into the model at compile time, so the table has to be an array
+    literal or a data file; an array parameter is rejected (item 20 made that
+    rejection explicit rather than an empty spectrum). A phase-noise table is
+    exactly the thing a netlist wants to set per model card, and the same is true
+    of `$table_model`'s data and the `zi_*` coefficients. What it needs is a
+    runtime table: the pairs read from the parameter slots at setup rather than
+    folded into the lowering, which for `noise_table` is an interpolation over
+    values rather than over constants.

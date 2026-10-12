@@ -31,9 +31,11 @@ vecsrc         PASS
 global_events  PASS
 directives     PASS
 multidim       PASS
+arrayparam     PASS
 absdelay       PASS
 timepoints     PASS
 filelog        PASS
+vecstream      PASS
 pll            PASS
 ```
 
@@ -482,6 +484,57 @@ level says which element was read, and all four levels occur in the run.
 
 The previous compiler does not reach a waveform here at all: `real c[0:2][0:2];`
 is a parse error on the second subscript, and so is every use of it.
+
+## arrayparam — passing
+
+VAMS-2023 3.4.4's parameter arrays, measured on what one is for: the numbers a
+particular device was fitted with, carried by the model card instead of by the
+source.
+
+Two devices, both re-shaped by `arrayparam.cir` without `arrayparam.va` changing:
+
+* `polyres`, a resistor whose I(V) curve is a fitted polynomial. The fit is
+  `parameter real c[0:3]`, read element by element inside a loop, and a 100 ohm
+  sense resistor puts both the voltage across the device and the current through
+  it in the waveform. One instance runs on the declared default and one on
+  `c=[1e-6 2e-3 5e-4 1e-4]`, so both cards of the one compiled model are in the
+  circuit at the same time.
+* `polefilt`, a one-pole filter whose coefficients are handed to `laplace_nd` as
+  an array parameter, which is what 4.5.1 allows an array argument to be. The two
+  cards place the pole five times apart (`den=[1 2e-7]` against the default
+  `'{1.0, 1.0e-6}`).
+
+The analyzer reads the vectors out of the netlist, so the cards are the only place
+the numbers appear, and recomputes what each device should do rather than
+comparing against a stored waveform: the polynomial term by term from the device's
+own voltage, and the filter as the exact response of one pole to the input the
+waveform carries (between two of the simulator's timepoints the source is a
+straight line, and what a pole does to a straight line is closed form).
+
+```
+fitted polynomial, 4 coefficients: worst current error 8.000e-13 A on the default
+card, 1.579e-11 A on the fit
+pole from the card: tau 1e-06 s and 2e-07 s, worst error 5.518e-06 V and 8.210e-05 V
+```
+
+The polynomial residual is the precision `wrdata` prints with: on currents of
+order 1 mA, nine significant digits is about a nanoamp, and a coefficient read
+from the wrong element would miss by 1e-4 A. The filter residual is the
+simulator's own integration error; the pole the default card places differs from
+the fast one by half a volt over the first few hundred nanoseconds, so there are
+three orders of magnitude between the check and what it is checking for.
+
+The same two devices written the way they had to be written before (one parameter
+per coefficient, copied into an array variable inside `@(initial_step)` so the
+loop can still read them by index) give the same waveform to the last digit:
+6019 of 6019 rows identical, worst difference 0. That is the point of the case.
+Nothing about the device changes; what changes is that the order of the fit is no
+longer a count of declarations (six parameter lines and four lines of copying
+become three parameter lines and none), and that the netlist sets the fit as one
+vector rather than one name per element.
+
+The previous compiler does not reach a waveform here at all: `parameter real
+c[0:3] = '{...}` is a parse error on the subscript.
 
 ## timepoints — passing
 
