@@ -1,0 +1,27 @@
+* The directives that supply a default, VAMS-2023 10.3 and 10.2
+* in     : 0 V until 2 us, then 5 V within a nanosecond, so the model's input bit
+*          flips at a time the source puts a breakpoint on
+* bare   : transition(x) below `default_transition 1u -- a 1 us ramp
+* zero   : transition(x, 0, 0), which 4.5.8 sends to the same default
+* named  : transition(x, 0, 1u), the same filter with the time written out
+* step   : transition(x) in the module declared *above* the directive, which
+*          therefore gets the negligible transition time and steps
+*
+* None of bare, zero and named is declared with a discipline in the model: the
+* device has terminals at all because `default_discipline gave them one.
+
+Vin in 0 PWL(0 0 2u 0 2.001u 5)
+
+Nwd  bare zero named in wdmod
+.model wdmod withdefault()
+
+Nnd  step in ndmod
+.model ndmod nodefault()
+
+.control
+pre_osdi directives.osdi
+tran 10n 5u
+wrdata dir_out.txt v(bare) v(zero) v(named) v(step) v(in)
+.endc
+
+.end

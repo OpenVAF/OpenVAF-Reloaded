@@ -1,0 +1,64 @@
+// VAMS-2023 3.2: a multi-dimensional array is one array, declared with one range
+// per dimension (`integer flag_array[0:8][0:3];` is the clause's own example) and
+// indexed with one subscript per dimension.
+//
+// The model is 3.4.8's crosstalk matrix, with the coupling written in a loop
+// rather than given as a parameter array. Every output is a different arithmetic
+// combination of the same places, so a stride that is wrong, a dimension that is
+// transposed or an index that addresses the wrong row shows up as a number rather
+// than as a crash:
+//
+//   out0..2  the matrix product. c[i][j] is 10*i + j, which is asymmetric, so
+//            out1 and out2 differ from each other and from a transposed c.
+//   rowv     c[1][2], read through a copy of the row `c[1]`.
+//   patv     pat[1][0], written by a nested assignment pattern of integers, so
+//            the cast to the array's own element type is pinned as well.
+//   pickv    c[i][j] with both indices computed from port voltages, which is the
+//            flat position arithmetic rather than a constant-folded place.
+//   cubev    cube[1][j][1] of a three-dimensional array, where the computed index
+//            is the middle dimension: its stride is neither 1 nor the outermost.
+`include "disciplines.vams"
+
+module multidim(out0, out1, out2, rowv, patv, pickv, cubev, in0, in1, in2, seli, selj);
+    inout out0, out1, out2, rowv, patv, pickv, cubev;
+    electrical out0, out1, out2, rowv, patv, pickv, cubev;
+    input in0, in1, in2, seli, selj;
+    electrical in0, in1, in2, seli, selj;
+
+    real c[0:2][0:2];
+    real in_val[0:2];
+    real row[0:2];
+    real pat[0:1][0:1];
+    real cube[0:1][0:1][0:1];
+    integer i, j, k;
+
+    analog begin
+        for (i = 0; i <= 2; i = i + 1)
+            for (j = 0; j <= 2; j = j + 1)
+                c[i][j] = 10.0 * i + j;
+
+        for (i = 0; i <= 1; i = i + 1)
+            for (j = 0; j <= 1; j = j + 1)
+                for (k = 0; k <= 1; k = k + 1)
+                    cube[i][j][k] = 4.0 * i + 2.0 * j + k;
+
+        // An assignment pattern of values the solver supplies (3.4.8 writes exactly
+        // this), and one of integer constants into a real array.
+        in_val = '{V(in0), V(in1), V(in2)};
+        pat = '{'{1, 2}, '{3, 4}};
+
+        // One row of a two-dimensional array is an array in its own right.
+        row = c[1];
+
+        i = (V(seli) > 0.5) ? 2 : 0;
+        j = (V(selj) > 0.5) ? 1 : 0;
+
+        V(out0) <+ c[0][0] * in_val[0] + c[0][1] * in_val[1] + c[0][2] * in_val[2];
+        V(out1) <+ c[1][0] * in_val[0] + c[1][1] * in_val[1] + c[1][2] * in_val[2];
+        V(out2) <+ c[2][0] * in_val[0] + c[2][1] * in_val[1] + c[2][2] * in_val[2];
+        V(rowv) <+ row[2];
+        V(patv) <+ pat[1][0];
+        V(pickv) <+ c[i][j];
+        V(cubev) <+ cube[1][j][1];
+    end
+endmodule

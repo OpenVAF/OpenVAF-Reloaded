@@ -10,9 +10,11 @@ use hir::signatures::{
     NATURE_ACCESS_NODES, NATURE_ACCESS_NODE_GND, NATURE_ACCESS_PORT_FLOW, REAL_EQ, REAL_OP,
     SIMPARAM_DEFAULT, SIMPARAM_NO_DEFAULT, STR_EQ,
 };
+use hir::table_model;
+use hir::zi_filter;
 use hir::{
-    Body, BodyRef, BuiltIn, Expr, ExprId, Literal, /*ParamSysFun,*/ Ref, ResolvedFun, Stmt,
-    Type,
+    Body, BodyRef, BuiltIn, CompilationDB, Expr, ExprId, Literal, /*ParamSysFun,*/ Ref,
+    ResolvedFun, Stmt, Type,
 };
 use mir::builder::InstBuilder;
 use mir::{Opcode, Value, FALSE, F_ZERO, GRAVESTONE, INFINITY, TRUE, ZERO};
@@ -20,11 +22,81 @@ use stdx::iter::zip;
 use syntax::ast::{BinaryOp, UnaryOp};
 
 use crate::body::BodyLoweringCtx;
+
 use crate::fmt::DisplayKind;
 use crate::{
-    CallBackKind, CurrentKind, IdtKind, ImplicitEquationKind, NoiseTable, ParamKind, PlaceKind,
-    RetFlag,
+    AbsDelayMode, CallBackKind, CurrentKind, FileOp, IdtKind, ImplicitEquationKind, NoiseTable,
+    ParamKind, PlaceKind, RetFlag, RngDist,
 };
+
+/// How an array variable's elements are laid out across its MIR places: one place
+/// per element, in row-major order, however many dimensions it was declared with.
+pub(crate) struct ArrayLayout {
+    /// Element count of each dimension, outermost first.
+    pub dims: Vec<u32>,
+    /// Lowest declared index of each dimension (`real g[2:5]` -> 2).
+    pub lows: Vec<i32>,
+    /// Distance between consecutive elements of each dimension, in places.
+    pub strides: Vec<u32>,
+    /// Total number of places.
+    pub len: u32,
+    /// The position the declared lower bounds themselves address, which is what
+    /// makes `real g[2:5]` store `g[2]` in the first place. It is kept here rather
+    /// than subtracted from the index so that an index the model computes is
+    /// compared against `base + position` instead of being offset at run time.
+    pub base: i32,
+}
+
+/// What an array index chain is rooted at.
+///
+/// VAMS-2023 3.4.4's parameter arrays are indexed exactly the way 3.2's variable
+/// arrays are, so the shape machinery is the same for both. What differs is where
+/// an element comes from: a variable's element is a place the model writes, a
+/// parameter's is a value the simulator supplies.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ArrayBase {
+    Var(hir::Variable),
+    Param(hir::Parameter),
+}
+
+impl From<hir::Variable> for ArrayBase {
+    fn from(var: hir::Variable) -> Self {
+        ArrayBase::Var(var)
+    }
+}
+
+impl From<hir::Parameter> for ArrayBase {
+    fn from(param: hir::Parameter) -> Self {
+        ArrayBase::Param(param)
+    }
+}
+
+impl ArrayBase {
+    pub(crate) fn ty(self, db: &CompilationDB) -> Type {
+        match self {
+            ArrayBase::Var(var) => var.ty(db),
+            ArrayBase::Param(param) => param.ty(db),
+        }
+    }
+
+    /// Lowest declared index of each dimension, outermost first.
+    pub(crate) fn lows(self, db: &CompilationDB) -> Box<[i32]> {
+        match self {
+            ArrayBase::Var(var) => var.array_lows(db),
+            ArrayBase::Param(param) => param.array_lows(db),
+        }
+    }
+}
+
+/// Where an index chain lands in the places that back an array.
+pub(crate) enum FlatIndex {
+    /// Every index is a literal: this element, or none at all if one of them is
+    /// outside its dimension (diagnosed during type checking).
+    Const(Option<u32>),
+    /// At least one index is computed, so the position is only known at run time:
+    /// the un-offset sum of index*stride (see [`ArrayLayout::base`]).
+    Dynamic(Value),
+}
 
 impl BodyLoweringCtx<'_, '_, '_> {
     pub fn lower_expr(&mut self, expr: ExprId) -> Value {
@@ -35,6 +107,15 @@ impl BodyLoweringCtx<'_, '_, '_> {
             Expr::Read(Ref::Variable(var)) => self.ctx.read_variable(var),
             Expr::Read(Ref::ParamSysFun(param)) => {
                 self.ctx.use_param(ParamKind::ParamSysFun(param))
+            }
+            // An array parameter has no single value: it is read one element at a
+            // time (`lower_index`), copied whole (`assign_whole_array`) or passed to
+            // an operator that takes an array (`array_coeffs`). Reaching here with
+            // one means type checking rejected the expression already.
+            Expr::Read(Ref::Parameter(param))
+                if matches!(param.ty(self.ctx.db), Type::Array { .. } | Type::EmptyArray) =>
+            {
+                F_ZERO
             }
             Expr::Read(Ref::Parameter(param)) => self.ctx.use_param(ParamKind::Param(param)),
             Expr::Read(Ref::FunctionReturn(fun)) => {
@@ -53,7 +134,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
 
                 self.ctx.ins().phi(&[then_src, else_src])
             }
-            Expr::Index { base, index } => self.lower_index(base, index),
+            Expr::Index { .. } => self.lower_index(expr),
             Expr::Call { args, fun } => match fun {
                 ResolvedFun::User { func, limit } => self.lower_user_fun(func, limit, args),
                 ResolvedFun::BuiltIn(builtin) => self.lower_builtin(expr, builtin, args),
@@ -293,50 +374,242 @@ impl BodyLoweringCtx<'_, '_, '_> {
     }
 
     /// The number of elements of an array-typed variable (0 if not an array).
-    pub(crate) fn array_len(&self, var: hir::Variable) -> u32 {
-        match var.ty(self.ctx.db) {
-            Type::Array { len, .. } => len,
-            _ => 0,
+    ///
+    /// A multi-dimensional array is one array: VAMS-2023 3.2 declares
+    /// `integer flag_array[0:8][0:3]` as a single variable, and it is backed by one
+    /// MIR place per element, in row-major order.
+    pub(crate) fn array_len(&self, base: impl Into<ArrayBase>) -> u32 {
+        self.array_layout(base).map_or(0, |layout| layout.len)
+    }
+
+    /// How an array's elements are laid out across the MIR values that back it.
+    pub(crate) fn array_layout(&self, base: impl Into<ArrayBase>) -> Option<ArrayLayout> {
+        let base = base.into();
+        let dims = base.ty(self.ctx.db).dim();
+        if dims.is_empty() {
+            return None;
+        }
+        let lows = base.lows(self.ctx.db);
+        let mut strides = vec![1u32; dims.len()];
+        for k in (0..dims.len().saturating_sub(1)).rev() {
+            strides[k] = strides[k + 1] * dims[k + 1];
+        }
+        let len = dims.iter().product();
+        let lows: Vec<i32> = (0..dims.len()).map(|k| lows.get(k).copied().unwrap_or(0)).collect();
+        let base = lows.iter().zip(&strides).map(|(lo, stride)| lo * *stride as i32).sum();
+        Some(ArrayLayout { dims, lows, strides, len, base })
+    }
+
+    /// `m[i][j]` -> `(m, [i, j])`, for an index chain rooted at an array variable
+    /// or an array parameter.
+    ///
+    /// The indices come back outermost first, which is the order their dimensions
+    /// are declared in.
+    pub(crate) fn index_chain_base(&self, expr: ExprId) -> Option<(ArrayBase, Vec<ExprId>)> {
+        let mut indices = Vec::new();
+        let mut cur = expr;
+        loop {
+            match self.body.try_get_expr(cur)? {
+                Expr::Index { base, index } => {
+                    indices.push(index);
+                    cur = base;
+                }
+                Expr::Read(Ref::Variable(var)) => {
+                    indices.reverse();
+                    return Some((ArrayBase::Var(var), indices));
+                }
+                Expr::Read(Ref::Parameter(param)) => {
+                    indices.reverse();
+                    return Some((ArrayBase::Param(param), indices));
+                }
+                _ => return None,
+            }
         }
     }
 
-    /// Lower an array element read `base[index]`. A fixed-size array is one MIR place
-    /// per element; a constant index reads it directly, a runtime index builds a
-    /// select chain over all elements.
-    fn lower_index(&mut self, base: ExprId, index: ExprId) -> Value {
-        let var = match self.body.get_expr(base) {
-            Expr::Read(Ref::Variable(var)) => var,
-            // only array-variable indexing is supported
-            _ => return F_ZERO,
+    /// The same chain, when it is rooted at a variable: a parameter is not a place,
+    /// so an assignment has nothing to write to.
+    pub(crate) fn index_chain(&self, expr: ExprId) -> Option<(hir::Variable, Vec<ExprId>)> {
+        match self.index_chain_base(expr)? {
+            (ArrayBase::Var(var), indices) => Some((var, indices)),
+            (ArrayBase::Param(_), _) => None,
+        }
+    }
+
+    /// Read one element of an array, by its position in row-major order.
+    pub(crate) fn use_element(&mut self, base: ArrayBase, pos: u32) -> Value {
+        match base {
+            ArrayBase::Var(var) => self.ctx.use_place(PlaceKind::VarElement(var, pos)),
+            ArrayBase::Param(param) => self.ctx.use_param(ParamKind::ParamElement(param, pos)),
+        }
+    }
+
+    /// Where `indices` lands in the flat run of places that backs the array.
+    pub(crate) fn flat_index(
+        &mut self,
+        layout: &ArrayLayout,
+        indices: &[ExprId],
+    ) -> Option<FlatIndex> {
+        if indices.len() > layout.dims.len() {
+            return None;
+        }
+        if indices.iter().all(|idx| self.body.as_literalint(idx).is_some()) {
+            let mut pos = 0i64;
+            for (k, idx) in indices.iter().enumerate() {
+                let c = self.body.as_literalint(idx)? as i64;
+                let off = c - layout.lows[k] as i64;
+                if !(0..layout.dims[k] as i64).contains(&off) {
+                    // Out of the declared range: diagnosed during type checking.
+                    return Some(FlatIndex::Const(None));
+                }
+                pos += off * layout.strides[k] as i64;
+            }
+            return Some(FlatIndex::Const(Some(pos as u32)));
+        }
+        // The sum of index*stride, with the declared lower bounds left on the other
+        // side of the comparison (see `ArrayLayout::base`) so that a
+        // one-dimensional array still compares the index itself against a constant.
+        let mut sum = None;
+        for (k, idx) in indices.iter().enumerate() {
+            let mut term = self.lower_expr(*idx);
+            if layout.strides[k] != 1 {
+                let stride = self.ctx.iconst(layout.strides[k] as i32);
+                term = self.ctx.ins().imul(term, stride);
+            }
+            sum = Some(match sum {
+                Some(prev) => self.ctx.ins().iadd(prev, term),
+                None => term,
+            });
+        }
+        sum.map(FlatIndex::Dynamic)
+    }
+
+    /// The values of one row of an array: `m[i]` where `m` has more dimensions
+    /// than `indices` has indices.
+    ///
+    /// `None` unless the chain really does leave a dimension over, so a caller can
+    /// tell a row from an element. A computed row index selects among the rows for
+    /// each position, which is the same choice a computed element index makes, one
+    /// position at a time.
+    pub(crate) fn array_row_values(
+        &mut self,
+        base: impl Into<ArrayBase>,
+        indices: &[ExprId],
+    ) -> Option<Vec<Value>> {
+        let base = base.into();
+        let layout = self.array_layout(base)?;
+        if indices.is_empty() || indices.len() >= layout.dims.len() {
+            return None;
+        }
+        // The size of one element of the last dimension that was indexed is the
+        // size of the row that is left over.
+        let row = layout.strides[indices.len() - 1];
+        let mut values = Vec::with_capacity(row as usize);
+        match self.flat_index(&layout, indices)? {
+            FlatIndex::Const(Some(start)) => {
+                for i in 0..row {
+                    let elem = self.use_element(base, start + i);
+                    values.push(elem);
+                }
+            }
+            // Out of the declared range: diagnosed during type checking.
+            FlatIndex::Const(None) => return None,
+            FlatIndex::Dynamic(idx_val) => {
+                for i in 0..row {
+                    let mut res = self.use_element(base, i);
+                    for r in 1..layout.len / row {
+                        let elem = self.use_element(base, r * row + i);
+                        let r_const = self.ctx.iconst(layout.base + (r * row) as i32);
+                        let cond = self.ctx.ins().ieq(idx_val, r_const);
+                        let prev = res;
+                        res = self
+                            .ctx
+                            .make_select(cond, |_s, branch| if branch { elem } else { prev });
+                    }
+                    values.push(res);
+                }
+            }
+        }
+        Some(values)
+    }
+
+    /// Lower an array element read `m[i]`, or `m[i][j]` for as many dimensions as
+    /// the array was declared with. A constant index reads its place directly, a
+    /// computed one builds a select chain over every element.
+    fn lower_index(&mut self, expr: ExprId) -> Value {
+        let Some((base, indices)) = self.index_chain_base(expr) else {
+            // only arrays are indexable
+            return F_ZERO;
         };
-        let len = self.array_len(var);
-        if len == 0 {
+        let Some(layout) = self.array_layout(base) else {
+            return F_ZERO;
+        };
+        // Fewer indices than dimensions is a row rather than an element, which is
+        // only assignable as a whole (see `assign_whole_array`).
+        if indices.len() != layout.dims.len() {
             return F_ZERO;
         }
-        // Element positions are offset by the declared lower bound: `real g[2:5]`
-        // stores g[2] in element 0. Previously the raw index was used as the
-        // position (g[3] read the wrong element) and constant out-of-range
-        // indices were silently clamped instead of diagnosed.
-        let lo = var.array_lo(self.ctx.db);
-        if let Some(c) = self.body.as_literalint(&index) {
-            let pos = c as i64 - lo as i64;
-            if !(0..len as i64).contains(&pos) {
-                // Out of the declared range: diagnosed during type checking;
-                // lower to 0 so compilation can continue.
-                return F_ZERO;
+        match self.flat_index(&layout, &indices) {
+            Some(FlatIndex::Const(Some(pos))) => self.use_element(base, pos),
+            // Out of range: lower to 0 so compilation can continue.
+            Some(FlatIndex::Const(None)) | None => F_ZERO,
+            Some(FlatIndex::Dynamic(idx_val)) => {
+                let mut res = self.use_element(base, 0);
+                for i in 1..layout.len {
+                    let elem = self.use_element(base, i);
+                    let i_const = self.ctx.iconst(layout.base + i as i32);
+                    let cond = self.ctx.ins().ieq(idx_val, i_const);
+                    let prev = res;
+                    res = self.ctx.make_select(cond, |_s, branch| if branch { elem } else { prev });
+                }
+                res
             }
-            return self.ctx.use_place(PlaceKind::VarElement(var, pos as u32));
         }
-        let idx_val = self.lower_expr(index);
-        let mut res = self.ctx.use_place(PlaceKind::VarElement(var, 0));
-        for i in 1..len {
-            let elem = self.ctx.use_place(PlaceKind::VarElement(var, i));
-            let i_const = self.ctx.iconst(lo + i as i32);
-            let cond = self.ctx.ins().ieq(idx_val, i_const);
-            let prev = res;
-            res = self.ctx.make_select(cond, |_s, branch| if branch { elem } else { prev });
+    }
+
+    /// Lower element `pos` (row-major) of an array parameter's default value.
+    ///
+    /// VAMS-2023 3.4.4 initialises a parameter array with an assignment pattern and
+    /// 3.4.8 nests one per dimension, so the element is found by walking the
+    /// pattern a dimension at a time. A default that names another array parameter
+    /// takes that parameter's element instead. Anything else is a shape type
+    /// checking has already rejected, and lowers to zero.
+    pub(crate) fn lower_array_elem_default(
+        &mut self,
+        expr: ExprId,
+        pos: u32,
+        dims: &[u32],
+        elem_ty: &Type,
+    ) -> Value {
+        if let Expr::Read(Ref::Parameter(src)) = self.body.get_expr(expr) {
+            return self.ctx.use_param(ParamKind::ParamElement(src, pos));
         }
-        res
+        let Some(elem) = self.pattern_elem(expr, pos, dims) else {
+            return if matches!(elem_ty, Type::Integer | Type::Bool) { ZERO } else { F_ZERO };
+        };
+        let val = self.lower_expr(elem);
+        // `'{1, 2, 3}` on a real array is three integer literals, and each element
+        // is a value of its own here, so the widening is per element rather than
+        // one cast over an array value.
+        let ty = self.resolved_ty(elem);
+        if &ty == elem_ty {
+            val
+        } else {
+            self.ctx.insert_cast(val, &ty, elem_ty)
+        }
+    }
+
+    /// The expression at position `pos` of a (possibly nested) assignment pattern.
+    fn pattern_elem(&self, expr: ExprId, pos: u32, dims: &[u32]) -> Option<ExprId> {
+        let Some((&dim, rest)) = dims.split_first() else { return Some(expr) };
+        let Expr::Array(vals) = self.body.try_get_expr(expr)? else { return None };
+        let stride: u32 = rest.iter().product();
+        let idx = if stride == 0 { 0 } else { pos / stride };
+        if idx >= dim {
+            return None;
+        }
+        let sub = *vals.get(idx as usize)?;
+        self.pattern_elem(sub, pos % stride.max(1), rest)
     }
 
     /// Evaluate a compile-time-constant real expression (literal, possibly
@@ -408,6 +681,242 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// The constant contents of an array argument to `$table_model`.
+    ///
+    /// 9.21.1: "The state of the data source is captured on the first call to the
+    /// table model function. Any change after this point is ignored." The table is
+    /// compiled into the model, so the contents have to be known here. An array
+    /// literal is; an array variable the module fills in at run time is not, and
+    /// `hir_ty` turns that into a diagnostic rather than letting it arrive here.
+    fn const_real_array(&self, arg: ExprId) -> Option<Vec<f64>> {
+        let elems = match self.body.get_expr(arg) {
+            Expr::Array(vals) => vals,
+            _ => return None,
+        };
+        elems.iter().map(|&e| self.eval_const_real(e)).collect()
+    }
+
+    /// A table data file, resolved beside the root source file the way
+    /// `noise_table`'s data file is.
+    fn read_table_file(&self, fname: &str) -> Option<String> {
+        let dir = self.ctx.db.root_file_dir()?;
+        let path = dir.join(fname)?;
+        let abs = path.as_path()?;
+        std::fs::read_to_string(abs).ok()
+    }
+
+    /// VAMS-2023 9.21:
+    ///
+    ///   $table_model ( table_inputs , table_data_source [, table_control_string] )
+    ///
+    /// The table is built here, at compile time, and emitted as the piecewise
+    /// polynomial `crate::table_model` reduces it to. That is what lets the
+    /// Jacobian fall out: the lookup is ordinary arithmetic over the lookup
+    /// expressions, so the existing autodiff differentiates it. A callback could
+    /// not be differentiated at all, since `mir_autodiff` treats `Opcode::Call` as
+    /// having no derivative.
+    ///
+    /// Anything this cannot build returns zero, which `hir_ty` makes unreachable by
+    /// rejecting the call first; the arms are here so that a malformed table cannot
+    /// panic the compiler.
+    fn lower_table_model(&mut self, args: &[ExprId]) -> Value {
+        // The lookup inputs come first and the data source follows them, so the
+        // inputs are the leading arguments that are neither a string nor an array.
+        // Reading the shape back off the types keeps this in step with the
+        // signature table without a sixteen-way match on it.
+        let ndims = args
+            .iter()
+            .position(|&a| {
+                matches!(
+                    self.body.expr_type(a),
+                    Type::String | Type::Array { .. } | Type::EmptyArray
+                )
+            })
+            .unwrap_or(args.len());
+        if ndims == 0 || ndims >= args.len() {
+            return F_ZERO;
+        }
+
+        let (rows, after) = if matches!(self.body.expr_type(args[ndims]), Type::String) {
+            let fname = self.body.as_literal(args[ndims]).unwrap().unwrap_str().to_owned();
+            let text = match self.read_table_file(&fname) {
+                Some(text) => text,
+                None => return F_ZERO,
+            };
+            match table_model::Rows::parse(&text) {
+                Ok(rows) => (rows, ndims + 1),
+                Err(_) => return F_ZERO,
+            }
+        } else {
+            // `table_model_array` is N independent columns followed by the output.
+            let end = 2 * ndims + 1;
+            if args.len() < end {
+                return F_ZERO;
+            }
+            let mut cols = Vec::with_capacity(ndims + 1);
+            for &arg in &args[ndims..end] {
+                match self.const_real_array(arg) {
+                    Some(col) => cols.push(col),
+                    None => return F_ZERO,
+                }
+            }
+            match table_model::Rows::from_columns(&cols) {
+                Ok(rows) => (rows, end),
+                Err(_) => return F_ZERO,
+            }
+        };
+
+        let spec = match args.get(after) {
+            Some(&arg) => self.body.as_literal(arg).unwrap().unwrap_str().to_owned(),
+            None => String::new(),
+        };
+        let control = match table_model::Control::parse(&spec, ndims) {
+            Ok(control) => control,
+            Err(_) => return F_ZERO,
+        };
+        let table = match table_model::Table::build(&rows, &control) {
+            Ok((table, _warnings)) => table,
+            Err(_) => return F_ZERO,
+        };
+
+        let mut inputs = Vec::with_capacity(ndims);
+        for &arg in &args[..ndims] {
+            inputs.push(self.lower_expr(arg));
+        }
+
+        let (value, outside) = self.emit_table(&table.root, &table.dims, &inputs);
+
+        // 9.21.2's `E` method: "an extrapolation error is reported if the
+        // $table_model function is requested to evaluate a point beyond the
+        // interpolation region", and 9.21 adds that it "results in a fatal error
+        // being raised".
+        if outside != FALSE {
+            self.ctx.make_select(outside, |ctx, taken| {
+                if taken {
+                    ctx.call(CallBackKind::SetRetFlag(RetFlag::Abort), &[]);
+                }
+                F_ZERO
+            });
+        }
+
+        value
+    }
+
+    /// Emit a lookup over the isoline tree as `(value, outside)`.
+    ///
+    /// Each child is emitted once and the pieces select between the results, so
+    /// the code grows with the number of samples rather than with the product of
+    /// the dimensions. The `outside` flag travels beside the value so that an `E`
+    /// end deeper in the table fires only on the path the lookup actually took,
+    /// and it collapses to a constant `false` for the overwhelming majority of
+    /// tables, which have no `E` end at all.
+    fn emit_table(
+        &mut self,
+        node: &table_model::Node,
+        dims: &[table_model::DimControl],
+        inputs: &[Value],
+    ) -> (Value, Value) {
+        let kids = match node {
+            table_model::Node::Leaf(val) => return (self.ctx.fconst(*val), FALSE),
+            table_model::Node::Branch(kids) => kids,
+        };
+
+        let mut vals = Vec::with_capacity(kids.len());
+        let mut outs = Vec::with_capacity(kids.len());
+        for (_, kid) in kids {
+            let (val, out) = self.emit_table(kid, &dims[1..], &inputs[1..]);
+            vals.push(val);
+            outs.push(out);
+        }
+
+        let xs: Vec<f64> = kids.iter().map(|(ordinate, _)| *ordinate).collect();
+        let segs = table_model::segments(&xs, dims[0]);
+        let x = inputs[0];
+        let track = segs.iter().any(|seg| seg.error) || outs.iter().any(|out| *out != FALSE);
+
+        // Built from the last piece backwards, so each comparison only has to
+        // decide between this piece and everything above it.
+        let mut chain: Option<(Value, Value)> = None;
+        for seg in segs.iter().rev() {
+            let val = self.emit_segment(seg, &vals, x);
+            let out = if !track {
+                FALSE
+            } else if seg.error {
+                TRUE
+            } else {
+                let mut acc = FALSE;
+                for (j, _) in &seg.terms {
+                    acc = if acc == FALSE { outs[*j] } else { self.or(acc, outs[*j]) };
+                }
+                acc
+            };
+            chain = Some(match chain {
+                None => (val, out),
+                Some((above_val, above_out)) => {
+                    let (bound, inclusive) =
+                        seg.upper.expect("only the last piece runs to infinity");
+                    let bound = self.ctx.fconst(bound);
+                    let cond = if inclusive {
+                        self.ctx.ins().fle(x, bound)
+                    } else {
+                        self.ctx.ins().flt(x, bound)
+                    };
+                    let val = self.ctx.make_select(cond, |_s, t| if t { val } else { above_val });
+                    let out = if track {
+                        self.ctx.make_select(cond, |_s, t| if t { out } else { above_out })
+                    } else {
+                        FALSE
+                    };
+                    (val, out)
+                }
+            });
+        }
+        chain.expect("a dimension always has at least one piece")
+    }
+
+    /// One piece of a dimension: `sum over j of sample_j * P_j(x - origin)`.
+    fn emit_segment(&mut self, seg: &table_model::Segment, vals: &[Value], x: Value) -> Value {
+        if seg.terms.is_empty() {
+            return F_ZERO;
+        }
+        let origin = self.ctx.fconst(seg.origin);
+        let u = self.ctx.ins().fsub(x, origin);
+        let mut acc: Option<Value> = None;
+        for (j, coeffs) in &seg.terms {
+            // A weight of exactly one is what constant extrapolation and a closest
+            // point lookup produce, and they are common enough to be worth not
+            // multiplying by.
+            let term = if *coeffs == [1.0, 0.0, 0.0, 0.0] {
+                vals[*j]
+            } else {
+                let weight = self.emit_poly(u, *coeffs);
+                self.ctx.ins().fmul(vals[*j], weight)
+            };
+            acc = Some(match acc {
+                None => term,
+                Some(sum) => self.ctx.ins().fadd(sum, term),
+            });
+        }
+        acc.unwrap_or(F_ZERO)
+    }
+
+    /// `c0 + u*(c1 + u*(c2 + u*c3))` by Horner, with the zero terms left out.
+    fn emit_poly(&mut self, u: Value, coeffs: [f64; 4]) -> Value {
+        let top = match coeffs.iter().rposition(|c| *c != 0.0) {
+            Some(top) => top,
+            None => return F_ZERO,
+        };
+        let mut acc = self.ctx.fconst(coeffs[top]);
+        for k in (0..top).rev() {
+            acc = self.ctx.ins().fmul(acc, u);
+            if coeffs[k] != 0.0 {
+                let c = self.ctx.fconst(coeffs[k]);
+                acc = self.ctx.ins().fadd(acc, c);
+            }
+        }
+        acc
     }
 
     fn lower_builtin(&mut self, expr: ExprId, builtin: BuiltIn, args: &[ExprId]) -> Value {
@@ -582,9 +1091,132 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 self.ins_display(DisplayKind::Display, false, args);
                 GRAVESTONE
             }
-            BuiltIn::display | BuiltIn::strobe | BuiltIn::monitor => {
+            BuiltIn::display | BuiltIn::monitor => {
                 self.ins_display(DisplayKind::Display, true, args);
                 GRAVESTONE
+            }
+            // 9.4.1: `$strobe` "displays the simulation data at the end of the
+            // current simulation time", which in an analog block is once for the
+            // timepoint rather than once for each of the Newton iterations that
+            // settle it. `$display` is the one that writes whenever it is reached.
+            BuiltIn::strobe => {
+                self.strobe(DisplayKind::Display, None, args);
+                GRAVESTONE
+            }
+
+            // -- 9.5.2: the same tasks, writing to a descriptor -----------------
+            BuiltIn::fdisplay | BuiltIn::fwrite | BuiltIn::fdebug | BuiltIn::fstrobe => {
+                let desc = self.lower_expr(args[0]);
+                let rest = &args[1..];
+                let kind = if builtin == BuiltIn::fdebug {
+                    DisplayKind::Debug
+                } else {
+                    DisplayKind::Display
+                };
+                match builtin {
+                    BuiltIn::fstrobe => self.strobe(kind, Some(desc), rest),
+                    // "$fwrite ... does not append a newline".
+                    BuiltIn::fwrite => self.ins_display_file(kind, false, desc, rest),
+                    _ => self.ins_display_file(kind, true, desc, rest),
+                }
+                GRAVESTONE
+            }
+
+            // -- 9.5.1, 9.5.5, 9.5.6, 9.5.8: the file itself --------------------
+            BuiltIn::fopen => {
+                let name = self.lower_expr(args[0]);
+                match args.get(1) {
+                    // "$fopen(name, mode) ... returns a file descriptor"
+                    Some(&mode) if !self.body.is_missing(mode) => {
+                        let mode = self.lower_expr(mode);
+                        self.ctx.call1(CallBackKind::File(FileOp::Open), &[name, mode])
+                    }
+                    // "$fopen(name) ... returns a multichannel descriptor"
+                    _ => self.ctx.call1(CallBackKind::File(FileOp::OpenMcd), &[name]),
+                }
+            }
+            BuiltIn::fflush => match args.first() {
+                Some(&desc) if !self.body.is_missing(desc) => {
+                    let desc = self.lower_expr(desc);
+                    let no = self.ctx.iconst(0);
+                    self.ctx.call1(CallBackKind::File(FileOp::Flush), &[desc, no])
+                }
+                // "$fflush() ... flushes the output buffers of all open files"
+                _ => {
+                    let zero = self.ctx.iconst(0);
+                    let yes = self.ctx.iconst(1);
+                    self.ctx.call1(CallBackKind::File(FileOp::FlushAll), &[zero, yes])
+                }
+            },
+            BuiltIn::fclose | BuiltIn::feof | BuiltIn::ftell | BuiltIn::rewind => {
+                let desc = self.lower_expr(args[0]);
+                let op = match builtin {
+                    BuiltIn::fclose => FileOp::Close,
+                    BuiltIn::feof => FileOp::Eof,
+                    BuiltIn::ftell => FileOp::Tell,
+                    _ => FileOp::Rewind,
+                };
+                self.ctx.call1(CallBackKind::File(op), &[desc])
+            }
+            // -- 9.5.3, 9.5.4: the tasks that write back through a string ------
+            BuiltIn::swrite | BuiltIn::sformat => {
+                let formatted = self.ins_sformat(&args[1..]);
+                self.assign_out(args[0], formatted, &Type::String);
+                GRAVESTONE
+            }
+            BuiltIn::fgets => {
+                let desc = self.lower_expr(args[1]);
+                let line = self.ctx.call1(CallBackKind::File(FileOp::Gets), &[desc]);
+                self.assign_out(args[0], line, &Type::String);
+                // "returns ... the number of characters read", and zero at the end
+                // of the file, which is what an empty line comes back as.
+                self.ctx.call1(CallBackKind::File(FileOp::Len), &[line])
+            }
+            // 9.5.4: the conversions happen in the runtime, which keeps the
+            // results until they are read back one at a time -- an argument here is
+            // a variable to assign, not a pointer to write through.
+            //
+            // `$fscanf` takes a line and scans that, where the clause scans the file
+            // itself: a conversion cannot span a line break. For a file with one
+            // record per line, which is what a vector file is, the two are the same.
+            BuiltIn::sscanf | BuiltIn::fscanf => {
+                let subject = if builtin == BuiltIn::fscanf {
+                    let desc = self.lower_expr(args[0]);
+                    self.ctx.call1(CallBackKind::File(FileOp::Gets), &[desc])
+                } else {
+                    self.lower_expr(args[0])
+                };
+                let fmt_lit = match self.body.as_literal(args[1]) {
+                    Some(Literal::String(lit)) => lit.to_string(),
+                    // The type checker requires a literal here, so this is
+                    // unreachable in a model that compiled.
+                    _ => String::new(),
+                };
+                let fmt = self.lower_expr(args[1]);
+                let count = self.ctx.call1(CallBackKind::File(FileOp::Scan), &[subject, fmt]);
+                for (k, conv) in hir::scan::scan_conversions(&fmt_lit).into_iter().enumerate() {
+                    let arg = match args.get(2 + k) {
+                        Some(&arg) if !self.body.is_missing(arg) => arg,
+                        _ => break,
+                    };
+                    let idx = self.ctx.iconst(k as i32);
+                    let val = match conv.ty {
+                        Type::String => self.ctx.call1(CallBackKind::File(FileOp::ScanStr), &[idx]),
+                        Type::Integer => {
+                            let real = self.ctx.call1(CallBackKind::File(FileOp::ScanReal), &[idx]);
+                            self.ctx.insert_cast(real, &Type::Real, &Type::Integer)
+                        }
+                        _ => self.ctx.call1(CallBackKind::File(FileOp::ScanReal), &[idx]),
+                    };
+                    self.assign_out(arg, val, &conv.ty);
+                }
+                count
+            }
+            BuiltIn::fseek => {
+                let desc = self.lower_expr(args[0]);
+                let offset = self.lower_expr(args[1]);
+                let whence = self.lower_expr(args[2]);
+                self.ctx.call1(CallBackKind::File(FileOp::Seek), &[desc, offset, whence])
             }
             BuiltIn::debug => {
                 self.ins_display(DisplayKind::Debug, true, args);
@@ -702,8 +1334,20 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
 
             // Without equation lowering (e.g. op-var contexts) a filter is a no-op.
-            BuiltIn::laplace_nd if self.ctx.no_equations => F_ZERO,
+            BuiltIn::laplace_nd
+            | BuiltIn::laplace_zp
+            | BuiltIn::laplace_zd
+            | BuiltIn::laplace_np
+                if self.ctx.no_equations =>
+            {
+                F_ZERO
+            }
             BuiltIn::laplace_nd => self.lower_laplace_nd(args),
+            // VAMS-2023 4.5.11.1-4.5.11.3: the same filter with its numerator,
+            // denominator or both given as roots instead of coefficients.
+            BuiltIn::laplace_zp => self.lower_laplace_roots(args, true, true),
+            BuiltIn::laplace_zd => self.lower_laplace_roots(args, true, false),
+            BuiltIn::laplace_np => self.lower_laplace_roots(args, false, true),
 
             BuiltIn::idt => {
                 let kind = match_signature! {
@@ -790,6 +1434,40 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 };
                 self.ctx.call1(call, &[val])
             }
+            // VAMS-2023 9.13. `$random`/`$arandom` are an inclusive draw over the
+            // whole 32-bit range; the rest name their distribution. The integer
+            // forms round half away from zero, the `$rdist_*` forms do not.
+            BuiltIn::random | BuiltIn::arandom => {
+                let lo = self.ctx.fconst(-2147483648.0);
+                let hi = self.ctx.fconst(2147483647.0);
+                let val = self.lower_rng(RngDist::UniformInt, args, lo, hi);
+                self.ctx.insert_cast(val, &Type::Real, &Type::Integer)
+            }
+            // `$dist_uniform` is an inclusive draw over the integers in [start, end],
+            // not the real draw rounded -- a different function, not a different
+            // result type.
+            BuiltIn::dist_uniform => self.lower_rng_args(RngDist::UniformInt, args, false),
+            BuiltIn::rdist_uniform => self.lower_rng_args(RngDist::Uniform, args, false),
+            BuiltIn::dist_normal | BuiltIn::rdist_normal => {
+                self.lower_rng_args(RngDist::Normal, args, builtin == BuiltIn::dist_normal)
+            }
+            BuiltIn::dist_erlang | BuiltIn::rdist_erlang => {
+                self.lower_rng_args(RngDist::Erlang, args, builtin == BuiltIn::dist_erlang)
+            }
+            BuiltIn::dist_exponential | BuiltIn::rdist_exponential => self.lower_rng_args(
+                RngDist::Exponential,
+                args,
+                builtin == BuiltIn::dist_exponential,
+            ),
+            BuiltIn::dist_poisson | BuiltIn::rdist_poisson => {
+                self.lower_rng_args(RngDist::Poisson, args, builtin == BuiltIn::dist_poisson)
+            }
+            BuiltIn::dist_chi_square | BuiltIn::rdist_chi_square => {
+                self.lower_rng_args(RngDist::ChiSquare, args, builtin == BuiltIn::dist_chi_square)
+            }
+            BuiltIn::dist_t | BuiltIn::rdist_t => {
+                self.lower_rng_args(RngDist::T, args, builtin == BuiltIn::dist_t)
+            }
             BuiltIn::temperature => self.ctx.use_param(ParamKind::Temperature),
             BuiltIn::simparam => {
                 let arg0 = self.lower_expr(args[0]);
@@ -813,7 +1491,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
             BuiltIn::bound_step => {
                 let step_size = self.lower_expr(args[0]);
-                self.ctx.def_place(PlaceKind::BoundStep, step_size);
+                self.bound_step(step_size);
                 GRAVESTONE
             }
 
@@ -845,8 +1523,17 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 //     We have a function for that now.
                 if self.ctx.inside_lim && Some(-1) == self.body.as_literalsignedint(&args[0]) {
                     self.ctx.call(CallBackKind::LimDiscontinuity, &[]);
-                } else {
-                    // TODO implement support for discontinuity?
+                } else if !self.ctx.no_equations {
+                    // 9.17.1: every other degree is an announcement about the point
+                    // being solved, which goes to the simulator as one. Without
+                    // retained state (the init function, verilogae) there is no
+                    // instance data to leave it in and nothing to tell either.
+                    let degree = self.lower_expr(args[0]);
+                    let degree = match self.resolved_ty(args[0]) {
+                        Type::Real => degree,
+                        ty => self.ctx.insert_cast(degree, &ty, &Type::Real),
+                    };
+                    self.announce_discontinuity(degree);
                 }
                 GRAVESTONE
             }
@@ -867,10 +1554,21 @@ impl BodyLoweringCtx<'_, '_, '_> {
             BuiltIn::absdelay => {
                 let source = self.lower_expr(args[0]);
                 if self.ctx.no_equations {
+                    // 4.5.7: "In DC and operating point analyses, absdelay() returns
+                    // the value of its input", and an op-var or small-signal setup has
+                    // no time axis to delay along either.
                     return source;
                 }
-                let delay = self.lower_expr(args[1]);
-                let max_delay = (signature == ABSDELAY_MAX).then(|| self.lower_expr(args[2]));
+                let raw_delay = self.lower_expr(args[1]);
+                let raw_max = (signature == ABSDELAY_MAX).then(|| self.lower_expr(args[2]));
+                let (delay, window) = self.absdelay_window(raw_delay, raw_max);
+                // The history has to come from somewhere. Either the simulator keeps
+                // it, which is exact but needs the descriptor protocol implemented, or
+                // the model keeps it, which runs anywhere.
+                if let AbsDelayMode::InModel { depth } = self.ctx.absdelay {
+                    return self.emit_absdelay(source, delay, window, depth);
+                }
+                let max_delay = raw_max.map(|_| window);
 
                 let source_pair = match self.ctx.dfg().value_def(source) {
                     mir::ValueDef::Param(param) => {
@@ -891,6 +1589,16 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 };
 
                 let (output, y) = self.ctx.implicit_equation(ImplicitEquationKind::AbsDelayOutput);
+                // The simulator reads these two out of the instance data, which makes
+                // them outputs of the evaluation even though no place points at them.
+                // Barriers mark them as such, so the pass that moves op-independent
+                // work into instance setup caches them instead of leaving the eval
+                // function holding a value that is no longer computed there. Without
+                // this a delay that is anything but a parameter or a literal --
+                // `absdelay(x, 2 * td)`, or the frozen delay above -- crashes the
+                // backend with "attempted to read undefined value".
+                let delay = self.ctx.ins().ensure_optbarrier(delay);
+                let max_delay = max_delay.map(|val| self.ctx.ins().ensure_optbarrier(val));
                 self.ctx.intern.absdelay.push(crate::AbsDelayInfo {
                     input,
                     output,
@@ -908,39 +1616,143 @@ impl BodyLoweringCtx<'_, '_, '_> {
                     // No DAE context (AC/noise setup, op-vars): pass the target through.
                     target
                 } else {
-                    // Continuous (slew-limited) realization. The ideal `transition` is a
-                    // piecewise-linear ramp from the old value to the new one over the
-                    // rise/fall time; emitting it as an instantaneous jump produces a
-                    // time discontinuity the transient integrator cannot step across
-                    // ("timestep too small"). We realize it as a first-order lag whose
-                    // time constant is the rise time when the target is increasing and
-                    // the fall time when decreasing — a continuous output the solver
-                    // integrates through, with the requested transition speed.
-                    //
-                    // `transition(expr, td, rise_time, fall_time, time_tol)`: the
-                    // delay and the (dynamic, VAMS-2023 Table 4-20) `time_tol` do not
-                    // affect this continuous realization and are ignored - `time_tol`
-                    // bounds how precisely a simulator places the time point of the
-                    // transition, which a lag has no notion of.
+                    self.lower_transition(target, args)
+                }
+            }
+            BuiltIn::slew => {
+                // VAMS-2023 4.5.9: `slew` bounds the rate of change of its argument.
+                //
+                //   slew ( expr [ , max_pos_slew_rate [ , max_neg_slew_rate ] ] )
+                //
+                // With no rates given the LRM passes the signal through unchanged,
+                // and in DC it passes the value through as well.
+                let target = self.lower_expr(args[0]);
+                if self.ctx.no_equations || args.len() == 1 {
+                    target
+                } else {
+                    let max_pos = self.lower_expr(args[1]);
+                    // "If the max_neg_slew_rate is not specified, it defaults to the
+                    // opposite of the max_pos_slew_rate."
+                    let max_neg = if args.len() > 2 {
+                        self.lower_expr(args[2])
+                    } else {
+                        self.ctx.ins().fneg(max_pos)
+                    };
+
+                    // Realized as a continuous rate limiter, the same shape as the
+                    // `transition` lag below: a state whose derivative chases the
+                    // target with a very large gain, clamped to the two rates. While
+                    // the input changes more slowly than the limits the state follows
+                    // it to within `eps * rate`, which is what the LRM asks for
+                    // ("returns the value of expr"); once a limit is reached the state
+                    // moves at exactly that rate. A clamped derivative is continuous
+                    // in time, so the transient integrator can step across it.
                     let eps = self.ctx.fconst(1e-12);
-                    let rise = if args.len() > 2 { self.lower_expr(args[2]) } else { eps };
-                    let fall = if args.len() > 3 { self.lower_expr(args[3]) } else { rise };
                     let (eq, x) =
                         self.ctx.implicit_equation(ImplicitEquationKind::Idt(IdtKind::Basic));
-                    // tau = (target >= x) ? rise : fall, floored to eps to avoid /0.
-                    let rising = self.ctx.ins().fge(target, x);
-                    let tau = self.ctx.make_select(rising, |_s, b| if b { rise } else { fall });
-                    let tau_ok = self.ctx.ins().fge(tau, eps);
-                    let tau = self.ctx.make_select(tau_ok, |_s, b| if b { tau } else { eps });
-                    // dx/dt = (target - x)/tau  ->  react = x, resist = (x - target)/tau.
-                    let diff = self.ctx.ins().fsub(x, target);
-                    let resist = self.ctx.ins().fdiv(diff, tau);
+                    let diff = self.ctx.ins().fsub(target, x);
+                    let rate = self.ctx.ins().fdiv(diff, eps);
+                    // rate = min(max(rate, max_neg), max_pos)
+                    let too_fast = self.ctx.ins().fgt(rate, max_pos);
+                    let rate =
+                        self.ctx.make_select(too_fast, |_s, b| if b { max_pos } else { rate });
+                    let too_slow = self.ctx.ins().flt(rate, max_neg);
+                    let rate =
+                        self.ctx.make_select(too_slow, |_s, b| if b { max_neg } else { rate });
+                    // dx/dt = rate  ->  react = x, resist = -rate.
+                    let resist = self.ctx.ins().fneg(rate);
                     self.ctx.def_resist_residual(resist, eq);
                     self.ctx.def_react_residual(x, eq);
                     x
                 }
             }
-            BuiltIn::slew | BuiltIn::limit => self.lower_expr(args[0]),
+            BuiltIn::last_crossing => {
+                // VAMS-2023 4.5.10: the simulation time at which `expr` last crossed
+                // zero, in the requested direction.
+                //
+                //   last_crossing ( expr [ , direction ] )
+                //
+                // "does not control the timestep to get accurate results; it uses
+                // linear interpolation to estimate the time of the last crossing",
+                // so this needs no breakpoint machinery -- only the expression and
+                // the time at the previous accepted timestep, both of which the
+                // retained-state slots already provide.
+                let cur = self.lower_expr(args[0]);
+                if self.ctx.no_equations {
+                    // Nothing steps time here, so nothing can have crossed.
+                    return self.ctx.fconst(-1.0);
+                }
+                let now = self.ctx.use_param(ParamKind::Abstime);
+
+                let s_prev = self.ctx.alloc_retained_state(0.0);
+                let s_time = self.ctx.alloc_retained_state(0.0);
+                // "Before the expression crosses zero (0) for the first time, the
+                // last_crossing() function returns a negative value."
+                let s_last = self.ctx.alloc_retained_state(-1.0);
+
+                let prev = self.ctx.retained_prev(s_prev);
+                let t_prev = self.ctx.retained_prev(s_time);
+                let last = self.ctx.retained_prev(s_last);
+
+                self.ctx.store_retained(s_prev, cur);
+                self.ctx.store_retained(s_time, now);
+
+                let cur_ge = self.ctx.ins().fge(cur, F_ZERO);
+                let cur_le = self.ctx.ins().fle(cur, F_ZERO);
+                let prev_lt = self.ctx.ins().flt(prev, F_ZERO);
+                let prev_gt = self.ctx.ins().fgt(prev, F_ZERO);
+                let rising = self.and(prev_lt, cur_ge);
+                let falling = self.and(prev_gt, cur_le);
+
+                // "If it is set to 0, the last_crossing() will return the most
+                // recent time the input expression had either a rise or falling edge
+                // transition. If direction is +1 (-1), [...] rising (falling)."
+                // Omitted behaves as 0.
+                let crossed = match args.get(1) {
+                    Some(&dir) if !self.body.is_missing(dir) => {
+                        let dir = self.lower_expr(dir);
+                        let zero = self.ctx.iconst(0);
+                        let one = self.ctx.iconst(1);
+                        let minus_one = self.ctx.iconst(-1);
+                        let both = self.ctx.ins().ieq(dir, zero);
+                        let up = self.ctx.ins().ieq(dir, one);
+                        let down = self.ctx.ins().ieq(dir, minus_one);
+                        let want_rising = self.or(up, both);
+                        let want_falling = self.or(down, both);
+                        let up = self.and(want_rising, rising);
+                        let down = self.and(want_falling, falling);
+                        self.or(up, down)
+                    }
+                    _ => self.or(rising, falling),
+                };
+
+                // Two distinct time points are needed to interpolate between, so
+                // nothing is detected until time has moved. This also keeps dc, ac
+                // and noise -- where `$abstime` stands still -- returning the
+                // initial negative value.
+                let advanced = self.ctx.ins().fgt(now, t_prev);
+                let crossed = self.and(crossed, advanced);
+
+                // Linear interpolation between the two straddling points:
+                //   t = t_prev + (now - t_prev) * (0 - prev) / (cur - prev)
+                // A crossing implies `cur != prev`, but the division is evaluated
+                // either way, so pin the denominator to 1 when it is not.
+                let dt = self.ctx.ins().fsub(now, t_prev);
+                let den = self.ctx.ins().fsub(cur, prev);
+                let one = self.ctx.fconst(1.0);
+                let den = self.ctx.make_select(crossed, |_s, taken| if taken { den } else { one });
+                let frac = self.ctx.ins().fdiv(prev, den);
+                let step = self.ctx.ins().fmul(dt, frac);
+                // t_prev + dt * (-prev / den), written as a subtraction to keep the
+                // negation out of the way.
+                let t_cross = self.ctx.ins().fsub(t_prev, step);
+
+                let last =
+                    self.ctx.make_select(crossed, |_s, taken| if taken { t_cross } else { last });
+                self.ctx.store_retained(s_last, last);
+                last
+            }
+            BuiltIn::limit => self.lower_expr(args[0]),
 
             // `ac_stim` is an AC small-signal stimulus: it is defined to be zero in the
             // large-signal (DC/transient) domain, which is what a contribution lowers.
@@ -949,8 +1761,962 @@ impl BodyLoweringCtx<'_, '_, '_> {
             // crashed the compiler. Actual AC-analysis injection is not implemented yet.
             BuiltIn::ac_stim => F_ZERO,
 
+            BuiltIn::table_model => self.lower_table_model(args),
+
+            BuiltIn::zi_nd | BuiltIn::zi_np | BuiltIn::zi_zd | BuiltIn::zi_zp => {
+                self.lower_zi_filter(builtin, args)
+            }
+
             _ => unreachable!(),
         }
+    }
+
+    /// A distribution call whose parameters follow the seed: `f(seed, a [, b])`,
+    /// with an optional trailing `"global"`/`"instance"` string this does not need.
+    /// `round` picks the integer form, which rounds half away from zero.
+    fn lower_rng_args(&mut self, dist: RngDist, args: &[ExprId], round: bool) -> Value {
+        let real = |this: &mut Self, i: usize| match args.get(i) {
+            Some(&arg) if !this.body.is_missing(arg) => {
+                let ty = this.body.expr_type(arg);
+                let val = this.lower_expr(arg);
+                match ty {
+                    Type::Real => val,
+                    ref other => this.ctx.insert_cast(val, other, &Type::Real),
+                }
+            }
+            _ => F_ZERO,
+        };
+        let a = real(self, 1);
+        let b = real(self, 2);
+        let val = self.lower_rng(dist, args, a, b);
+        if round {
+            // The `$dist_*` forms are specified to round half away from zero rather
+            // than truncate. The result stays a real -- that is what these are
+            // declared to return in the analog context (DIST_*_ARG -> Real); only
+            // `$random` hands back an integer.
+            let half = self.ctx.fconst(0.5);
+            let negative = self.ctx.ins().flt(val, F_ZERO);
+            let up = self.ctx.ins().fadd(val, half);
+            let down = self.ctx.ins().fsub(val, half);
+            let rounded = self.ctx.make_select(negative, |_s, taken| if taken { down } else { up });
+            // `fitrunc`, not a real-to-integer cast: that cast rounds, and rounding
+            // a value that has already had the half added lands one out.
+            let as_int = self.ctx.ins().fitrunc(rounded);
+            self.ctx.insert_cast(as_int, &Type::Integer, &Type::Real)
+        } else {
+            val
+        }
+    }
+
+    /// Draw from `dist`, and leave the seed where the draw left it.
+    ///
+    /// 9.13.1: "If the random_seed argument is specified it is an inout argument;
+    /// that is, a value is passed to the function and a different value is
+    /// returned." When it names a variable that is what happens, and the variable
+    /// keeps its value between evaluations because a read that precedes its write
+    /// earns retention -- which is also what makes this converge: every Newton
+    /// iteration of one timestep reads the same committed seed and so draws the
+    /// same number, and only the accepted step advances it.
+    ///
+    /// A seed that is a parameter, a constant or absent gets a retained slot of its
+    /// own instead, seeded from the expression on the first evaluation, per "an
+    /// internal seed is created which is assigned the initial value".
+    fn lower_rng(&mut self, dist: RngDist, args: &[ExprId], a: Value, b: Value) -> Value {
+        let seed_var = args.first().and_then(|&arg| {
+            if self.body.is_missing(arg) {
+                return None;
+            }
+            match self.body.try_get_expr(arg) {
+                Some(Expr::Read(Ref::Variable(var))) => Some(var),
+                _ => None,
+            }
+        });
+
+        // `Some(slot)` when the seed has nowhere of its own to live and needs a
+        // retained slot instead of a variable to be written back to.
+        let (seed, slot) = match seed_var {
+            Some(var) => {
+                let seed = self.ctx.use_place(PlaceKind::Var(var));
+                (self.ctx.insert_cast(seed, &Type::Integer, &Type::Real), None)
+            }
+            None => {
+                // Whatever the call names, taken once: a parameter, a constant, or
+                // an arbitrary starting point when the seed was left out entirely.
+                let initial = match args.first() {
+                    Some(&arg) if !self.body.is_missing(arg) => {
+                        let ty = self.body.expr_type(arg);
+                        let val = self.lower_expr(arg);
+                        match ty {
+                            Type::Real => val,
+                            ref other => self.ctx.insert_cast(val, other, &Type::Real),
+                        }
+                    }
+                    _ => self.ctx.fconst(259341593.0),
+                };
+                let slot = self.ctx.alloc_retained_state(0.0);
+                let carried = self.ctx.retained_prev(slot);
+                let first = self.ctx.first_eval();
+                let seed =
+                    self.ctx.make_select(first, |_s, taken| if taken { initial } else { carried });
+                (seed, Some(slot))
+            }
+        };
+
+        let call_args = [seed, a, b];
+        let value = self.ctx.call1(CallBackKind::RngValue(dist), &call_args);
+        let next = self.ctx.call1(CallBackKind::RngSeed(dist), &call_args);
+
+        match (seed_var, slot) {
+            (Some(var), _) => {
+                let next = self.ctx.insert_cast(next, &Type::Real, &Type::Integer);
+                self.ctx.def_place(PlaceKind::Var(var), next);
+            }
+            (None, Some(slot)) => self.ctx.store_retained(slot, next),
+            _ => {}
+        }
+
+        value
+    }
+
+    /// Assign a runtime string to the variable an argument names.
+    ///
+    /// 9.5.3 and 9.5.4 write their result into an argument, which Verilog-A has no
+    /// other way to express -- the type checker requires a variable there, so the
+    /// argument is a plain read of one and the assignment goes to its place. The
+    /// same shape as 9.13's seed.
+    fn assign_out(&mut self, arg: ExprId, val: Value, src: &Type) {
+        match self.body.try_get_expr(arg) {
+            Some(Expr::Read(Ref::Variable(var))) => {
+                let dst = var.ty(self.ctx.db);
+                let val = self.cast_out(val, src, &dst);
+                self.ctx.def_place(PlaceKind::Var(var), val);
+            }
+            // One element of an array is a place as well, and so is one the model
+            // picks at run time: `assign_array_element` writes the choice into every
+            // element, exactly as `arr[i] = x` does. The whole index expression goes
+            // with it, because a multi-dimensional array is addressed by a chain of
+            // them rather than by one.
+            Some(Expr::Index { .. }) => {
+                if let Some((var, _)) = self.index_chain(arg) {
+                    let dst = var.ty(self.ctx.db).base_type().clone();
+                    let val = self.cast_out(val, src, &dst);
+                    self.assign_array_element(var, arg, val);
+                }
+            }
+            // Anything else is rejected during type checking, because a value with
+            // nowhere to go is the silent kind of wrong.
+            _ => (),
+        }
+    }
+
+    /// The cast from what a conversion produced to what the variable it is going
+    /// into is declared as: `$sscanf(s, "%d", r)` with a real `r` assigns a real,
+    /// the way `r = 1` does. A conversion that produces a string and a target that
+    /// cannot hold one is a type error, not a cast, so nothing is done here.
+    fn cast_out(&mut self, val: Value, src: &Type, dst: &Type) -> Value {
+        if src == dst || !src.is_numeric() || !dst.is_numeric() {
+            return val;
+        }
+        self.ctx.insert_cast(val, src, dst)
+    }
+
+    /// 9.4.1/9.5.2: `$strobe` and `$fstrobe` write once for the timepoint, not once
+    /// for each evaluation of it.
+    ///
+    /// "At the end of the current simulation time" is a statement about a moment an
+    /// analog block cannot reach by itself: it is evaluated many times while the
+    /// solver settles one point, and nothing in it knows which evaluation was the
+    /// last. So the line is composed and handed to the runtime, which keeps it until
+    /// whoever does know says that the point is final:
+    ///
+    ///   * a simulator that calls the descriptor's `accept` (the timepoint protocol,
+    ///     `docs/osdi-timepoint-protocol.md`) gets the line of the evaluation that
+    ///     converged, once per *accepted* point, and nothing at all for a point the
+    ///     solver went back on;
+    ///   * one that does not gets the line flushed when the model composes the next
+    ///     one at a new time, which is still the last evaluation of the point it
+    ///     belongs to, and the last line of all when the library goes away.
+    ///
+    /// Either way it is one line per timepoint, where `$display` gives one per
+    /// iteration. Without retained state at all (the init function, verilogae) there
+    /// is no timepoint to belong to and the line is written as it stands.
+    ///
+    /// Only the file form is held. A line to the simulator's own log is written
+    /// through a handle that is only valid for the duration of the call it came
+    /// with -- ngspice builds one on the stack per evaluation -- so `$strobe` keeps
+    /// the closest thing it can reach by itself: the first evaluation at a new time.
+    /// The cell that detects it is the uncommitted half of a retained slot, which is
+    /// per instance, so two instances of a model do not silence each other.
+    fn strobe(&mut self, kind: DisplayKind, desc: Option<Value>, args: &[ExprId]) {
+        if self.ctx.no_equations {
+            match desc {
+                Some(desc) => self.ins_display_file(kind, true, desc, args),
+                None => self.ins_display(kind, true, args),
+            }
+            return;
+        }
+
+        let now = self.ctx.use_param(ParamKind::Abstime);
+
+        if let Some(desc) = desc {
+            let Some(line) = self.ins_fmt_str(kind, args) else {
+                return;
+            };
+            // Which statement this is, so that two in one module keep their own
+            // pending line rather than overwriting each other's.
+            let site = self.ctx.next_strobe_site();
+            let site = self.ctx.iconst(site);
+            self.ctx.call(CallBackKind::StrobeLine { kind }, &[site, desc, line, now]);
+            return;
+        }
+
+        // A time no simulation reaches, so the first evaluation of all is a new one.
+        let cell = self.ctx.alloc_retained_state(-1.0);
+        let first = self.ctx.call1(CallBackKind::RetainedFirst(cell), &[now]);
+        let first = self.ctx.ins().fne(first, F_ZERO);
+
+        let args: Vec<ExprId> = args.to_vec();
+        self.ctx.make_cond(first, |ctx, branch| {
+            if branch {
+                let mut body = BodyLoweringCtx { body: self.body, path: self.path, ctx };
+                body.ins_display(kind, true, &args);
+            }
+        });
+    }
+
+    /// An optional analog-operator argument. Absent and written as a null argument
+    /// (`transition(x, , 1n)`) are the same thing: the clause's default applies.
+    fn opt_arg(&mut self, args: &[ExprId], idx: usize) -> Option<Value> {
+        match args.get(idx) {
+            Some(&arg) if !self.body.is_missing(arg) => Some(self.lower_expr(arg)),
+            _ => None,
+        }
+    }
+
+    /// Which side of a Z-filter's transfer function each argument gives, per
+    /// VAMS-2023 4.5.12.1 to 4.5.12.4.
+    fn zi_sides(builtin: BuiltIn) -> (zi_filter::Side, zi_filter::Side) {
+        use zi_filter::Side::{Coeffs, Roots};
+        match builtin {
+            BuiltIn::zi_nd => (Coeffs, Coeffs),
+            BuiltIn::zi_zd => (Roots, Coeffs),
+            BuiltIn::zi_np => (Coeffs, Roots),
+            BuiltIn::zi_zp => (Roots, Roots),
+            _ => unreachable!("not a Z-transform filter"),
+        }
+    }
+
+    /// VAMS-2023 4.5.12:
+    ///
+    ///   zi_nd ( expr , n , d , T [ , tau [ , t0 ] ] )
+    ///
+    /// and the three other forms, which differ only in whether each side is given
+    /// as coefficients of `z^-k` or as roots. `hir::zi_filter` reduces all four to
+    /// one difference equation.
+    ///
+    /// These are discrete-time filters: "A filter with unity transfer function acts
+    /// like a simple sample-and-hold which samples every T seconds and exhibits no
+    /// delay." So the input is sampled on the grid `t0 + m*T`, the difference
+    /// equation runs once per sample, and the output transitions to the new value
+    /// over `tau`.
+    ///
+    /// Table 4-20 makes the coefficients, `T` and `t0` constant expressions, so the
+    /// whole sample grid and every coefficient is known here and the generated code
+    /// is a fixed dot product over retained history. Only `expr` and `tau` are
+    /// dynamic.
+    ///
+    /// The output is handed to [`Self::emit_transition`] rather than reimplemented:
+    /// 4.5.12 asks for the same thing 4.5.8 does, including that with no `tau`
+    /// given "the timestep is not controlled to resolve the trailing corner of the
+    /// transition", which is that code's own rule.
+    ///
+    /// Whatever cannot be built returns zero, which `hir_ty` makes unreachable by
+    /// rejecting the call first.
+    fn lower_zi_filter(&mut self, builtin: BuiltIn, args: &[ExprId]) -> Value {
+        let (num_side, den_side) = Self::zi_sides(builtin);
+        // A null `zeros` argument is the empty product: "The zeros argument may be
+        // represented as a null argument."
+        let num = match args.get(1) {
+            Some(&arg) if !self.body.is_missing(arg) => match self.const_real_array(arg) {
+                Some(num) => Some(num),
+                None => return F_ZERO,
+            },
+            _ => None,
+        };
+        let den = match args.get(2).copied().filter(|&a| !self.body.is_missing(a)) {
+            Some(arg) => match self.const_real_array(arg) {
+                Some(den) => den,
+                None => return F_ZERO,
+            },
+            None => return F_ZERO,
+        };
+        let filter = match zi_filter::Filter::build(num.as_deref(), num_side, &den, den_side) {
+            Ok(filter) => filter,
+            Err(_) => return F_ZERO,
+        };
+        // 4.5.14: a constant expression "remains static throughout an analysis",
+        // which a `parameter` does even though its value is the simulator's to set.
+        // `T` and `t0` only feed the scheduling arithmetic, never a coefficient, so
+        // they are lowered as values and a parameter works.
+        let period = self.lower_expr(args[3]);
+        let start = match args.get(5).copied().filter(|&a| !self.body.is_missing(a)) {
+            Some(arg) => self.lower_expr(arg),
+            None => F_ZERO,
+        };
+
+        let input = self.lower_expr(args[0]);
+        // `tau` is the one dynamic argument besides the input. Left at zero when
+        // absent, which `emit_transition` floors to its negligible default.
+        let tau = match args.get(4).copied().filter(|&a| !self.body.is_missing(a)) {
+            Some(arg) => self.lower_expr(arg),
+            None => F_ZERO,
+        };
+
+        let (m, n) = filter.order();
+        let now = self.ctx.use_param(ParamKind::Abstime);
+        let no_bound = self.ctx.fconst(f64::MAX);
+
+        // -- state -------------------------------------------------------------
+        // The next sample instant. A retained slot's initial value has to be a
+        // constant, and `t0` need not be one, so the first evaluation reads it from
+        // the argument instead: "t0 specifies the time of the first transition
+        // [...] If not given, the first transition occurs at t=0."
+        let s_next = self.ctx.alloc_retained_state(0.0);
+        // The sampled inputs, newest first, and the outputs behind the newest. The
+        // filter starts from rest, so every slot starts at zero.
+        let s_x: Vec<_> = (0..=m).map(|_| self.ctx.alloc_retained_state(0.0)).collect();
+        let s_y: Vec<_> = (0..n.max(1)).map(|_| self.ctx.alloc_retained_state(0.0)).collect();
+
+        let first = self.ctx.first_eval();
+        let next_held = self.ctx.retained_prev(s_next);
+        let next_prev = self.ctx.make_select(first, |_s, b| if b { start } else { next_held });
+        let x_prev: Vec<_> = s_x.iter().map(|&s| self.ctx.retained_prev(s)).collect();
+        let y_prev: Vec<_> = s_y.iter().map(|&s| self.ctx.retained_prev(s)).collect();
+
+        // -- has a sample instant arrived? -------------------------------------
+        // The same arithmetic `timer` uses, including skipping whole periods in
+        // case the solver stepped past several at once.
+        let one = self.ctx.fconst(1.0);
+        // "T [...] is mandatory, and shall be positive." A period that is not
+        // leaves the filter parked rather than dividing by zero; a literal one is
+        // rejected outright during validation.
+        let usable = self.ctx.ins().fgt(period, F_ZERO);
+        let divisor = self.ctx.make_select(usable, |_s, b| if b { period } else { one });
+        let due = self.ctx.ins().fge(now, next_prev);
+        let reached = self.and(due, usable);
+        let elapsed = self.ctx.ins().fsub(now, next_prev);
+        let periods = self.ctx.ins().fdiv(elapsed, divisor);
+        let periods = self.ctx.ins().floor(periods);
+        let periods = self.ctx.ins().fadd(periods, one);
+        let advance = self.ctx.ins().fmul(divisor, periods);
+        let after = self.ctx.ins().fadd(next_prev, advance);
+        let next = self.ctx.make_select(reached, |_s, b| if b { after } else { next_prev });
+        self.ctx.store_retained(s_next, next);
+
+        // Ask for a timepoint on the next sample instant, so the grid is the one
+        // the filter was written with rather than whatever the solver stepped onto.
+        let remaining = self.ctx.ins().fsub(next, now);
+        let ahead = self.ctx.ins().fgt(remaining, F_ZERO);
+        let bound = self.ctx.make_select(ahead, |_s, b| if b { remaining } else { no_bound });
+        self.bound_step(bound);
+        let instant = self.ctx.make_select(ahead, |_s, b| if b { next } else { no_bound });
+        self.request_breakpoint(instant);
+
+        // -- the difference equation ------------------------------------------
+        // Shifted histories, as they would be if this evaluation takes a sample.
+        let mut x_new = Vec::with_capacity(m + 1);
+        x_new.push(input);
+        x_new.extend(x_prev.iter().take(m).copied());
+
+        //   y[m] = ( sum_k n_k x[m-k] - sum_{k>=1} d_k y[m-k] ) / d_0
+        let inv_d0 = 1.0 / filter.den[0];
+        let mut acc = F_ZERO;
+        for (k, coeff) in filter.num.iter().enumerate() {
+            let term = self.emit_scaled(x_new[k], coeff * inv_d0);
+            acc = if acc == F_ZERO { term } else { self.ctx.ins().fadd(acc, term) };
+        }
+        for (k, coeff) in filter.den.iter().enumerate().skip(1) {
+            let term = self.emit_scaled(y_prev[k - 1], -coeff * inv_d0);
+            acc = if acc == F_ZERO { term } else { self.ctx.ins().fadd(acc, term) };
+        }
+
+        let mut y_new = Vec::with_capacity(y_prev.len());
+        y_new.push(acc);
+        y_new.extend(y_prev.iter().take(y_prev.len() - 1).copied());
+
+        // A sample is only taken when an instant has arrived; otherwise the history
+        // and the held output stand.
+        for (k, &slot) in s_x.iter().enumerate() {
+            let (new, old) = (x_new[k], x_prev[k]);
+            let val = self.ctx.make_select(reached, |_s, b| if b { new } else { old });
+            self.ctx.store_retained(slot, val);
+        }
+        for (k, &slot) in s_y.iter().enumerate() {
+            let (new, old) = (y_new[k], y_prev[k]);
+            let val = self.ctx.make_select(reached, |_s, b| if b { new } else { old });
+            self.ctx.store_retained(slot, val);
+        }
+
+        // The output is the newest sample, held until the next one, ramped over
+        // `tau`. No delay: a unity filter "exhibits no delay".
+        let held = self.ctx.make_select(reached, |_s, b| if b { acc } else { y_prev[0] });
+        self.emit_transition(held, F_ZERO, tau, tau, None)
+    }
+
+    /// `val * coeff` with the constant folded away where it is 0 or 1.
+    fn emit_scaled(&mut self, val: Value, coeff: f64) -> Value {
+        if coeff == 0.0 {
+            return F_ZERO;
+        }
+        if coeff == 1.0 {
+            return val;
+        }
+        let coeff = self.ctx.fconst(coeff);
+        self.ctx.ins().fmul(val, coeff)
+    }
+
+    /// `min(a, b)` on reals. The MIR has no intrinsic for it.
+    fn fmin(&mut self, a: Value, b: Value) -> Value {
+        let lt = self.ctx.ins().flt(a, b);
+        self.ctx.make_select(lt, |_s, t| if t { a } else { b })
+    }
+
+    /// One of a transition filter's two transition times: the default where the
+    /// model asked for none, and otherwise what it asked for, floored at the
+    /// negligible time that keeps a transition from being instantaneous.
+    ///
+    /// With no `` `default_transition `` in force the two are the same number and
+    /// this is the `max(time, min_ramp)` it has always been.
+    fn transition_time(&mut self, time: Value, default: Value, min_ramp: Value) -> Value {
+        let floored = self.fmax(time, min_ramp);
+        let unspecified = self.ctx.ins().feq(time, F_ZERO);
+        self.ctx.make_select(unspecified, |_s, t| if t { default } else { floored })
+    }
+
+    /// `max(a, b)` on reals.
+    pub(crate) fn fmax(&mut self, a: Value, b: Value) -> Value {
+        let gt = self.ctx.ins().fgt(a, b);
+        self.ctx.make_select(gt, |_s, t| if t { a } else { b })
+    }
+
+    /// VAMS-2023 4.5.7's rules for the delay itself, which both realizations of
+    /// `absdelay` need. Returns the delay in force and the span of history that has
+    /// to be kept to serve it.
+    ///
+    /// The two differ only when `maxdelay` is given, and that is the whole point of
+    /// the argument: it is what tells the simulator how far back to remember.
+    fn absdelay_window(&mut self, delay: Value, max_delay: Option<Value>) -> (Value, Value) {
+        // "In all cases td shall be a positive number." A negative one is not a
+        // prediction of the future, it is a mistake; the delay is floored instead.
+        let delay = self.fmax(delay, F_ZERO);
+        match max_delay {
+            // "If the optional maxdelay is specified, then td can vary. If td becomes
+            // greater than maxdelay, maxdelay will be used as a substitute for td."
+            Some(max) => {
+                let max = self.fmax(max, F_ZERO);
+                let delay = self.fmin(delay, max);
+                (delay, max)
+            }
+            // "If maxdelay is not specified, the value of td when the absdelay() is
+            // first evaluated shall be used and any future changes to td shall be
+            // ignored." A retained slot holds that first value. In dc, where time
+            // never moves, every point is still the first evaluation and the
+            // argument is read afresh -- which is right: the frozen value is
+            // per-analysis, and dc has no delay to speak of anyway.
+            None => {
+                let slot = self.ctx.alloc_retained_state(0.0);
+                let first = self.ctx.first_eval();
+                let held = self.ctx.retained_prev(slot);
+                let frozen = self.ctx.make_select(first, |_s, b| if b { delay } else { held });
+                self.ctx.store_retained(slot, frozen);
+                (frozen, frozen)
+            }
+        }
+    }
+
+    /// VAMS-2023 4.5.7 realized inside the model, for simulators that do not
+    /// implement the `OsdiAbsDelayInfo` protocol:
+    ///
+    ///   Output(t) = Input(max(t - td, 0))
+    ///
+    /// The operator needs the input's history, so the model carries it: `depth`
+    /// retained (time, value) pairs, newest first, with the value at `t - td` read
+    /// off by linear interpolation between the two samples that bracket it. The
+    /// clause asks for exactly that reading -- `absdelay` "implements the absolute
+    /// transport delay for continuous waveforms (use the transition() operator to
+    /// delay discrete-valued waveforms)", and interpolating a continuous waveform is
+    /// not an approximation of a different answer, it is the same answer the
+    /// simulator's own time discretization already gives.
+    ///
+    /// # A shift register, not a ring
+    ///
+    /// MIR has no memory operations, so a moving write index would have to be lowered
+    /// as a select chain per slot -- quadratic in the depth, for both the write and
+    /// the read. Shifting instead costs one select per slot, and nothing else about a
+    /// ring is wanted here: the samples are always read newest-to-oldest.
+    ///
+    /// # The sample grid
+    ///
+    /// The history has to span the delay, and `depth` samples cannot span it if they
+    /// are recorded closer together than `window / depth`. The solver's own stepping
+    /// is no help: it shrinks the step for reasons of its own, and a plain
+    /// record-every-step history would then quietly run out of window and read a
+    /// stale value. So a new sample is only recorded once it is at least a grid
+    /// spacing newer than the last one, which keeps the window covered whatever the
+    /// solver does, and `$bound_step` asks for a timepoint on the next grid instant,
+    /// which keeps the recording at that spacing and resolves the output's own
+    /// features to it.
+    ///
+    /// That spacing is the accuracy of this realization and the reason the descriptor
+    /// protocol is the default: a delay is resolved to `window / (depth - 2)`, and
+    /// the run takes at least that many steps per delay window.
+    fn emit_absdelay(&mut self, input: Value, delay: Value, window: Value, depth: usize) -> Value {
+        let depth = depth.max(AbsDelayMode::MIN_DEPTH);
+        let now = self.ctx.use_param(ParamKind::Abstime);
+        let one = self.ctx.fconst(1.0);
+        let no_bound = self.ctx.fconst(f64::MAX);
+
+        // -- state ------------------------------------------------------------
+        let slots: Vec<_> = (0..depth)
+            .map(|_| {
+                let at = self.ctx.alloc_retained_state(0.0);
+                let val = self.ctx.alloc_retained_state(0.0);
+                (at, val)
+            })
+            .collect();
+        let first = self.ctx.first_eval();
+        let mut t_prev = Vec::with_capacity(depth);
+        let mut v_prev = Vec::with_capacity(depth);
+        for &(at, val) in &slots {
+            let at = self.ctx.retained_prev(at);
+            let val = self.ctx.retained_prev(val);
+            // Nothing has been recorded yet, so the history reads flat at the input.
+            // That is the figure's own starting condition -- "From time 0 until 2s,
+            // the output remains at input(0)" -- and it makes the first point of any
+            // analysis a pass-through, as 4.5.7 requires of dc and the operating
+            // point.
+            t_prev.push(self.ctx.make_select(first, |_s, b| if b { now } else { at }));
+            v_prev.push(self.ctx.make_select(first, |_s, b| if b { input } else { val }));
+        }
+
+        // -- the sample grid --------------------------------------------------
+        let spacing = self.ctx.fconst(1.0 / (depth - 2) as f64);
+        let step = self.ctx.ins().fmul(window, spacing);
+        let since = self.ctx.ins().fsub(now, t_prev[0]);
+        let record = self.ctx.ins().fge(since, step);
+
+        let mut t_cur = Vec::with_capacity(depth);
+        let mut v_cur = Vec::with_capacity(depth);
+        for k in 0..depth {
+            let (t_in, v_in) = if k == 0 { (now, input) } else { (t_prev[k - 1], v_prev[k - 1]) };
+            let (t_held, v_held) = (t_prev[k], v_prev[k]);
+            t_cur.push(self.ctx.make_select(record, |_s, b| if b { t_in } else { t_held }));
+            v_cur.push(self.ctx.make_select(record, |_s, b| if b { v_in } else { v_held }));
+        }
+        for (k, &(at, val)) in slots.iter().enumerate() {
+            self.ctx.store_retained(at, t_cur[k]);
+            self.ctx.store_retained(val, v_cur[k]);
+        }
+
+        // -- read the history at t - td ---------------------------------------
+        // The chain is built oldest first so the newest sample that starts at or
+        // before the target wins. A target older than everything recorded reads the
+        // oldest sample, which is both the clause's "output remains at input(0)" at
+        // the start of an analysis and what a `td` that has just grown beyond the
+        // history does: "switching the output back to input(0), since
+        // input(max(t-td,0)) returns 0".
+        //
+        // Only the live pair carries the input, so the derivative of the output with
+        // respect to it is the interpolation weight -- which autodiff works out for
+        // itself, this being ordinary MIR arithmetic rather than a callback.
+        let target = self.ctx.ins().fsub(now, delay);
+        let mut out = v_cur[depth - 1];
+        for k in (0..depth).rev() {
+            let (t_hi, v_hi) = if k == 0 { (now, input) } else { (t_cur[k - 1], v_cur[k - 1]) };
+            let span = self.ctx.ins().fsub(t_hi, t_cur[k]);
+            let spans = self.ctx.ins().fgt(span, F_ZERO);
+            let divisor = self.ctx.make_select(spans, |_s, b| if b { span } else { one });
+            let into = self.ctx.ins().fsub(target, t_cur[k]);
+            let frac = self.ctx.ins().fdiv(into, divisor);
+            let frac = self.ctx.make_select(spans, |_s, b| if b { frac } else { F_ZERO });
+            let rise = self.ctx.ins().fsub(v_hi, v_cur[k]);
+            let travelled = self.ctx.ins().fmul(frac, rise);
+            let val = self.ctx.ins().fadd(v_cur[k], travelled);
+            let inside = self.ctx.ins().fge(target, t_cur[k]);
+            out = self.ctx.make_select(inside, |_s, b| if b { val } else { out });
+        }
+
+        // -- timepoints -------------------------------------------------------
+        // The output is the input shifted, so nothing in the rest of the circuit
+        // tells the solver where its features are: the step is capped at the grid
+        // spacing, which also keeps the recording at that spacing.
+        //
+        // A cap, deliberately, and not a request for a timepoint *on* the next grid
+        // instant the way `timer` and the Z filters ask for their sample instants.
+        // Those consume the instant when they reach it, so what they ask for jumps
+        // forward by a whole period; this grid is relative to the last sample taken,
+        // so landing just short of it would leave a sliver to ask for next, and the
+        // sliver halves until the solver gives up with "timestep too small".
+        //
+        // A delay of zero is a pass-through and needs no help. History is still
+        // recorded there, because a `td` guarded by `maxdelay` may grow again.
+        let delayed = self.ctx.ins().fgt(delay, F_ZERO);
+        let bound = self.ctx.make_select(delayed, |_s, b| if b { step } else { no_bound });
+        self.bound_step(bound);
+
+        out
+    }
+
+    /// VAMS-2023 4.5.8: the piecewise-linear realization of
+    ///
+    ///   transition ( expr [ , td [ , rise_time [ , fall_time [ , time_tol ] ] ] ] )
+    ///
+    /// `expr` is expected to evaluate to a piecewise constant waveform. Each change
+    /// of it schedules a transition `td` later, which then ramps linearly to the new
+    /// value, taking `rise_time` upwards and `fall_time` downwards: "td models
+    /// transport delay and rise_time and fall_time model inertial delay". The clause
+    /// is explicit that the result "describes a piecewise linear function over time".
+    ///
+    /// This used to be a first-order lag with the rise time as its time constant,
+    /// which left the output 1/e short at the instant the ramp should have arrived,
+    /// never arrived at all, and dropped `td` on the floor (issue #42). A lag is the
+    /// easier continuous function to write as a DAE residual, but it is not this
+    /// operator: a model transitioning a logic level into a charge pump got the wrong
+    /// charge per pulse out of it, and no `td` could give it a propagation delay.
+    ///
+    /// The ramp needs no unknown of its own. It is an explicit function of `$abstime`
+    /// and of state carried from one accepted timestep to the next, so there is no
+    /// equation here any more and no Jacobian entry to go with it.
+    ///
+    /// # Transport delay
+    ///
+    /// `td` is a transport delay, not an inertial one, so a change arriving while an
+    /// earlier one is still inside the delay window must not cancel it: 4.5.8 says a
+    /// transition function "can have an arbitrary number of transitions pending" and
+    /// that this "can be used to implement transport delay for discrete-valued
+    /// signals". Pending transitions therefore sit in a queue, earliest first, and
+    /// one is taken per evaluation.
+    ///
+    /// A fixed lowering cannot offer an arbitrary number of slots, so `PENDING` is
+    /// the bound. It is reached only when `expr` changes more than that many times
+    /// within one `td`; past it the newest two changes coalesce, which keeps the
+    /// value the output eventually reaches correct and loses a glitch. The other half
+    /// of the clause, "deleting any transitions which would follow a newly scheduled
+    /// transition", is implemented too, and is reachable only when `td` shrinks
+    /// during the simulation -- with a constant delay a new transition is always
+    /// scheduled after the pending ones.
+    ///
+    /// # Interrupted transitions
+    ///
+    /// When a transition starts while another is still in flight, 4.5.8 does not ramp
+    /// from the current value at the current slope. It "computes the slope which
+    /// completes the transition from the origin (not the current value) in the
+    /// specified transition time", where the origin is the old destination if the new
+    /// destination is below the current value, and the *first* origin if it is above.
+    /// The ramp then runs from the current value at that slope, so an interrupted
+    /// transition finishes early rather than taking the full time again. That is what
+    /// turns a pulse shorter than `rise_time` into a reduced-amplitude glitch instead
+    /// of a full-swing one, which is the behaviour a phase detector depends on.
+    ///
+    /// # Timepoints
+    ///
+    /// "The transition function causes the simulator to place time-points at both
+    /// corners of a transition", so `$bound_step` is capped at the distance to each
+    /// pending start instant and to the arrival of the ramp in progress. The trailing
+    /// corner is deliberately *not* requested when the transition time is the
+    /// negligible default, which is the clause's own exemption: forcing it "would
+    /// result in poor performance".
+    ///
+    /// `time_tol` is how near the corner the point has to land, which here is a
+    /// floor under the step asked for rather than a reason not to ask: the whole
+    /// value of the request is that the point lands *on* the corner, so the distance
+    /// to it is what gets requested until it is zero.
+    ///
+    /// The floor is what keeps that from running away. "The instant the ramp
+    /// arrives" and "the time the solver reached" are two different sums of the same
+    /// quantities, so they can disagree in their last bits, and then the operator
+    /// asks for the femtosecond in between, and then for the one in between that,
+    /// until the timestep is 2e-22 s and ngspice gives up with "timestep too small"
+    /// -- which is how a PLL whose phase detector sees two edges a hair apart used
+    /// to end. With no `time_tol` given the default is a part in 1e9 of the elapsed
+    /// time: a step the solver can still take, and an overshoot too small to see in
+    /// a waveform that reaches its corner in nanoseconds.
+    ///
+    /// What stays step-dependent is *when a change is noticed*: `expr` steps, so
+    /// there is no crossing to interpolate. In practice the change is driven by a
+    /// `cross` or `timer` event in the same module, and those already steer the
+    /// solver onto the instant it happens.
+    fn lower_transition(&mut self, target: Value, args: &[ExprId]) -> Value {
+        let td = self.opt_arg(args, 1).unwrap_or(F_ZERO);
+        let rise = self.opt_arg(args, 2).unwrap_or(F_ZERO);
+        // "If only a positive rise_time value is specified, the simulator uses it for
+        // both rise and fall times."
+        let fall = self.opt_arg(args, 3).unwrap_or(rise);
+        let tol = self.opt_arg(args, 4);
+        self.emit_transition(target, td, rise, fall, tol)
+    }
+
+    /// The transition machinery itself, which 4.5.12's Z-transform filters share:
+    /// the clause describes their output in the same terms, down to not resolving
+    /// the trailing corner when the transition time is the default.
+    fn emit_transition(
+        &mut self,
+        target: Value,
+        td: Value,
+        rise: Value,
+        fall: Value,
+        time_tol: Option<Value>,
+    ) -> Value {
+        // 4.5.8: with `rise_time`/`fall_time` unspecified or zero they "default to the
+        // value defined by `default_transition"; without that directive "a negligible,
+        // but non-zero, transition time is used", because "forcing a zero-duration
+        // transition is undesirable" for convergence. This is that negligible time,
+        // and the floor the lag realization used as its time constant, so a bare
+        // `transition(x)` in a file with no directive keeps its character.
+        const MIN_RAMP: f64 = 1e-12;
+        // How many transitions may be in flight through `td` at once. Each slot costs
+        // two retained values.
+        const PENDING: usize = 4;
+        // An empty queue slot: a time no simulation reaches, kept far enough below
+        // `f64::MAX` that `NEVER + td` is still finite.
+        const NEVER: f64 = 1e300;
+
+        let now = self.ctx.use_param(ParamKind::Abstime);
+
+        // "If neither rise_time nor fall_time are specified or are equal to zero
+        // (0.0), the rise and fall time default to the value defined by
+        // `default_transition." An unspecified one arrives here as a zero, so both
+        // halves of that sentence are the same test, which is why it is made here
+        // rather than where the arguments are read: the Z-transform filters
+        // (4.5.12) pass their own transition time through and the clause says the
+        // same thing about it.
+        let default_ramp = self.ctx.default_transition.unwrap_or(MIN_RAMP);
+        let min_ramp = self.ctx.fconst(MIN_RAMP);
+        let default_ramp = self.ctx.fconst(default_ramp);
+        let rise = self.transition_time(rise, default_ramp, min_ramp);
+        let fall = self.transition_time(fall, default_ramp, min_ramp);
+
+        // The smallest step worth asking for on the way to a corner. Relative to
+        // the elapsed time rather than to the step being bounded, so it cannot be
+        // driven towards zero by the very requests it is flooring.
+        let tol = match time_tol {
+            Some(tol) => tol,
+            None => {
+                let scale = self.ctx.fconst(1e-9);
+                self.ctx.ins().fmul(now, scale)
+            }
+        };
+
+        let one = self.ctx.fconst(1.0);
+        let unset = self.ctx.fconst(NEVER);
+        // Half the marker, so a slot reads as empty however `NEVER` was arrived at.
+        let unset_test = self.ctx.fconst(NEVER / 2.0);
+        // `$bound_step`'s "no opinion", matching how `timer` spells it.
+        let no_bound = self.ctx.fconst(f64::MAX);
+
+        // -- state ------------------------------------------------------------
+        // The input value last seen, so a change can be detected.
+        let s_tgt = self.ctx.alloc_retained_state(0.0);
+        // Transitions scheduled but not yet started, earliest first.
+        let mut queue = Vec::with_capacity(PENDING);
+        for _ in 0..PENDING {
+            let at = self.ctx.alloc_retained_state(NEVER);
+            let to = self.ctx.alloc_retained_state(0.0);
+            queue.push((at, to));
+        }
+        // The transition in progress: when it started and from what value, where it
+        // is going, the origin its slope was computed from, that slope, and the
+        // transition time the slope was computed over.
+        let s_t0 = self.ctx.alloc_retained_state(0.0);
+        let s_v0 = self.ctx.alloc_retained_state(0.0);
+        let s_dest = self.ctx.alloc_retained_state(0.0);
+        let s_origin = self.ctx.alloc_retained_state(0.0);
+        let s_slope = self.ctx.alloc_retained_state(0.0);
+        let s_span = self.ctx.alloc_retained_state(0.0);
+
+        let tgt_prev = self.ctx.retained_prev(s_tgt);
+        let mut at_prev = Vec::with_capacity(PENDING);
+        let mut to_prev = Vec::with_capacity(PENDING);
+        for k in 0..PENDING {
+            at_prev.push(self.ctx.retained_prev(queue[k].0));
+            to_prev.push(self.ctx.retained_prev(queue[k].1));
+        }
+        let t0 = self.ctx.retained_prev(s_t0);
+        let v0 = self.ctx.retained_prev(s_v0);
+        let dest = self.ctx.retained_prev(s_dest);
+        let origin = self.ctx.retained_prev(s_origin);
+        let slope = self.ctx.retained_prev(s_slope);
+
+        // -- where the transition in progress has got to ----------------------
+        // A line from `v0` at `t0` at `slope`, clamped to the interval it travels.
+        // The clamp also covers `now < t0`, where the line runs backwards away from
+        // `dest` and is pinned at `v0`.
+        let elapsed = self.ctx.ins().fsub(now, t0);
+        let travelled = self.ctx.ins().fmul(slope, elapsed);
+        let raw = self.ctx.ins().fadd(v0, travelled);
+        let lo = self.fmin(v0, dest);
+        let hi = self.fmax(v0, dest);
+        let cur = self.fmax(raw, lo);
+        let cur = self.fmin(cur, hi);
+
+        // 4.5.8: "In DC analysis, transition() passes the value of the expr directly
+        // to its output", and the first point of a transient has no history to ramp
+        // from either. Retained state commits only once time moves, so this reads
+        // true for every point of a dc sweep and for the operating point, and false
+        // from the first accepted transient step onwards.
+        let first = self.ctx.first_eval();
+        let cur = self.ctx.make_select(first, |_s, b| if b { target } else { cur });
+
+        // -- schedule a transition for each change of the input ---------------
+        // `expr` is piecewise constant, so an exact comparison is the change test:
+        // there is no tolerance to apply to a signal that steps.
+        let changed = self.ctx.ins().fne(target, tgt_prev);
+        let changed = self.lower_select_with(first, |_| FALSE, |_| changed);
+        let starts = self.ctx.ins().fadd(now, td);
+
+        // "deleting any transitions which would follow a newly scheduled transition"
+        let mut kept_at = Vec::with_capacity(PENDING);
+        for k in 0..PENDING {
+            let at = at_prev[k];
+            let after = self.ctx.ins().fge(at, starts);
+            let drop = self.and(changed, after);
+            kept_at.push(self.ctx.make_select(drop, |_s, b| if b { unset } else { at }));
+        }
+
+        // Push into the first slot that is free. The last slot also catches a push
+        // that found none, so the queue degrades by coalescing its newest two
+        // entries rather than by dropping the change and losing the final value.
+        let mut empty = Vec::with_capacity(PENDING);
+        for k in 0..PENDING {
+            empty.push(self.ctx.ins().fge(kept_at[k], unset_test));
+        }
+        let mut push = Vec::with_capacity(PENDING);
+        let mut placed = FALSE;
+        for k in 0..PENDING - 1 {
+            let here = match k {
+                0 => empty[0],
+                _ => {
+                    let prev_taken = self.lower_select_with(empty[k - 1], |_| FALSE, |_| TRUE);
+                    self.and(empty[k], prev_taken)
+                }
+            };
+            let here = self.and(changed, here);
+            placed = self.or(placed, here);
+            push.push(here);
+        }
+        let spill = self.lower_select_with(placed, |_| FALSE, |_| TRUE);
+        push.push(self.and(changed, spill));
+
+        let mut pushed_at = Vec::with_capacity(PENDING);
+        let mut pushed_to = Vec::with_capacity(PENDING);
+        for k in 0..PENDING {
+            let (at, to, p) = (kept_at[k], to_prev[k], push[k]);
+            pushed_at.push(self.ctx.make_select(p, |_s, b| if b { starts } else { at }));
+            pushed_to.push(self.ctx.make_select(p, |_s, b| if b { target } else { to }));
+        }
+
+        // -- start the head of the queue once its instant arrives -------------
+        // Pushing before testing is what makes `td` of zero start the ramp in this
+        // evaluation rather than the next one.
+        let head_at = pushed_at[0];
+        let head_set = self.ctx.ins().flt(head_at, unset_test);
+        let head_due = self.ctx.ins().fle(head_at, now);
+        let due = self.and(head_set, head_due);
+        let new_dest = pushed_to[0];
+
+        // The interrupt rules. "If the new final value level is below the value level
+        // at the point of the interruption (the current value), transition() uses the
+        // old destination as the origin. If the new destination is above the current
+        // level, the first origin is retained." A transition that has already arrived
+        // has no origin to retain and starts from where it is.
+        let in_flight = self.ctx.ins().fne(cur, dest);
+        let below = self.ctx.ins().flt(new_dest, cur);
+        let kept_origin = self.ctx.make_select(below, |_s, b| if b { dest } else { origin });
+        let new_origin = self.ctx.make_select(in_flight, |_s, b| if b { kept_origin } else { cur });
+        // Retaining the first origin assumes the new destination lies beyond the
+        // current value, which is the case the clause is written for. A destination
+        // *between* the origin and the current value would otherwise be given a slope
+        // pointing away from it, so fall back to a fresh transition there.
+        let from_origin = self.ctx.ins().fsub(cur, new_origin);
+        let to_dest = self.ctx.ins().fsub(new_dest, cur);
+        let spanned = self.ctx.ins().fmul(from_origin, to_dest);
+        let usable = self.ctx.ins().fge(spanned, F_ZERO);
+        let new_origin = self.ctx.make_select(usable, |_s, b| if b { new_origin } else { cur });
+
+        // "forces all positive transitions of expr to occur over rise_time and all
+        // negative transitions to occur in fall_time", positive measured from the
+        // origin. Both have been floored, so the slope needs no divisor guard.
+        let up = self.ctx.ins().fgt(new_dest, new_origin);
+        let new_span = self.ctx.make_select(up, |_s, b| if b { rise } else { fall });
+        let swing = self.ctx.ins().fsub(new_dest, new_origin);
+        let new_slope = self.ctx.ins().fdiv(swing, new_span);
+
+        let t0_next = self.ctx.make_select(due, |_s, b| if b { now } else { t0 });
+        let v0_next = self.ctx.make_select(due, |_s, b| if b { cur } else { v0 });
+        let dest_next = self.ctx.make_select(due, |_s, b| if b { new_dest } else { dest });
+        let origin_next = self.ctx.make_select(due, |_s, b| if b { new_origin } else { origin });
+        let slope_next = self.ctx.make_select(due, |_s, b| if b { new_slope } else { slope });
+        let span_prev = self.ctx.retained_prev(s_span);
+        let span_next = self.ctx.make_select(due, |_s, b| if b { new_span } else { span_prev });
+
+        // The first evaluation sits at the target with nothing in flight.
+        let t0_next = self.ctx.make_select(first, |_s, b| if b { now } else { t0_next });
+        let v0_next = self.ctx.make_select(first, |_s, b| if b { target } else { v0_next });
+        let dest_next = self.ctx.make_select(first, |_s, b| if b { target } else { dest_next });
+        let origin_next = self.ctx.make_select(first, |_s, b| if b { target } else { origin_next });
+        let slope_next = self.ctx.make_select(first, |_s, b| if b { F_ZERO } else { slope_next });
+        let span_next = self.ctx.make_select(first, |_s, b| if b { F_ZERO } else { span_next });
+
+        // Taking the head shifts the rest of the queue up.
+        for k in 0..PENDING {
+            let next_at = if k + 1 < PENDING { pushed_at[k + 1] } else { unset };
+            let next_to = if k + 1 < PENDING { pushed_to[k + 1] } else { F_ZERO };
+            let (at, to) = (pushed_at[k], pushed_to[k]);
+            let at = self.ctx.make_select(due, |_s, b| if b { next_at } else { at });
+            let to = self.ctx.make_select(due, |_s, b| if b { next_to } else { to });
+            self.ctx.store_retained(queue[k].0, at);
+            self.ctx.store_retained(queue[k].1, to);
+
+            // A leading corner: every instant still pending wants a timepoint.
+            let togo = self.ctx.ins().fsub(at, now);
+            let ahead = self.ctx.ins().fgt(togo, F_ZERO);
+            let set = self.ctx.ins().flt(at, unset_test);
+            let want = self.and(ahead, set);
+            let aim = self.fmax(togo, tol);
+            let bound = self.ctx.make_select(want, |_s, b| if b { aim } else { no_bound });
+            self.bound_step(bound);
+            let instant = self.ctx.make_select(want, |_s, b| if b { at } else { no_bound });
+            self.request_breakpoint(instant);
+        }
+
+        self.ctx.store_retained(s_tgt, target);
+        self.ctx.store_retained(s_t0, t0_next);
+        self.ctx.store_retained(s_v0, v0_next);
+        self.ctx.store_retained(s_dest, dest_next);
+        self.ctx.store_retained(s_origin, origin_next);
+        self.ctx.store_retained(s_slope, slope_next);
+        self.ctx.store_retained(s_span, span_next);
+
+        // The trailing corner: where the ramp in progress arrives. Skipped when the
+        // transition time is the negligible default, per the clause's own exemption
+        // against forcing very small timesteps for it.
+        let remaining = self.ctx.ins().fsub(dest_next, v0_next);
+        let moving = self.ctx.ins().fne(slope_next, F_ZERO);
+        let divisor = self.ctx.make_select(moving, |_s, b| if b { slope_next } else { one });
+        let duration = self.ctx.ins().fdiv(remaining, divisor);
+        let arrival = self.ctx.ins().fadd(t0_next, duration);
+        let togo = self.ctx.ins().fsub(arrival, now);
+        let ahead = self.ctx.ins().fgt(togo, F_ZERO);
+        let resolved = self.ctx.ins().fgt(span_next, min_ramp);
+        let want = self.and(ahead, moving);
+        let want = self.and(want, resolved);
+        let aim = self.fmax(togo, tol);
+        let bound = self.ctx.make_select(want, |_s, b| if b { aim } else { no_bound });
+        self.bound_step(bound);
+        let instant = self.ctx.make_select(want, |_s, b| if b { arrival } else { no_bound });
+        self.request_breakpoint(instant);
+
+        cur
     }
 
     fn lower_integral(&mut self, kind: IdtKind, args: &[ExprId]) -> Value {
@@ -1019,23 +2785,25 @@ impl BodyLoweringCtx<'_, '_, '_> {
     /// Read the coefficient values of an array-valued argument (an array variable's
     /// elements or an array literal's entries), lowest index first.
     fn array_coeffs(&mut self, arg: ExprId) -> Vec<Value> {
+        // A null argument (`laplace_nd(V(in), , den)`, VAMS-2023 4.5.11) has no
+        // expression at all. It means an empty coefficient vector; lowering it as an
+        // expression would reach `get_expr`'s `invalid HIR` panic.
+        if self.body.is_missing(arg) {
+            return Vec::new();
+        }
         // Laplace coefficients feed real-valued state-space arithmetic, but an
         // anonymous array literal of integer constants (the LRM's own examples use
         // `'{-1,0,1}`) lowers to integer values. Widen each coefficient to real so
         // the residual math stays well-typed.
         match self.body.get_expr(arg) {
-            Expr::Read(Ref::Variable(var)) => {
-                let len = self.array_len(var);
-                let elem_ty = match var.ty(self.ctx.db) {
-                    Type::Array { ty, .. } => *ty,
-                    other => other,
-                };
-                (0..len)
-                    .map(|i| {
-                        let v = self.ctx.use_place(PlaceKind::VarElement(var, i));
-                        self.coeff_to_real(v, &elem_ty)
-                    })
-                    .collect()
+            // An array argument may name an array variable or an array parameter
+            // (VAMS-2023 4.5.1), which is what lets a filter take its coefficients
+            // from the model card.
+            Expr::Read(Ref::Variable(var)) => self.array_elem_coeffs(var),
+            Expr::Read(Ref::Parameter(param))
+                if matches!(param.ty(self.ctx.db), Type::Array { .. }) =>
+            {
+                self.array_elem_coeffs(param)
             }
             Expr::Array(elems) => elems
                 .iter()
@@ -1049,12 +2817,49 @@ impl BodyLoweringCtx<'_, '_, '_> {
                     self.coeff_to_real(v, &ty)
                 })
                 .collect(),
+            // One row of a multi-dimensional array is a coefficient vector like any
+            // other: a bank of them is a natural thing to keep in a matrix.
+            Expr::Index { .. } => {
+                let row = self
+                    .index_chain_base(arg)
+                    .and_then(|(base, indices)| {
+                        let elem_ty = base.ty(self.ctx.db).base_type().clone();
+                        self.array_row_values(base, &indices).map(|vals| (vals, elem_ty))
+                    })
+                    .map(|(vals, elem_ty)| {
+                        vals.into_iter().map(|v| self.coeff_to_real(v, &elem_ty)).collect()
+                    });
+                match row {
+                    Some(row) => row,
+                    // Not a row but one element of an array, which is a single
+                    // coefficient.
+                    None => {
+                        let v = self.lower_expr(arg);
+                        let ty = self.resolved_ty(arg);
+                        vec![self.coeff_to_real(v, &ty)]
+                    }
+                }
+            }
             _ => {
                 let v = self.lower_expr(arg);
                 let ty = self.resolved_ty(arg);
                 vec![self.coeff_to_real(v, &ty)]
             }
         }
+    }
+
+    /// Every element of an array, widened to real: the coefficient vector an
+    /// analog operator takes.
+    fn array_elem_coeffs(&mut self, base: impl Into<ArrayBase>) -> Vec<Value> {
+        let base = base.into();
+        let len = self.array_len(base);
+        let elem_ty = base.ty(self.ctx.db).base_type().clone();
+        (0..len)
+            .map(|i| {
+                let v = self.use_element(base, i);
+                self.coeff_to_real(v, &elem_ty)
+            })
+            .collect()
     }
 
     /// Widen an integer/bool coefficient value to real; reals pass through.
@@ -1073,9 +2878,120 @@ impl BodyLoweringCtx<'_, '_, '_> {
         let input = self.lower_expr(args[0]);
         let num = self.array_coeffs(args[1]);
         let den = self.array_coeffs(args[2]);
+        self.lower_laplace_state_space(input, num, den)
+    }
+
+    /// Lower the root forms of the Laplace filter (VAMS-2023 4.5.11.1-4.5.11.3) by
+    /// expanding each root vector into polynomial coefficients and reusing the
+    /// `laplace_nd` realization. The number of roots is fixed at compile time (array
+    /// lengths are static), so only the coefficient arithmetic is emitted.
+    fn lower_laplace_roots(&mut self, args: &[ExprId], zeros: bool, poles: bool) -> Value {
+        let input = self.lower_expr(args[0]);
+        let num = if zeros {
+            let roots = self.array_coeffs(args[1]);
+            self.expand_roots(&roots)
+        } else {
+            self.array_coeffs(args[1])
+        };
+        let den = if poles {
+            let roots = self.array_coeffs(args[2]);
+            self.expand_roots(&roots)
+        } else {
+            self.array_coeffs(args[2])
+        };
+        self.lower_laplace_state_space(input, num, den)
+    }
+
+    /// Expand a flat vector of (real, imaginary) root pairs into the real polynomial
+    /// coefficients of `prod_k (1 - s/r_k)`, ascending powers of `s`.
+    ///
+    /// A root of zero contributes a bare `s` factor instead of `1 - s/r`, as
+    /// 4.5.11.1 requires. The LRM also requires a complex root's conjugate to be
+    /// present, which is what makes the product real: the expansion carries the
+    /// imaginary parts through and drops them at the end, so no case analysis on
+    /// whether a given root is real is needed -- which matters because the roots are
+    /// runtime values.
+    fn expand_roots(&mut self, roots: &[Value]) -> Vec<Value> {
+        let one = self.ctx.fconst(1.0);
+        // running polynomial, real and imaginary parts, ascending powers of s
+        let mut re = vec![one];
+        let mut im = vec![F_ZERO];
+
+        for pair in roots.chunks(2) {
+            let sigma = pair[0];
+            // an odd-length vector is malformed; treat the missing part as zero
+            let omega = pair.get(1).copied().unwrap_or(F_ZERO);
+
+            // |r|^2 decides both the reciprocal and whether the root is zero
+            let s2 = self.ctx.ins().fmul(sigma, sigma);
+            let w2 = self.ctx.ins().fmul(omega, omega);
+            let mag2 = self.ctx.ins().fadd(s2, w2);
+            let is_zero = self.ctx.ins().feq(mag2, F_ZERO);
+            // divide by 1 instead of 0 in the branch the select discards
+            let denom = self.ctx.make_select(is_zero, |_ctx, b| if b { one } else { mag2 });
+
+            // 1/r = conj(r)/|r|^2, so the s coefficient of (1 - s/r) is
+            // (-sigma + j*omega)/|r|^2; a zero root makes the factor a bare s.
+            let inv_re = self.ctx.ins().fdiv(sigma, denom);
+            let c1_re_nonzero = self.ctx.ins().fneg(inv_re);
+            let c1_im_nonzero = self.ctx.ins().fdiv(omega, denom);
+
+            let c0 = self.ctx.make_select(is_zero, |_ctx, b| if b { F_ZERO } else { one });
+            let c1_re =
+                self.ctx.make_select(is_zero, |_ctx, b| if b { one } else { c1_re_nonzero });
+            let c1_im =
+                self.ctx.make_select(is_zero, |_ctx, b| if b { F_ZERO } else { c1_im_nonzero });
+
+            // multiply the running polynomial by [c0, c1]
+            let mut next_re = vec![F_ZERO; re.len() + 1];
+            let mut next_im = vec![F_ZERO; re.len() + 1];
+            for i in 0..re.len() {
+                // times c0, whose imaginary part is always zero
+                let t_re = self.ctx.ins().fmul(re[i], c0);
+                let t_im = self.ctx.ins().fmul(im[i], c0);
+                next_re[i] = self.ctx.ins().fadd(next_re[i], t_re);
+                next_im[i] = self.ctx.ins().fadd(next_im[i], t_im);
+
+                // times c1, shifted up one power of s
+                let rr = self.ctx.ins().fmul(re[i], c1_re);
+                let ii = self.ctx.ins().fmul(im[i], c1_im);
+                let ri = self.ctx.ins().fmul(re[i], c1_im);
+                let ir = self.ctx.ins().fmul(im[i], c1_re);
+                let real = self.ctx.ins().fsub(rr, ii);
+                let imag = self.ctx.ins().fadd(ri, ir);
+                next_re[i + 1] = self.ctx.ins().fadd(next_re[i + 1], real);
+                next_im[i + 1] = self.ctx.ins().fadd(next_im[i + 1], imag);
+            }
+            re = next_re;
+            im = next_im;
+        }
+
+        // The conjugate pairs the LRM requires cancel the imaginary parts.
+        re
+    }
+
+    fn lower_laplace_state_space(
+        &mut self,
+        input: Value,
+        num: Vec<Value>,
+        den: Vec<Value>,
+    ) -> Value {
+        // A null numerator (`laplace_nd(V(in), , den)`, VAMS-2023 4.5.11) is the
+        // empty product of zeros, so the numerator is *unity* -- H(s) = 1/D(s) --
+        // not zero, which is what an empty coefficient list would otherwise produce.
+        // The root forms need no such case: an empty product of factors is already 1.
+        let num = if num.is_empty() {
+            let one = self.ctx.fconst(1.0);
+            vec![one]
+        } else {
+            num
+        };
         let n = den.len().saturating_sub(1); // filter order
         if n == 0 {
-            if num.is_empty() || den.is_empty() {
+            // A null denominator likewise means D(s) = 1, so the filter is its
+            // numerator; only the constant case is realizable without differentiating
+            // the input, which is the same restriction as before.
+            if den.is_empty() {
                 return input;
             }
             let g = self.ctx.ins().fdiv(num[0], den[0]);

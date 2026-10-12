@@ -3,7 +3,7 @@ use core::ptr::NonNull;
 use std::hash::BuildHasherDefault;
 
 use hir::{CompilationDB, ParamSysFun, Parameter, Variable};
-use hir_lower::{HirInterner, LimitState, ParamKind, PlaceKind};
+use hir_lower::{HirInterner, LimitState, ParamKind, PlaceKind, RetainedState};
 use indexmap::IndexMap;
 use llvm_sys::core::{
     LLVMBuildFAdd,
@@ -30,7 +30,7 @@ use typed_index_collections::TiVec;
 use typed_indexmap::TiMap;
 
 use crate::compilation_unit::{OsdiCompilationUnit, OsdiModule};
-use crate::{bitfield, lltype, Offset};
+use crate::{bitfield, llelem_ty, lltype, param_elem_indices, Offset};
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum OsdiInstanceParam {
@@ -38,7 +38,7 @@ pub enum OsdiInstanceParam {
     User(Parameter),
 }
 
-pub const NUM_CONST_FIELDS: u32 = 8;
+pub const NUM_CONST_FIELDS: u32 = 10;
 pub const PARAM_GIVEN: u32 = 0;
 pub const JACOBIAN_PTR_RESIST: u32 = 1;
 pub const JACOBIAN_PTR_REACT: u32 = 2;
@@ -47,6 +47,8 @@ pub const COLLAPSED: u32 = 4;
 pub const TEMPERATURE: u32 = 5;
 pub const CONNECTED: u32 = 6;
 pub const STATE_IDX: u32 = 7;
+pub const RETAINED_VALS: u32 = 8;
+pub const RETAINED_TIME: u32 = 9;
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum EvalOutput {
@@ -74,6 +76,7 @@ impl EvalOutput {
                     if matches!(
                         kind,
                         ParamKind::Param { .. }
+                            | ParamKind::ParamElement { .. }
                             | ParamKind::ParamSysFun { .. }
                             | ParamKind::Temperature { .. }
                     ) {
@@ -211,6 +214,13 @@ pub struct OsdiInstanceData<'ll> {
     pub node_mapping: &'ll llvm_sys::LLVMType,
     pub state_idx: &'ll llvm_sys::LLVMType,
     pub collapsed: &'ll llvm_sys::LLVMType,
+    /// `[2 * num_retained x double]`: a (committed, pending) pair per retained slot.
+    /// See the retained-state note at the top of `openvaf/osdi/stdlib.c` for why
+    /// these live here rather than in the simulator's OSDI state array.
+    pub retained_vals: &'ll llvm_sys::LLVMType,
+    /// What each slot reads back before anything writes to it, in slot order.
+    pub retained_init: Vec<f64>,
+    pub num_retained: u32,
 
     // llvm types for dynamic instance data struct fields
     pub params: IndexMap<OsdiInstanceParam, &'ll llvm_sys::LLVMType, BuildHasherDefault<FxHasher>>,
@@ -223,6 +233,11 @@ pub struct OsdiInstanceData<'ll> {
     pub absdelay: Vec<AbsDelaySlots>,
     pub jacobian: TiVec<MatrixEntryId, MatrixEntry>,
     pub bound_step: Option<EvalOutputSlot>,
+    /// The instant the model asked for a timepoint at, and the degree of
+    /// discontinuity it announced: the two halves of the timepoint protocol in
+    /// `docs/osdi-timepoint-protocol.md`, each present only if the module uses it.
+    pub breakpoint: Option<EvalOutputSlot>,
+    pub discontinuity: Option<EvalOutputSlot>,
 }
 
 #[derive(Clone, Copy)]
@@ -282,12 +297,14 @@ impl<'ll> OsdiInstanceData<'ll> {
             .iter()
             .map(|source| NoiseSource::new(source, module, &mut eval_outputs, ty_f64))
             .collect();
-        let bound_step = module.intern.outputs.get(&PlaceKind::BoundStep).and_then(|val| {
-            let mut val = val.expand()?;
+        let mut eval_output_slot = |place| {
+            let mut val = module.intern.outputs.get(&place)?.expand()?;
             val = strip_optbarrier(module.eval, val);
-            let slot = eval_outputs.insert_full(val, ty_f64).0;
-            Some(slot)
-        });
+            Some(eval_outputs.insert_full(val, ty_f64).0)
+        };
+        let bound_step = eval_output_slot(PlaceKind::BoundStep);
+        let breakpoint = eval_output_slot(PlaceKind::Breakpoint);
+        let discontinuity = eval_output_slot(PlaceKind::Discontinuity);
         let absdelay = module
             .intern
             .absdelay
@@ -315,6 +332,10 @@ impl<'ll> OsdiInstanceData<'ll> {
             module.init.cache_slots.raw.values().map(|ty| lltype(ty, cx)).collect();
 
         let state_idx = cx.ty_array(cx.ty_int(), module.intern.lim_state.len() as u32);
+        let retained_init: Vec<f64> = module.intern.retained_init.raw.clone();
+        let num_retained = retained_init.len() as u32;
+        let retained_vals = cx.ty_array(ty_f64, 2 * num_retained);
+        let retained_time = cx.ty_double();
         let static_fields: [_; NUM_CONST_FIELDS as usize] = [
             param_given,
             jacobian_ptr,
@@ -324,6 +345,8 @@ impl<'ll> OsdiInstanceData<'ll> {
             temperature,
             connected_ports,
             state_idx,
+            retained_vals,
+            retained_time,
         ];
 
         let fields: Vec<_> = static_fields
@@ -345,6 +368,9 @@ impl<'ll> OsdiInstanceData<'ll> {
             node_mapping,
             state_idx,
             collapsed,
+            retained_vals,
+            retained_init,
+            num_retained,
             params,
             eval_outputs,
             cache_slots,
@@ -354,6 +380,8 @@ impl<'ll> OsdiInstanceData<'ll> {
             absdelay,
             jacobian,
             bound_step,
+            breakpoint,
+            discontinuity,
         }
     }
 
@@ -370,6 +398,26 @@ impl<'ll> OsdiInstanceData<'ll> {
     pub fn bound_step_elem(&self) -> Option<u32> {
         let elem = self.eval_output_slot_elem(self.bound_step?);
         Some(elem)
+    }
+
+    /// The timepoint protocol's two slots, stored where `store_bound_step` stores
+    /// its own: the simulator reads them out of the instance data after `eval`.
+    pub unsafe fn store_timepoint_requests(
+        &self,
+        ptr: &'ll llvm_sys::LLVMValue,
+        builder: &mir_llvm::Builder<'_, '_, 'll>,
+    ) {
+        for slot in [self.breakpoint, self.discontinuity].into_iter().flatten() {
+            self.store_eval_output_slot(slot, ptr, builder);
+        }
+    }
+
+    pub fn breakpoint_elem(&self) -> Option<u32> {
+        Some(self.eval_output_slot_elem(self.breakpoint?))
+    }
+
+    pub fn discontinuity_elem(&self) -> Option<u32> {
+        Some(self.eval_output_slot_elem(self.discontinuity?))
     }
 
     pub fn absdelay_offsets(&self, target_data: &LLVMTargetDataRef) -> Vec<(u32, u32)> {
@@ -449,6 +497,93 @@ impl<'ll> OsdiInstanceData<'ll> {
         let pos = self.params.get_index_of(&param)? as u32;
         let res = self.nth_param_loc(cx, pos, ptr);
         Some(res)
+    }
+
+    /// Where one element of an array parameter is stored (VAMS-2023 3.4.4).
+    pub fn nth_param_elem_loc(
+        &self,
+        cx: &CodegenCx<'_, 'll>,
+        pos: u32,
+        elem: u32,
+        ptr: &'ll llvm_sys::LLVMValue,
+    ) -> MemLoc<'ll> {
+        let arr_ty = self.params.get_index(pos as usize).unwrap().1;
+        let field = NUM_CONST_FIELDS + pos;
+        MemLoc {
+            ptr,
+            ptr_ty: self.ty,
+            ty: llelem_ty(arr_ty),
+            indices: param_elem_indices(cx, field, elem),
+        }
+    }
+
+    pub fn param_elem_loc(
+        &self,
+        cx: &CodegenCx<'_, 'll>,
+        param: OsdiInstanceParam,
+        elem: u32,
+        ptr: &'ll llvm_sys::LLVMValue,
+    ) -> Option<MemLoc<'ll>> {
+        let pos = self.params.get_index_of(&param)? as u32;
+        Some(self.nth_param_elem_loc(cx, pos, elem, ptr))
+    }
+
+    pub unsafe fn nth_param_elem_ptr(
+        &self,
+        cx: &CodegenCx<'_, 'll>,
+        pos: u32,
+        elem: u32,
+        ptr: &'ll llvm_sys::LLVMValue,
+        llbuilder: &llvm_sys::LLVMBuilder,
+    ) -> (&'ll llvm_sys::LLVMValue, &'ll llvm_sys::LLVMType) {
+        let loc = self.nth_param_elem_loc(cx, pos, elem, ptr);
+        (&*loc.to_ptr(NonNull::from(llbuilder).as_ptr()), loc.ty)
+    }
+
+    pub unsafe fn param_elem_ptr(
+        &self,
+        cx: &CodegenCx<'_, 'll>,
+        param: OsdiInstanceParam,
+        elem: u32,
+        ptr: &'ll llvm_sys::LLVMValue,
+        llbuilder: &llvm_sys::LLVMBuilder,
+    ) -> Option<(&'ll llvm_sys::LLVMValue, &'ll llvm_sys::LLVMType)> {
+        let pos = self.params.get_index_of(&param)? as u32;
+        Some(self.nth_param_elem_ptr(cx, pos, elem, ptr, llbuilder))
+    }
+
+    pub unsafe fn store_nth_param_elem(
+        &self,
+        cx: &CodegenCx<'_, 'll>,
+        pos: u32,
+        elem: u32,
+        ptr: &'ll llvm_sys::LLVMValue,
+        val: &'ll llvm_sys::LLVMValue,
+        llbuilder: &llvm_sys::LLVMBuilder,
+    ) {
+        let (ptr, _) = self.nth_param_elem_ptr(cx, pos, elem, ptr, llbuilder);
+        LLVMBuildStore(
+            NonNull::from(llbuilder).as_ptr(),
+            NonNull::from(val).as_ptr(),
+            NonNull::from(ptr).as_ptr(),
+        );
+    }
+
+    pub unsafe fn read_nth_param_elem(
+        &self,
+        cx: &CodegenCx<'_, 'll>,
+        pos: u32,
+        elem: u32,
+        ptr: &'ll llvm_sys::LLVMValue,
+        llbuilder: &llvm_sys::LLVMBuilder,
+    ) -> &'ll llvm_sys::LLVMValue {
+        let (ptr, ty) = self.nth_param_elem_ptr(cx, pos, elem, ptr, llbuilder);
+        &*LLVMBuildLoad2(
+            NonNull::from(llbuilder).as_ptr(),
+            NonNull::from(ty).as_ptr(),
+            NonNull::from(ptr).as_ptr(),
+            UNNAMED,
+        )
     }
 
     pub unsafe fn read_param(
@@ -755,6 +890,124 @@ impl<'ll> OsdiInstanceData<'ll> {
 
         // Load the integer value from the final pointer
         &*LLVMBuildLoad2(builder_ptr, NonNull::from(cx.ty_int()).as_ptr(), ptr, UNNAMED)
+    }
+
+    /// Pointer to the first element of the retained-value array, as a `double *`
+    /// suitable for passing to `commit_retained`.
+    pub unsafe fn retained_vals_ptr(
+        &self,
+        cx: &CodegenCx<'_, 'll>,
+        ptr: &'ll llvm_sys::LLVMValue,
+        llbuilder: &llvm_sys::LLVMBuilder,
+    ) -> &'ll llvm_sys::LLVMValue {
+        self.retained_elem_ptr(cx, ptr, 0, llbuilder)
+    }
+
+    /// Pointer to a retained slot's committed value: what the model reads as "the
+    /// value at the previous accepted timestep".
+    pub unsafe fn retained_committed_ptr(
+        &self,
+        cx: &CodegenCx<'_, 'll>,
+        state: RetainedState,
+        ptr: &'ll llvm_sys::LLVMValue,
+        llbuilder: &llvm_sys::LLVMBuilder,
+    ) -> &'ll llvm_sys::LLVMValue {
+        self.retained_half_ptr(cx, state, ptr, 0, llbuilder)
+    }
+
+    /// Pointer to a retained slot's pending value: what this timestep's evaluations
+    /// write, promoted to the committed half once time moves on.
+    pub unsafe fn retained_pending_ptr(
+        &self,
+        cx: &CodegenCx<'_, 'll>,
+        state: RetainedState,
+        ptr: &'ll llvm_sys::LLVMValue,
+        llbuilder: &llvm_sys::LLVMBuilder,
+    ) -> &'ll llvm_sys::LLVMValue {
+        self.retained_half_ptr(cx, state, ptr, 1, llbuilder)
+    }
+
+    unsafe fn retained_half_ptr(
+        &self,
+        cx: &CodegenCx<'_, 'll>,
+        state: RetainedState,
+        ptr: &'ll llvm_sys::LLVMValue,
+        half: u32,
+        llbuilder: &llvm_sys::LLVMBuilder,
+    ) -> &'ll llvm_sys::LLVMValue {
+        let idx = 2 * u32::from(state) + half;
+        debug_assert!(idx < 2 * self.num_retained);
+        self.retained_elem_ptr(cx, ptr, idx, llbuilder)
+    }
+
+    unsafe fn retained_elem_ptr(
+        &self,
+        cx: &CodegenCx<'_, 'll>,
+        ptr: &'ll llvm_sys::LLVMValue,
+        idx: u32,
+        llbuilder: &llvm_sys::LLVMBuilder,
+    ) -> &'ll llvm_sys::LLVMValue {
+        let builder_ptr = NonNull::from(llbuilder).as_ptr();
+        let ptr = LLVMBuildStructGEP2(
+            builder_ptr,
+            NonNull::from(self.ty).as_ptr(),
+            NonNull::from(ptr).as_ptr(),
+            RETAINED_VALS,
+            UNNAMED,
+        );
+
+        let zero = cx.const_int(0) as *const llvm_sys::LLVMValue as *mut _;
+        let idx = cx.const_unsigned_int(idx) as *const llvm_sys::LLVMValue as *mut _;
+        let mut gep_indices: [llvm_sys::prelude::LLVMValueRef; 2] = [zero, idx];
+
+        &*LLVMBuildGEP2(
+            builder_ptr,
+            NonNull::from(self.retained_vals).as_ptr(),
+            ptr,
+            gep_indices.as_mut_ptr(),
+            2,
+            UNNAMED,
+        )
+    }
+
+    /// Establish the initial retained state. The simulator owns this memory and makes
+    /// no promise about its contents, so `setup_instance` writes what each slot should
+    /// read back before anything has written to it -- zero for a latch, negative for
+    /// `last_crossing` -- into both halves of the pair. A timestamp of zero means the
+    /// first evaluation at t = 0 commits nothing.
+    pub unsafe fn init_retained(
+        &self,
+        builder: &mir_llvm::Builder<'_, '_, 'll>,
+        ptr: &'ll llvm_sys::LLVMValue,
+    ) {
+        if self.num_retained == 0 {
+            return;
+        }
+        let cx = builder.cx;
+        for (i, &init) in self.retained_init.iter().enumerate() {
+            let init = cx.const_real(init);
+            let i = i as u32;
+            for half in 0..2 {
+                let slot = self.retained_elem_ptr(cx, ptr, 2 * i + half, builder.llbuilder);
+                builder.store(slot, init);
+            }
+        }
+        builder.store(self.retained_time_ptr(ptr, builder.llbuilder), cx.const_real(0.0));
+    }
+
+    /// Pointer to the instance's retained-state timestamp.
+    pub unsafe fn retained_time_ptr(
+        &self,
+        ptr: &'ll llvm_sys::LLVMValue,
+        llbuilder: &llvm_sys::LLVMBuilder,
+    ) -> &'ll llvm_sys::LLVMValue {
+        &*LLVMBuildStructGEP2(
+            NonNull::from(llbuilder).as_ptr(),
+            NonNull::from(self.ty).as_ptr(),
+            NonNull::from(ptr).as_ptr(),
+            RETAINED_TIME,
+            UNNAMED,
+        )
     }
 
     pub unsafe fn read_node_voltage(
@@ -1222,6 +1475,19 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                         .unwrap_or_else(|| {
                             model_data.param_ptr(param, model_ptr, llbuilder).unwrap()
                         }),
+                    ParamKind::ParamElement(param, elem) => inst_data
+                        .param_elem_ptr(
+                            cx,
+                            OsdiInstanceParam::User(param),
+                            elem,
+                            inst_ptr,
+                            llbuilder,
+                        )
+                        .unwrap_or_else(|| {
+                            model_data
+                                .param_elem_ptr(cx, param, elem, model_ptr, llbuilder)
+                                .unwrap()
+                        }),
                     ParamKind::Temperature => (
                         &*LLVMBuildStructGEP2(
                             NonNull::from(llbuilder).as_ptr(),
@@ -1247,6 +1513,7 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                     | ParamKind::EnableLim
                     | ParamKind::PrevState(_)
                     | ParamKind::NewState(_)
+                    | ParamKind::PrevRetained(_)
                     | ParamKind::ImplicitUnknown(_) => unreachable!(),
                 }
             }
@@ -1305,6 +1572,19 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                         .unwrap_or_else(|| {
                             model_data.param_ptr(param, model_ptr, llbuilder).unwrap()
                         }),
+                    ParamKind::ParamElement(param, elem) => inst_data
+                        .param_elem_ptr(
+                            cx,
+                            OsdiInstanceParam::User(param),
+                            elem,
+                            inst_ptr,
+                            llbuilder,
+                        )
+                        .unwrap_or_else(|| {
+                            model_data
+                                .param_elem_ptr(cx, param, elem, model_ptr, llbuilder)
+                                .unwrap()
+                        }),
                     ParamKind::Temperature => (
                         &*LLVMBuildStructGEP2(
                             NonNull::from(llbuilder).as_ptr(),
@@ -1330,6 +1610,7 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                     | ParamKind::EnableLim
                     | ParamKind::PrevState(_)
                     | ParamKind::NewState(_)
+                    | ParamKind::PrevRetained(_)
                     | ParamKind::ImplicitUnknown(_) => unreachable!(),
                 }
             }

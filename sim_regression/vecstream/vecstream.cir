@@ -1,0 +1,21 @@
+* A streaming vector source driving a stiff load. The file is the reference: the
+* analyzer reads it and requires the waveform to be what it says, and the record
+* count to be how many records there are.
+*
+* The diode is here to make the solver work: it rejects timepoints, and a
+* rejected timepoint is one whose reads must not count.
+Nv out ntaken vstream
+.model vstream vecstream(tr=1n fname="vectors.txt")
+Ro out 0 1k
+Rn ntaken 0 1e12
+Dd out 0 dmod
+.model dmod d(is=1e-15 n=1.05)
+
+.control
+pre_osdi vecstream.osdi
+tran 200n 30u
+set filetype=ascii
+wrdata vstream_out.txt v(out) v(ntaken)
+.endc
+
+.end

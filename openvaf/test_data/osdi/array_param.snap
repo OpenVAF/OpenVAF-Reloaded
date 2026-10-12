@@ -1,0 +1,49 @@
+param "$mfactor"
+units = "", desc = "Multiplier (Verilog-A $mfactor)", flags = ParameterFlags(PARA_KIND_INST)
+param "g"
+elements = 3
+units = "", desc = "", flags = ParameterFlags(0x0)
+param "m"
+elements = 6
+units = "", desc = "", flags = ParameterFlags(0x0)
+param "k"
+elements = 2
+units = "", desc = "", flags = ParameterFlags(PARA_TY_INT)
+param "sel"
+units = "", desc = "", flags = ParameterFlags(PARA_TY_INT)
+param "n"
+units = "", desc = "", flags = ParameterFlags(PARA_TY_INT)
+param "s"
+elements = 2
+units = "", desc = "", flags = ParameterFlags(0x0)
+param "h"
+elements = 2
+units = "", desc = "", flags = ParameterFlags(0x0)
+
+6 terminals
+node "one" units = "V", runits = "A"
+node "all" units = "V", runits = "A"
+node "matrix" units = "V", runits = "A"
+node "ints" units = "V", runits = "A"
+node "loc" units = "V", runits = "A"
+node "sized" units = "V", runits = "A"
+node(flow) "flow(one)" units = "A", runits = "V"
+node(flow) "flow(all)" units = "A", runits = "V"
+node(flow) "flow(matrix)" units = "A", runits = "V"
+node(flow) "flow(ints)" units = "A", runits = "V"
+node(flow) "flow(loc)" units = "A", runits = "V"
+node(flow) "flow(sized)" units = "A", runits = "V"
+jacobian (one, flow(one)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (all, flow(all)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (matrix, flow(matrix)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (ints, flow(ints)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (loc, flow(loc)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (sized, flow(sized)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(one), one) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(all), all) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(matrix), matrix) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(ints), ints) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(loc), loc) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(sized), sized) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+0 states
+has bound_step false
