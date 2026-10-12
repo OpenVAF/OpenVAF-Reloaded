@@ -1,0 +1,26 @@
+* The timepoint protocol: a discontinuity announced (VAMS-2023 9.17.1)
+* ctrl : a triangle that crosses the switching threshold every 5 us
+* out  : the switch output, which jumps by 5 V at each crossing
+* mid  : an RC of 1 us hanging off it, whose analytic response the jump decides
+*
+* `announce=1` here and `announce=0` in jump_off.cir: the integration order is a
+* property of the circuit, not of an instance, so the two cases have to be two
+* runs rather than two instances of one.
+
+Vctrl ctrl 0 PULSE(0 5 0 5u 5u 1n 10u)
+
+Nsw out ctrl jmod
+.model jmod jump(announce=1)
+
+Rload out mid 1k
+Cload mid 0 1n
+
+.options method=gear maxord=4
+
+.control
+pre_osdi jump.osdi
+tran 20n 40u
+wrdata tp_on.txt v(out) v(mid) v(ctrl)
+.endc
+
+.end

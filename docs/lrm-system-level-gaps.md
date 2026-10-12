@@ -17,18 +17,18 @@ analog-only OSDI flow.
 
 ## What OSDI does not expose, and how much of it matters
 
-OSDI 0.4 gives a model no way to say anything to the *integrator*. The descriptor
-(`openvaf/osdi/header/osdi_0_4.h:204-236`) has `eval`, the loads, setup, given
-flags and noise, and nothing else. ngspice has all three of the missing pieces
-internally; none of them is reachable across the ABI.
+OSDI 0.4 gave a model no way to say anything to the *integrator*. ngspice has all
+three of the missing pieces internally; two of them are reachable across the ABI
+now, through the descriptor tail that `docs/osdi-timepoint-protocol.md` specifies
+and `patches/ngspice-osdi-timepoints.patch` implements.
 
-| What a model needs | ngspice has it as | OSDI exposes | Workable substitute |
+| What a model needs | ngspice has it as | OSDI exposes | State |
 | --- | --- | --- | --- |
-| Know a timestep was accepted | `DEVaccept` (e.g. `vsrcacct.c`) | nothing | `$abstime` movement — what retained state uses |
-| Land a point at an exact time | `CKTsetBreak(ckt, t)` | nothing | **`bound_step`, and it works** |
-| Announce a discontinuity | breakpoint + `CKTorder = 1` | `EVAL_RET_FLAG_LIM` only, which is `CKTnoncon++` | none |
+| Know a timestep was accepted | `DEVaccept` (e.g. `vsrcacct.c`) | nothing | specified, not implemented; `$abstime` movement stands in for it |
+| Land a point at an exact time | `CKTsetBreak(ckt, t)` | `breakpoint_offset` | implemented, and `bound_step` remains the cheaper way |
+| Announce a discontinuity | breakpoint + `CKTorder = 1` | `discontinuity_offset` | implemented; **14.8x** more accurate after a jump |
 
-The middle row is the one that decides how much of this matters, so it was
+The middle row is the one that decided how much of this mattered, and it was
 measured rather than assumed. A model that caps `$bound_step` at the distance
 remaining to a chosen instant makes ngspice land on it exactly:
 
@@ -46,12 +46,26 @@ So `bound_step` is a working stand-in for `CKTsetBreak` as far as *placing* a
 point goes, at a cost of a couple of extra timepoints. `timer` (5.10.3.3) needs
 no ABI change, and neither does tightening `cross` into its `time_tol` box.
 
+It turned out to be the cheaper way as well as the portable one. A model asks for
+an instant now (`breakpoint_offset`), and honouring the request in ngspice costs
+**64% more timepoints** than the cap for the same exact placement
+(`sim_regression/timer`: 835 against 509), because a breakpoint there also cuts
+the next step to a tenth of the last one. The request is worth having for
+robustness, since an instant cannot be missed by a last-bit rounding the way a
+cap can. But the expectation this page used to carry, that it would cost fewer
+points than capping, was wrong, and the patch leaves that half off unless asked.
+
 What `bound_step` cannot do is the other half of a breakpoint: ngspice cuts the
 integration order to 1 at one (`dctran.c:493`), and capping a step does not. That
-is why `$discontinuity` has no substitute — the integrator keeps extrapolating
-across a jump with a history that no longer describes the waveform. It still
-converges, by rejecting steps and shrinking until it gets through; it is a cost
-and an accuracy risk at the jump, not a wall.
+is what `discontinuity_offset` is for, and it is the half that paid: with Gear
+integration, announcing a jump leaves the twenty timepoints after it **14.8x**
+more accurate (`sim_regression/timepoints`), because Gear carries several past
+points and a history that straddles a jump is wrong. With trapezoidal it changes
+nothing and costs nothing: one past derivative, already the post-jump one.
+
+The error *at* the jump is the same announced or not, in both methods. A step
+that straddles a discontinuity is not accurately integrable, which is the
+clause's own reason for telling models to smooth their edges.
 
 For system-level modelling specifically, that residue is small, because the
 idiomatic style avoids it. 9.17.1 itself says discontinuity "created by switch
@@ -61,12 +75,13 @@ are meant to be written. Clocks are the other case, and in a SPICE flow they
 usually come from a real source: `vsrc` calls `CKTsetBreak` for its own corners,
 so `@(cross)` on a clock node already gets breakpoint-placed edges for free.
 
-An OSDI proposal for an accept callback plus a breakpoint/discontinuity request
-is still worth making — it would retire the `$abstime` workaround, let
-`$discontinuity` mean something, and cost fewer timepoints than capping. But it
-gates far less than it first appears: it is a cleanup, not a prerequisite. The
-precedent for how it should look is `absdelay`: a descriptor-level protocol where
-the simulator owns the time-dependent part.
+The proposal is written, and two thirds of it is implemented and measured:
+`docs/osdi-timepoint-protocol.md`. It followed `absdelay`'s precedent, a
+descriptor-level protocol where the simulator owns the time-dependent part, and
+it gates far less than it first appeared: a cleanup, not a prerequisite. What is
+left of it is the accept callback, which is what `$fstrobe` needs in order to
+mean what 9.4.1 says, what would let a model read one record per timepoint, and
+what the `$abstime` workaround is a proxy for.
 
 ## Tier 0 — compiles, and then no simulator can run it
 
@@ -119,7 +134,7 @@ and the two that cannot be now warn.
 
 | Feature | Clause | Status |
 | --- | --- | --- |
-| `$discontinuity(n)`, n >= 0 | 9.17.1 | Still dropped, but **no longer silent**: warns as `ignored_discontinuity` (L019). |
+| `$discontinuity(n)`, n >= 0 | 9.17.1 | Announced through the timepoint protocol. Honoured by a simulator that reads it; L019 says so. |
 | Analog variable persistence | 4.5.10, 5.10.2 | Fixed. Retention is granted wherever a read can precede its write. |
 | `@(final_step)` | 5.10.2 | Still unconditional, but **no longer silent**: warns as `unscheduled_event` (L018). Its analysis list is honoured. |
 | `initial_step` ORed with another event | 5.10.1 | Fixed. It contributes its first-evaluation flag instead of leaving the body unconditional. |
@@ -178,19 +193,18 @@ Nothing needs closing for its contents to arrive, as it happens: the process exi
 through libc and libc flushes what is open. Measured: the `filelog` case closes
 nothing and loses nothing.
 
-`hir_lower/src/expr.rs` handles only `$discontinuity(-1)`, the form that belongs
-with `$limit` (9.17.3); every other degree lowers to nothing, because OSDI has no
-channel to announce a discontinuity. It now says so, points at `$bound_step` as
-the thing that does reach the simulator, and notes that the `-1` form is
-supported — so a model can no longer claim a discontinuity that never arrives.
+Every degree is announced now. `$discontinuity(-1)` still belongs to `$limit`
+(9.17.3) and is unchanged; every other degree leaves the lowest degree announced
+during the evaluation in the instance data, where a simulator that reads the
+timepoint protocol finds it. L019 still warns, because whether the announcement
+arrives is the simulator's half of the contract and no released simulator reads
+it yet; the warning now says that rather than that the compiler drops it.
 
-Actually announcing it needs the OSDI facility described above, and it is the one
-item on this page with no substitute: `bound_step` can cap a step but cannot cut
-the integration order, which is the half of a breakpoint that matters at a jump.
-Capping across the jump anyway would be a partial answer, but the degree argument
-carries no time, so the cap would have to be invented — a policy decision worth
-taking deliberately rather than silently. A model that smooths its edges with
-`transition()` or `slew()` needs none of this; 9.17.1 says so itself.
+What it is worth is measured in `sim_regression/timepoints`, and the answer
+depends on the integration method: 14.8x more accurate after a jump with Gear,
+and nothing either way with trapezoidal, which has no history to discard. A model
+that smooths its edges with `transition()` or `slew()` needs none of it; 9.17.1
+says so itself.
 
 ### Analog variable persistence
 
@@ -729,8 +743,11 @@ tasks (9.5, see above), and the compiler directives of 10.2 through 10.6.
 17. ~~**Multi-dimensional arrays**~~ — done, for as many dimensions as a
     declaration gives. The row-major position of an index chain, with the
     one-dimensional case lowering byte-identically to what it did before.
-18. **OSDI proposal** — accept callback plus breakpoint/discontinuity request.
-    No longer last on merit: it is what `$fstrobe` needs in order to mean what
-    9.4.1 says, what would let a model read one record per timepoint, and what
-    would retire the `$abstime` workaround and give `$discontinuity` something to
-    say.
+18. **OSDI proposal** — written as `docs/osdi-timepoint-protocol.md`, with two
+    of its three facilities implemented, measured and patched into ngspice: a
+    discontinuity can be announced (14.8x more accurate after a jump, with Gear)
+    and an instant can be asked for (which ngspice charges 64% more timepoints
+    for than the cap it would replace). What is left is the accept callback, which
+    is what `$fstrobe` needs in order to mean what 9.4.1 says, what would let a
+    model read one record per timepoint, and what the `$abstime` workaround is a
+    proxy for.

@@ -107,6 +107,45 @@ run_pll() {
     fi
 }
 
+# The timepoint protocol: the same switch announcing its jump and not announcing
+# it, which has to be two runs because the integration order belongs to the
+# circuit. A simulator that does not read the protocol has to produce the same
+# waveform either way; one that does is pointed at by NGSPICE_TIMEPOINTS
+# (patches/ngspice-osdi-timepoints.patch) and gets a second pair of runs.
+run_timepoints() {
+    dir=timepoints
+    cd "$here/$dir" || return 1
+    rm -f tp_on.txt tp_off.txt tp_proto_on.txt tp_proto_off.txt
+
+    if ! "$OV" jump.va -o jump.osdi >/dev/null 2>&1; then
+        printf '%-14s COMPILE FAILED\n' "$dir"
+        "$OV" jump.va -o jump.osdi
+        fail=1
+        return
+    fi
+
+    "$NG" -b jump.cir > jump.log 2>&1
+    "$NG" -b jump_off.cir > jump_off.log 2>&1
+
+    if [ -n "${NGSPICE_TIMEPOINTS:-}" ]; then
+        sed -e 's/tp_on.txt/tp_proto_on.txt/' jump.cir > jump_proto.cir
+        sed -e 's/tp_off.txt/tp_proto_off.txt/' jump_off.cir > jump_proto_off.cir
+        OSDI_TIMEPOINT_BREAKPOINTS=0 "$NGSPICE_TIMEPOINTS" -b jump_proto.cir \
+            > jump_proto.log 2>&1
+        OSDI_TIMEPOINT_BREAKPOINTS=0 "$NGSPICE_TIMEPOINTS" -b jump_proto_off.cir \
+            > jump_proto_off.log 2>&1
+    fi
+
+    if log=$(python3 "../analyze_timepoints.py" 2>&1); then
+        printf '%-14s PASS\n' "$dir"
+        printf '%s\n' "$log" | sed 's/^/  /'
+    else
+        printf '%-14s FAIL\n' "$dir"
+        printf '%s\n' "$log" | sed 's/^/  /'
+        fail=1
+    fi
+}
+
 # The one case with no ngspice output file at all: the model writes its own
 # measurements with 9.5's file tasks, and the analyzer reads those.
 run_filelog() {
@@ -143,6 +182,7 @@ run global_events global_events ge_out.txt analyze_global_events.py
 run directives    directives    dir_out.txt analyze_directives.py
 run multidim      xtalk         xt_out.txt analyze_multidim.py
 run_absdelay
+run_timepoints
 run_filelog
 run_pll
 

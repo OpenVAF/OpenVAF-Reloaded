@@ -32,6 +32,7 @@ global_events  PASS
 directives     PASS
 multidim       PASS
 absdelay       PASS
+timepoints     PASS
 filelog        PASS
 pll            PASS
 ```
@@ -449,6 +450,55 @@ level says which element was read, and all four levels occur in the run.
 
 The previous compiler does not reach a waveform here at all: `real c[0:2][0:2];`
 is a parse error on the second subscript, and so is every use of it.
+
+## timepoints — passing
+
+What announcing a discontinuity is worth (VAMS-2023 9.17.1), and what a simulator
+that cannot hear the announcement does instead. The protocol itself is
+`docs/osdi-timepoint-protocol.md`; this is the measurement it rests on.
+
+`jump.va` switches its output by 5 V on a threshold crossing and drives an RC of
+1 us. The crossing is deliberate: a crossing instant is a prediction, so `cross`
+caps the step on the way to it and the point it lands on is not a breakpoint.
+Nothing but `$discontinuity(0)` tells the integrator that the solution is not
+continuous there. `announce` is the only difference between the two runs, and they
+have to be two runs rather than two instances, because the integration order
+belongs to the circuit.
+
+```
+cap only               announced  rows  2475  jumps  8  at the jump 3.632e-02 V  worst of the 20 after 1.414e-02 V
+cap only               silent     rows  2475  jumps  8  at the jump 3.632e-02 V  worst of the 20 after 1.414e-02 V
+protocol read          announced  rows  2475  jumps  8  at the jump 3.632e-02 V  worst of the 20 after 9.539e-04 V
+protocol read          silent     rows  2475  jumps  8  at the jump 3.632e-02 V  worst of the 20 after 1.414e-02 V
+                       gain       14.8x better after a jump  (want 5x)
+```
+
+The first pair is the assertion a stock simulator supports: the two runs are
+identical, bit for bit, so announcing a discontinuity costs nothing where nothing
+reads it. The second pair needs a simulator that does read it
+(`patches/ngspice-osdi-timepoints.patch`, pointed at by `NGSPICE_TIMEPOINTS`), and
+is the 14.8x.
+
+The reference is exact rather than a stored waveform: the drive is piecewise
+constant, so every interval of the solver's own grid has a closed form, and each
+interval starts from the solver's own value so that the error reported is that
+interval's rather than the sum of everything before it.
+
+The netlists ask for Gear integration, which is the method the announcement is
+about. Gear carries several past points, so a history that straddles the jump is
+wrong and discarding it is worth 14.8x. Trapezoidal keeps one, the derivative at
+the point just solved, which is already the post-jump one -- so cutting its order
+would spend an order of accuracy for nothing, and the patch does not. Measured:
+
+```
+trapezoidal, announced == silent   worst of the 20 after a jump   3.225e-06 V
+trapezoidal, order cut anyway      worst of the 20 after a jump   9.554e-04 V
+```
+
+The error *at* the jump is the same in every run above and no announcement can
+change it: a step that straddles a discontinuity is not accurately integrable. That
+is what 9.17.1 means by telling models to smooth their edges, and this case is
+written without a `transition()` precisely to be the case that cannot.
 
 ## filelog — passing
 
