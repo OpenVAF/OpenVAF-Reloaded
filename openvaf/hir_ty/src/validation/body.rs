@@ -881,14 +881,14 @@ impl ExprValidator<'_, '_> {
         elems.iter().map(|&e| self.const_real(e)).collect()
     }
 
-    /// How many values a `noise_table` data array carries.
+    /// How many values an array argument carries, whether or not they are known.
     ///
-    /// By the operator's own signature the argument is a one-dimensional array of
-    /// reals, so this is either what an assignment pattern writes out or the
+    /// By these operators' own signatures the argument is a one-dimensional array
+    /// of reals, so this is either what an assignment pattern writes out or the
     /// length an array declaration gives. One row of a multi-dimensional array is
-    /// such an array, which is what makes a bank of spectra on one model card a
-    /// matrix with a row per table.
-    fn table_value_count(&self, arg: ExprId) -> u32 {
+    /// such an array, which is what makes a bank of spectra, or of fits, on one
+    /// model card a matrix with a row per vector.
+    fn array_arg_len(&self, arg: ExprId) -> u32 {
         if let Expr::Array(ref elems) = self.parent.body.exprs[arg] {
             return elems.len() as u32;
         }
@@ -898,6 +898,25 @@ impl ExprValidator<'_, '_> {
             return 0;
         }
         dims.iter().product()
+    }
+
+    /// Whether an array argument is one whose contents cannot change once the
+    /// simulation is running: a parameter's cannot, because a model card sets it
+    /// and 4.5.14's constant expression "remains static throughout an analysis".
+    ///
+    /// One row of a parameter array is such an array too, which is what makes a
+    /// bank of fits on one model card a matrix with a row per vector.
+    fn param_backed_array(&self, arg: ExprId) -> bool {
+        let mut cur = arg;
+        loop {
+            if matches!(self.parent.infer.expr_types[cur], Ty::Param(_, _)) {
+                return true;
+            }
+            match self.parent.body.exprs[cur] {
+                Expr::Index { base, .. } => cur = base,
+                _ => return false,
+            }
+        }
     }
 
     /// A table data file, resolved beside the compilation's root source file, the
@@ -975,16 +994,23 @@ impl ExprValidator<'_, '_> {
             for (i, &arg) in args[ndims..end].iter().enumerate() {
                 match self.const_real_column(arg) {
                     Some(col) => cols.push(col),
+                    // A column whose contents are not known here. If it is one a
+                    // model card sets, the lookup can be emitted over its values
+                    // instead, for the one shape of the operator that allows it.
+                    None if self.param_backed_array(arg) => {
+                        return self.validate_table_model_dyn(expr, args, ndims, end, i)
+                    }
                     None => {
                         self.table_err(
                             expr,
                             format!(
-                                "data column {} has to be an array of constants. 9.21.1 captures \
-                                 the data source on the first call and ignores later changes, and \
-                                 the table is compiled into the model, so an array the module \
-                                 fills in at run time -- or one a model card sets -- cannot be \
-                                 read here: write the samples as an array literal, or put them in \
-                                 a data file",
+                                "data column {} has to be an array of constants, or an array \
+                                 parameter a model card sets. 9.21.1 captures the data source on \
+                                 the first call and ignores later changes, which an array the \
+                                 module fills in at run time would need: a column read from a \
+                                 parameter is read at every evaluation and never changes, which \
+                                 is the same thing. Write the samples as an array literal, or \
+                                 put them in a data file",
                                 i + 1
                             ),
                         );
@@ -1027,6 +1053,128 @@ impl ExprValidator<'_, '_> {
         }
     }
 
+    /// A `$table_model` whose data a model card sets (or whose data the module
+    /// computes), which is the one shape of the operator that can be emitted over
+    /// values rather than built into the model: one dimension, interpolated
+    /// linearly or by closest point.
+    ///
+    /// `col` is the column whose contents are not known here, which is what sent
+    /// validation this way.
+    fn validate_table_model_dyn(
+        &mut self,
+        expr: ExprId,
+        args: &[ExprId],
+        ndims: usize,
+        control: usize,
+        col: usize,
+    ) {
+        if ndims != 1 {
+            self.table_err(
+                expr,
+                format!(
+                    "data column {} is not an array of constants, and only a table of one \
+                     dimension can be read at run time: which rows of a table of {ndims} \
+                     dimensions share an ordinate is the data itself, so the shape of the table \
+                     is not known here. Write the samples as array literals, or put them in a \
+                     data file",
+                    col + 1
+                ),
+            );
+            return;
+        }
+
+        // The column that sent validation this way is one a model card sets; the
+        // rest of them still have to be constants or cards of their own, because
+        // the loop that reads them stops at the first one it cannot.
+        for (i, &arg) in args[1..3].iter().enumerate() {
+            if self.const_real_column(arg).is_none() && !self.param_backed_array(arg) {
+                self.table_err(
+                    expr,
+                    format!(
+                        "data column {} has to be an array of constants, or an array parameter a \
+                         model card sets. 9.21.1 captures the data source on the first call and \
+                         ignores later changes, which an array the module fills in at run time \
+                         would need: a column read from a parameter is read at every evaluation \
+                         and never changes, which is the same thing. Write the samples as an \
+                         array literal, or put them in a data file",
+                        i + 1
+                    ),
+                );
+                return;
+            }
+        }
+
+        let spec = match args.get(control) {
+            Some(&arg) => match self.parent.body.exprs[arg] {
+                Expr::Literal(Literal::String(ref spec)) => spec.to_string(),
+                _ => {
+                    self.table_err(
+                        expr,
+                        "the control string has to be a string literal".to_owned(),
+                    );
+                    return;
+                }
+            },
+            None => String::new(),
+        };
+        let control = match table_model::Control::parse(&spec, 1) {
+            Ok(control) => control,
+            Err(err) => {
+                self.table_err(expr, err.0);
+                return;
+            }
+        };
+        if control.dependent != 1 {
+            self.table_err(
+                expr,
+                format!(
+                    "the data source has one dependent column, so the dependent selector cannot \
+                     be {}",
+                    control.dependent
+                ),
+            );
+            return;
+        }
+        let Some(dim) = control.dims().first().copied() else {
+            self.table_err(
+                expr,
+                "the one input column is ignored, so the table has no dimension to look up"
+                    .to_owned(),
+            );
+            return;
+        };
+        match dim.interp {
+            table_model::Interp::Linear | table_model::Interp::Discrete => (),
+            _ => {
+                self.table_err(
+                    expr,
+                    format!(
+                        "data column {} is not an array of constants, and a spline's weights are \
+                         the solution of a system over every ordinate in the table, which cannot \
+                         be built where the ordinates are not known. Interpolate linearly ('1') \
+                         or by closest point ('D'), or write the samples as array literals",
+                        col + 1
+                    ),
+                );
+                return;
+            }
+        }
+
+        // A sample is an ordinate and a value, so the two columns say the same
+        // thing about how many there are, and the lengths are declared even where
+        // the contents are not.
+        let nx = self.array_arg_len(args[1]);
+        let ny = self.array_arg_len(args[2]);
+        if nx == 0 || ny == 0 || nx != ny {
+            self.table_err(
+                expr,
+                format!(
+                    "the table has {nx} ordinate(s) and {ny} value(s); a sample is one of each"
+                ),
+            );
+        }
+    }
+
     /// VAMS-2023 4.5.12: the Z-transform filters.
     ///
     /// Table 4-20 makes the two vectors, `T` and `t0` constant expression
@@ -1055,30 +1203,48 @@ impl ExprValidator<'_, '_> {
             return;
         }
 
+        // A side written as coefficients of `z^-k` may be a vector of values that
+        // are not known here, which is what lets a model card set the filter: the
+        // difference equation multiplies by them instead of folding them in. A
+        // side written as roots may not, because the conjugate pairing 4.5.12
+        // requires is a property of the numbers.
+        let mut dynamic = false;
+
         // "The zeros argument may be represented as a null argument."
-        let num = match args.get(1) {
-            Some(&arg) if !matches!(self.parent.body.exprs[arg], Expr::Missing) => {
+        let mut num = None;
+        if let Some(&arg) = args.get(1) {
+            if !matches!(self.parent.body.exprs[arg], Expr::Missing) {
                 match self.const_real_column(arg) {
-                    Some(num) => Some(num),
-                    None => {
-                        self.zi_err(
-                            expr,
-                            name,
-                            if num_side == Roots { "zeros" } else { "numerator" },
-                        );
+                    Some(vals) => num = Some(vals),
+                    None if num_side == Roots => {
+                        self.zi_roots_err(expr, name, "zeros");
                         return;
                     }
+                    None if !self.param_backed_array(arg) => {
+                        self.zi_static_err(expr, name, "numerator");
+                        return;
+                    }
+                    None => dynamic = true,
                 }
             }
-            _ => None,
-        };
-        let den = match self.const_real_column(args[2]) {
-            Some(den) => den,
-            None => {
-                self.zi_err(expr, name, if den_side == Roots { "poles" } else { "denominator" });
+        }
+        let mut den = Vec::new();
+        match self.const_real_column(args[2]) {
+            Some(vals) => den = vals,
+            None if den_side == Roots => {
+                self.zi_roots_err(expr, name, "poles");
                 return;
             }
-        };
+            None if !self.param_backed_array(args[2]) => {
+                self.zi_static_err(expr, name, "denominator");
+                return;
+            }
+            None => dynamic = true,
+        }
+        if dynamic && den.is_empty() && self.array_arg_len(args[2]) == 0 {
+            self.zi_empty_err(expr, name);
+            return;
+        }
 
         // 4.5.14: a constant expression "remains static throughout an analysis",
         // which a parameter does, and `T` and `t0` only feed the scheduling
@@ -1095,21 +1261,58 @@ impl ExprValidator<'_, '_> {
             }
         }
 
+        // What is left to check is what the reduction would have caught, and it
+        // can only run on numbers: with a vector a model card sets, the order is
+        // all that is known here, and a zero leading denominator coefficient
+        // parks the filter at run time instead.
+        if dynamic {
+            return;
+        }
         if let Err(err) = zi_filter::Filter::build(num.as_deref(), num_side, &den, den_side) {
             self.operator_err(expr, name, err.0);
         }
     }
 
-    fn zi_err(&mut self, expr: ExprId, name: &'static str, what: &str) {
+    /// A vector of coefficients may be one a model card sets, but not one the
+    /// module fills in: 4.5.14's constant expression "remains static throughout an
+    /// analysis", and a filter whose coefficients moved between two samples would
+    /// be a different filter at each of them.
+    fn zi_static_err(&mut self, expr: ExprId, name: &'static str, what: &str) {
         self.operator_err(
             expr,
             name,
             format!(
-                "the {what} vector has to be an array of constants. Table 4-20 makes it a \
-                 constant expression argument, and the filter is compiled into the model, so an \
-                 array the module computes at run time -- or one a model card sets -- cannot be \
-                 read here: write it as an array literal"
+                "the {what} vector has to be an array of constants, or an array parameter a \
+                 model card sets. Table 4-20 makes it a constant expression argument, which \
+                 4.5.14 says remains static throughout an analysis: an array the module fills \
+                 in at run time would be a different filter at every sample"
             ),
+        );
+    }
+
+    /// A vector of roots has to be known where the call is written, however it
+    /// got there, which is not true of a vector of coefficients any more.
+    fn zi_roots_err(&mut self, expr: ExprId, name: &'static str, what: &str) {
+        self.operator_err(
+            expr,
+            name,
+            format!(
+                "the {what} vector has to be an array of constants. 4.5.12 requires the \
+                 conjugate of every complex root to be present, and that is a property of the \
+                 numbers themselves: a root whose conjugate is missing leaves an imaginary \
+                 coefficient behind, which cannot be caught where the numbers are not known. \
+                 Write the roots as an array literal, or give the same filter as coefficients \
+                 of z^-k, which a model card may set"
+            ),
+        );
+    }
+
+    /// A vector whose length is not known is no filter at all.
+    fn zi_empty_err(&mut self, expr: ExprId, name: &'static str) {
+        self.operator_err(
+            expr,
+            name,
+            "the denominator of a Z-transform filter cannot be empty".to_owned(),
         );
     }
 
@@ -1300,7 +1503,7 @@ impl ExprValidator<'_, '_> {
                 // built into the model; one whose values are not all constant is
                 // read at run time instead, which is what lets an array parameter
                 // (3.4.4) be a spectrum a model card sets.
-                let len = self.table_value_count(args[0]);
+                let len = self.array_arg_len(args[0]);
                 if len == 0 || len % 2 != 0 {
                     self.operator_err(
                         expr,

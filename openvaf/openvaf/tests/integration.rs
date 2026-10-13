@@ -2499,6 +2499,161 @@ fn test_zi_filter() -> Result<()> {
     Ok(())
 }
 
+/// VAMS-2023 9.21 and 4.5.12 with the numbers a model card sets: the same
+/// reductions `hir_ty` performs are the oracle, so what is under test is that the
+/// arithmetic emitted over values agrees with the arithmetic emitted over
+/// constants. See `card_data.va`.
+fn test_card_data() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+
+    use zi_filter::Side::Coeffs;
+
+    // The declared defaults, and what a card sets instead: a different grid as
+    // well as different samples, since both columns are read at run time.
+    const VS: [f64; 5] = [0.0, 1.0, 2.0, 3.0, 4.0];
+    const YS: [f64; 5] = [0.0, 1.0, 4.0, 9.0, 16.0];
+    const VS_CARD: [f64; 5] = [-2.0, -1.0, 0.0, 1.0, 2.0];
+    const YS_CARD: [f64; 5] = [4.0, 1.0, 0.0, 1.0, 4.0];
+    const DEN: [f64; 2] = [1.0, -0.5];
+    const NUM_CARD: [f64; 1] = [2.0];
+    const DEN_CARD: [f64; 2] = [1.0, -0.25];
+
+    let table = |xs: &[f64], ys: &[f64], spec: &str| {
+        let rows = table_model::Rows::from_columns(&[xs.to_vec(), ys.to_vec()]).expect("columns");
+        let control = table_model::Control::parse(spec, 1).expect("control string");
+        table_model::Table::build(&rows, &control).expect("table").0
+    };
+
+    let desc = test_descriptor(&openvaf_test_data("osdi").join("card_data.va"))?;
+    // A column is one parameter of as many elements as the samples it carries.
+    assert_eq!(desc.param("vs").1, 5);
+    assert_eq!(desc.param("ys").1, 5);
+    assert_eq!(desc.param("num").1, 1);
+    assert_eq!(desc.param("den").1, 2);
+
+    // Below both ends, on the knots, between them, on the midpoints that decide a
+    // closest-point tie either way, and well past the top.
+    let probes =
+        [-3.0, -2.0, -1.5, -1.0, -0.5, 0.0, 0.25, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5];
+    // A sequence with sign changes and a zero, so a wrong history shows up.
+    let input = [1.0, -2.0, 0.0, 3.0, 0.5, -1.5, 4.0];
+
+    for carded in [false, true] {
+        let (vs, ys) = if carded { (VS_CARD, YS_CARD) } else { (VS, YS) };
+        let (num, den): (&[f64], &[f64]) =
+            if carded { (&NUM_CARD, &DEN_CARD) } else { (&[1.0], &DEN) };
+
+        let model = desc.new_model();
+        if carded {
+            model.set_real_param_vec(desc.param("vs").0, &VS_CARD);
+            model.set_real_param_vec(desc.param("ys").0, &YS_CARD);
+            model.set_real_param_vec(desc.param("num").0, &NUM_CARD);
+            model.set_real_param_vec(desc.param("den").0, &DEN_CARD);
+        }
+        model.process_params()?;
+
+        let lin = table(&vs, &ys, "1LL");
+        let hold = table(&vs, &ys, "1CC");
+        let disc = table(&vs, &ys, "D");
+
+        // The lookups, which care about the voltage and not about time.
+        let mut instance = model.new_instance();
+        let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+        for (i, x) in probes.into_iter().enumerate() {
+            if i != 0 {
+                sim.next_iter();
+            }
+            sim.set_voltage("x", x);
+            for node in ["lin", "hold", "disc", "iir", "fixed"] {
+                sim.set_voltage(node, 0.0);
+            }
+            instance.eval(&model, &mut sim, EvalFlags::empty());
+            instance.load_dae(&model, &mut sim);
+            let got_lin = sim.read_residual("flow(lin)").0;
+            let got_hold = sim.read_residual("flow(hold)").0;
+            let got_disc = sim.read_residual("flow(disc)").0;
+            float_cmp::assert_approx_eq!(
+                f64,
+                got_lin,
+                lin.eval(&[x]).expect("lin"),
+                epsilon = 1e-9
+            );
+            float_cmp::assert_approx_eq!(
+                f64,
+                got_hold,
+                hold.eval(&[x]).expect("hold"),
+                epsilon = 1e-9
+            );
+            float_cmp::assert_approx_eq!(
+                f64,
+                got_disc,
+                disc.eval(&[x]).expect("disc"),
+                epsilon = 1e-9
+            );
+
+            // The derivative the lookup carries into the Jacobian, which is what
+            // the table built into the model carries and what a callback could not
+            // carry at all. The reference is a central difference of the oracle,
+            // which is independent of how the pieces are emitted; a knot is
+            // skipped because the derivative there is one-sided.
+            let at_knot = vs.iter().any(|v| (v - x).abs() < 1e-6);
+            if !at_knot {
+                let h = 1e-6;
+                for (node, table) in [("flow(lin)", &lin), ("flow(hold)", &hold)] {
+                    let want = (table.eval(&[x + h]).expect("up")
+                        - table.eval(&[x - h]).expect("down"))
+                        / (2.0 * h);
+                    // The mock simulator keys an entry by (row, column), which
+                    // is the descriptor's two nodes the other way round: this is
+                    // the element its dump lists as (flow(...), x).
+                    let got = sim.read_jacobian("x", node).0;
+                    float_cmp::assert_approx_eq!(f64, got, want, epsilon = 1e-6);
+                }
+            }
+        }
+
+        // The filter, on a fresh instance so the sample grid starts at zero.
+        let filter = zi_filter::Filter::build(Some(num), Coeffs, den, Coeffs).expect("filter");
+        let want = filter.run(&input);
+        let want_fixed = zi_filter::Filter::build(Some(&[1.0]), Coeffs, &DEN, Coeffs)
+            .expect("filter")
+            .run(&input);
+        let mut instance = model.new_instance();
+        let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+        for (m, &x) in input.iter().enumerate() {
+            // Two steps per sample: the first lands on the instant `m*T`, where the
+            // sample is taken but the output is still transitioning to it, and the
+            // second settles clear of that corner. See `test_zi_filter`.
+            for half in 0..2 {
+                if !(m == 0 && half == 0) {
+                    sim.next_iter();
+                    sim.advance_time(0.5);
+                }
+                sim.set_voltage("x", x);
+                for node in ["lin", "hold", "disc", "iir", "fixed"] {
+                    sim.set_voltage(node, 0.0);
+                }
+                instance.eval(&model, &mut sim, EvalFlags::empty());
+                instance.load_dae(&model, &mut sim);
+            }
+            let got = sim.read_residual("flow(iir)").0;
+            let got_fixed = sim.read_residual("flow(fixed)").0;
+            float_cmp::assert_approx_eq!(f64, got, want[m], epsilon = 1e-9);
+            // The filter written with literals is not something a card can reach,
+            // and on the declared default the two are the same filter, so they have
+            // to agree exactly rather than merely both be close to the oracle.
+            float_cmp::assert_approx_eq!(f64, got_fixed, want_fixed[m], epsilon = 1e-9);
+            if !carded {
+                float_cmp::assert_approx_eq!(f64, got, got_fixed, epsilon = 1e-12);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// VAMS-2023 4.5.7: `absdelay` through the descriptor protocol.
 ///
 /// The compiler's half of the protocol is what is under test here: the delay the
@@ -2649,5 +2804,5 @@ harness! {
     Test::from_dir_filtered("vacask_spice", &vacask_spice_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice")),
     // VACASK simplified SPICE models
     Test::from_dir_filtered("vacask_spice_sn", &vacask_spice_sn_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice/sn")),
-    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros),Test::new("laplace_roots", &test_laplace_roots),Test::new("slew", &test_slew),Test::new("cross_detect", &test_cross_detect),Test::new("above_detect", &test_above_detect),Test::new("last_crossing", &test_last_crossing),Test::new("var_persistence", &test_var_persistence),Test::new("timer_detect", &test_timer_detect),Test::new("rng_stream", &test_rng_stream),Test::new("transition_pwl", &test_transition_pwl),Test::new("table_model", &test_table_model),Test::new("zi_filter", &test_zi_filter),Test::new("absdelay", &test_absdelay),Test::new("absdelay_in_model", &test_absdelay_in_model),Test::new("timer_resched", &test_timer_resched),Test::new("case_default", &test_case_default),Test::new("file_io", &test_file_io),Test::new("file_scan", &test_file_scan),Test::new("global_events", &test_global_events),Test::new("scan_target", &test_scan_target),Test::new("directives", &test_directives),Test::new("multidim", &test_multidim),Test::new("timepoints", &test_timepoints),Test::new("accept", &test_accept),Test::new("read_point", &test_read_point),Test::new("array_param", &test_array_param),Test::new("noise_table_param", &test_noise_table_param)]
+    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros),Test::new("laplace_roots", &test_laplace_roots),Test::new("slew", &test_slew),Test::new("cross_detect", &test_cross_detect),Test::new("above_detect", &test_above_detect),Test::new("last_crossing", &test_last_crossing),Test::new("var_persistence", &test_var_persistence),Test::new("timer_detect", &test_timer_detect),Test::new("rng_stream", &test_rng_stream),Test::new("transition_pwl", &test_transition_pwl),Test::new("table_model", &test_table_model),Test::new("zi_filter", &test_zi_filter),Test::new("absdelay", &test_absdelay),Test::new("absdelay_in_model", &test_absdelay_in_model),Test::new("timer_resched", &test_timer_resched),Test::new("case_default", &test_case_default),Test::new("file_io", &test_file_io),Test::new("file_scan", &test_file_scan),Test::new("global_events", &test_global_events),Test::new("scan_target", &test_scan_target),Test::new("directives", &test_directives),Test::new("multidim", &test_multidim),Test::new("timepoints", &test_timepoints),Test::new("accept", &test_accept),Test::new("read_point", &test_read_point),Test::new("array_param", &test_array_param),Test::new("noise_table_param", &test_noise_table_param),Test::new("card_data", &test_card_data)]
 }

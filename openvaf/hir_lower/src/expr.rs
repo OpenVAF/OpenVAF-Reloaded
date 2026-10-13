@@ -29,6 +29,33 @@ use crate::{
     ParamKind, PlaceKind, RetFlag, RngDist,
 };
 
+/// A Z-transform filter's two coefficient vectors, as the lowering gets them.
+///
+/// Table 4-20 makes them constant expression arguments, and a vector of constants
+/// reduces to one difference equation here, with every coefficient folded into the
+/// multiply it scales. A vector a model card sets is a constant expression too
+/// (4.5.14: it "remains static throughout an analysis"), but its numbers arrive
+/// long after the model was compiled, so they are values the difference equation
+/// multiplies by instead.
+pub(crate) enum ZiCoeffs {
+    Const(zi_filter::Filter),
+    Dyn { num: Vec<Value>, den: Vec<Value> },
+}
+
+impl ZiCoeffs {
+    /// How many past inputs and past outputs the difference equation needs. The
+    /// order is the length of the vectors, which a declaration gives whether or
+    /// not it gives their contents.
+    fn order(&self) -> (usize, usize) {
+        match self {
+            ZiCoeffs::Const(filter) => filter.order(),
+            ZiCoeffs::Dyn { num, den } => {
+                (num.len().saturating_sub(1), den.len().saturating_sub(1))
+            }
+        }
+    }
+}
+
 /// How an array variable's elements are laid out across its MIR places: one place
 /// per element, in row-major order, however many dimensions it was declared with.
 pub(crate) struct ArrayLayout {
@@ -764,7 +791,10 @@ impl BodyLoweringCtx<'_, '_, '_> {
             for &arg in &args[ndims..end] {
                 match self.const_real_array(arg) {
                     Some(col) => cols.push(col),
-                    None => return F_ZERO,
+                    // A column a model card sets. The lookup is emitted over its
+                    // values instead; `hir_ty` has already required the one shape
+                    // of the operator that can be.
+                    None => return self.lower_table_model_dyn(args, ndims, end),
                 }
             }
             match table_model::Rows::from_columns(&cols) {
@@ -793,10 +823,19 @@ impl BodyLoweringCtx<'_, '_, '_> {
 
         let (value, outside) = self.emit_table(&table.root, &table.dims, &inputs);
 
-        // 9.21.2's `E` method: "an extrapolation error is reported if the
-        // $table_model function is requested to evaluate a point beyond the
-        // interpolation region", and 9.21 adds that it "results in a fatal error
-        // being raised".
+        self.table_abort_if_outside(outside);
+
+        value
+    }
+
+    /// 9.21.2's `E` method: "an extrapolation error is reported if the
+    /// $table_model function is requested to evaluate a point beyond the
+    /// interpolation region", and 9.21 adds that it "results in a fatal error
+    /// being raised".
+    ///
+    /// `FALSE` for the overwhelming majority of tables, which have no `E` end at
+    /// all, and then this emits nothing.
+    fn table_abort_if_outside(&mut self, outside: Value) {
         if outside != FALSE {
             self.ctx.make_select(outside, |ctx, taken| {
                 if taken {
@@ -805,8 +844,134 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 F_ZERO
             });
         }
+    }
 
-        value
+    /// VAMS-2023 9.21 with a data source a model card sets.
+    ///
+    /// The lookup is the arithmetic the compiled-in table emits, with the
+    /// ordinates and the samples as values rather than constants: a line through
+    /// each pair of samples, and a chain of comparisons that picks the piece the
+    /// lookup falls in. The derivative still falls out of it, because the
+    /// ordinates do not depend on the lookup expression and the derivative of a
+    /// select is a select.
+    ///
+    /// One dimension, and only the two interpolation methods whose weights are a
+    /// closed form of the ordinates: a spline's are the solution of a system over
+    /// all of them, and the shape of a table of more than one dimension is the
+    /// data itself. `hir_ty` reports both rather than letting them arrive here.
+    ///
+    /// What nothing can report is a card whose ordinates do not ascend. A table
+    /// of constants is sorted into the isoline tree as it is built and its
+    /// duplicates dropped (9.21); these are read in the order the array gives
+    /// them. A repeated ordinate is harmless, because the piece it spans is
+    /// empty, but a column out of order is a column read out of order.
+    fn lower_table_model_dyn(&mut self, args: &[ExprId], ndims: usize, control: usize) -> Value {
+        if ndims != 1 {
+            return F_ZERO;
+        }
+        let xs = self.array_coeffs(args[1]);
+        let ys = self.array_coeffs(args[2]);
+        let n = xs.len().min(ys.len());
+        if n == 0 {
+            return F_ZERO;
+        }
+        let spec = match args.get(control) {
+            Some(&arg) => self.body.as_literal(arg).unwrap().unwrap_str().to_owned(),
+            None => String::new(),
+        };
+        let ctrl = match table_model::Control::parse(&spec, 1) {
+            Ok(control) => match control.dims().first().copied() {
+                Some(ctrl) => ctrl,
+                None => return F_ZERO,
+            },
+            Err(_) => return F_ZERO,
+        };
+        let x = self.lower_expr(args[0]);
+
+        if ctrl.interp == table_model::Interp::Discrete {
+            // Closest point: the pieces meet at the midpoints, and a lookup
+            // exactly on one "snaps away from zero", so which sample a midpoint
+            // belongs to is itself a comparison of the two ordinates. Table 9-31's
+            // extrapolation does not apply, the way it does not to a compiled-in
+            // discrete table: the outermost samples extend.
+            let mut val = ys[n - 1];
+            for i in (0..n - 1).rev() {
+                let sum = self.ctx.ins().fadd(xs[i], xs[i + 1]);
+                let half = self.ctx.fconst(0.5);
+                let mid = self.ctx.ins().fmul(sum, half);
+                let below = self.ctx.ins().flt(x, mid);
+                let on = self.ctx.ins().feq(x, mid);
+                let here = self.fabs(xs[i]);
+                let next = self.fabs(xs[i + 1]);
+                let lower_wins = self.ctx.ins().fgt(here, next);
+                let tie = self.and(on, lower_wins);
+                let cond = self.or(below, tie);
+                let sample = ys[i];
+                val = self.ctx.make_select(cond, |_s, t| if t { sample } else { val });
+            }
+            return val;
+        }
+
+        let below = self.ctx.ins().flt(x, xs[0]);
+        let above = self.ctx.ins().fgt(x, xs[n - 1]);
+
+        // The two ends. `C` is the endpoint sample, `L` extends the outermost
+        // line, and `E` is a fatal error, for which the value does not matter.
+        let lower = match ctrl.lo {
+            table_model::Extrap::Linear if n > 1 => self.emit_table_line(x, &xs, &ys, 0),
+            _ => ys[0],
+        };
+        let upper = match ctrl.hi {
+            table_model::Extrap::Linear if n > 1 => self.emit_table_line(x, &xs, &ys, n - 2),
+            _ => ys[n - 1],
+        };
+
+        // Built from the last piece backwards, so each comparison only has to
+        // decide between this piece and everything above it, which is how the
+        // compiled-in table emits its chain as well.
+        let mut val = upper;
+        for i in (0..n.saturating_sub(1)).rev() {
+            let line = self.emit_table_line(x, &xs, &ys, i);
+            // The last interval runs to the final ordinate inclusive.
+            let cond = if i == n - 2 {
+                self.ctx.ins().fle(x, xs[n - 1])
+            } else {
+                self.ctx.ins().flt(x, xs[i + 1])
+            };
+            val = self.ctx.make_select(cond, |_s, t| if t { line } else { val });
+        }
+        let val = self.ctx.make_select(below, |_s, t| if t { lower } else { val });
+
+        let mut outside = FALSE;
+        if ctrl.lo == table_model::Extrap::Error {
+            outside = below;
+        }
+        if ctrl.hi == table_model::Extrap::Error {
+            outside = if outside == FALSE { above } else { self.or(outside, above) };
+        }
+        self.table_abort_if_outside(outside);
+
+        val
+    }
+
+    /// The line through two of a table's samples, evaluated at `x`: what linear
+    /// interpolation gives inside a piece, and what `L` extrapolation extends
+    /// past the ends.
+    fn emit_table_line(&mut self, x: Value, xs: &[Value], ys: &[Value], i: usize) -> Value {
+        let dx = self.ctx.ins().fsub(xs[i + 1], xs[i]);
+        let dy = self.ctx.ins().fsub(ys[i + 1], ys[i]);
+        let slope = self.ctx.ins().fdiv(dy, dx);
+        let u = self.ctx.ins().fsub(x, xs[i]);
+        let step = self.ctx.ins().fmul(u, slope);
+        self.ctx.ins().fadd(ys[i], step)
+    }
+
+    /// `|v|` on reals, which the MIR has no intrinsic for: the same comparison
+    /// and negation `abs` itself lowers to.
+    fn fabs(&mut self, v: Value) -> Value {
+        let negative = self.ctx.ins().flt(v, F_ZERO);
+        let flipped = self.ctx.ins().fneg(v);
+        self.ctx.make_select(negative, |_s, t| if t { flipped } else { v })
     }
 
     /// Emit a lookup over the isoline tree as `(value, outside)`.
@@ -2058,23 +2223,44 @@ impl BodyLoweringCtx<'_, '_, '_> {
         let (num_side, den_side) = Self::zi_sides(builtin);
         // A null `zeros` argument is the empty product: "The zeros argument may be
         // represented as a null argument."
-        let num = match args.get(1) {
-            Some(&arg) if !self.body.is_missing(arg) => match self.const_real_array(arg) {
-                Some(num) => Some(num),
-                None => return F_ZERO,
-            },
-            _ => None,
+        let num_arg = args.get(1).copied().filter(|&arg| !self.body.is_missing(arg));
+        let Some(den_arg) = args.get(2).copied().filter(|&arg| !self.body.is_missing(arg)) else {
+            return F_ZERO;
         };
-        let den = match args.get(2).copied().filter(|&a| !self.body.is_missing(a)) {
-            Some(arg) => match self.const_real_array(arg) {
-                Some(den) => den,
-                None => return F_ZERO,
-            },
-            None => return F_ZERO,
+        let num_const = match num_arg {
+            Some(arg) => self.const_real_array(arg),
+            // No zeros at all is the same as a vector of constants, since the
+            // numerator is then the unity `hir::zi_filter` supplies.
+            None => Some(Vec::new()),
         };
-        let filter = match zi_filter::Filter::build(num.as_deref(), num_side, &den, den_side) {
-            Ok(filter) => filter,
-            Err(_) => return F_ZERO,
+        let den_const = self.const_real_array(den_arg);
+        let coeffs = match (num_const, den_const) {
+            (Some(num), Some(den)) => {
+                let num = num_arg.map(|_| num);
+                let filter =
+                    match zi_filter::Filter::build(num.as_deref(), num_side, &den, den_side) {
+                        Ok(filter) => filter,
+                        Err(_) => return F_ZERO,
+                    };
+                ZiCoeffs::Const(filter)
+            }
+            // One of the two is a vector a model card can set, so the difference
+            // equation multiplies by values. A side written as roots is still
+            // multiplied out here, because 4.5.12 requires the conjugate of every
+            // complex root to be present and that is a property of the numbers:
+            // `hir_ty` has already required such a vector to be constant.
+            (num_const, den_const) => {
+                let num = match num_arg {
+                    Some(arg) => self.zi_coeff_vals(arg, num_side, num_const),
+                    None => vec![self.ctx.fconst(1.0)],
+                };
+                let num = if num.is_empty() { vec![self.ctx.fconst(1.0)] } else { num };
+                let den = self.zi_coeff_vals(den_arg, den_side, den_const);
+                if den.is_empty() {
+                    return F_ZERO;
+                }
+                ZiCoeffs::Dyn { num, den }
+            }
         };
         // 4.5.14: a constant expression "remains static throughout an analysis",
         // which a `parameter` does even though its value is the simulator's to set.
@@ -2094,7 +2280,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
             None => F_ZERO,
         };
 
-        let (m, n) = filter.order();
+        let (m, n) = coeffs.order();
         let now = self.ctx.use_param(ParamKind::Abstime);
         let no_bound = self.ctx.fconst(f64::MAX);
 
@@ -2123,6 +2309,17 @@ impl BodyLoweringCtx<'_, '_, '_> {
         // leaves the filter parked rather than dividing by zero; a literal one is
         // rejected outright during validation.
         let usable = self.ctx.ins().fgt(period, F_ZERO);
+        // The same for the leading denominator coefficient, which the output is
+        // solved for and so divides by. A constant zero there is rejected during
+        // validation; one a model card sets parks the filter rather than dividing
+        // by zero, the way a non-positive period does.
+        let usable = match &coeffs {
+            ZiCoeffs::Dyn { den, .. } => {
+                let determined = self.ctx.ins().fne(den[0], F_ZERO);
+                self.and(usable, determined)
+            }
+            ZiCoeffs::Const(_) => usable,
+        };
         let divisor = self.ctx.make_select(usable, |_s, b| if b { period } else { one });
         let due = self.ctx.ins().fge(now, next_prev);
         let reached = self.and(due, usable);
@@ -2151,16 +2348,39 @@ impl BodyLoweringCtx<'_, '_, '_> {
         x_new.extend(x_prev.iter().take(m).copied());
 
         //   y[m] = ( sum_k n_k x[m-k] - sum_{k>=1} d_k y[m-k] ) / d_0
-        let inv_d0 = 1.0 / filter.den[0];
-        let mut acc = F_ZERO;
-        for (k, coeff) in filter.num.iter().enumerate() {
-            let term = self.emit_scaled(x_new[k], coeff * inv_d0);
-            acc = if acc == F_ZERO { term } else { self.ctx.ins().fadd(acc, term) };
-        }
-        for (k, coeff) in filter.den.iter().enumerate().skip(1) {
-            let term = self.emit_scaled(y_prev[k - 1], -coeff * inv_d0);
-            acc = if acc == F_ZERO { term } else { self.ctx.ins().fadd(acc, term) };
-        }
+        let acc = match &coeffs {
+            ZiCoeffs::Const(filter) => {
+                let inv_d0 = 1.0 / filter.den[0];
+                let mut acc = F_ZERO;
+                for (k, coeff) in filter.num.iter().enumerate() {
+                    let term = self.emit_scaled(x_new[k], coeff * inv_d0);
+                    acc = if acc == F_ZERO { term } else { self.ctx.ins().fadd(acc, term) };
+                }
+                for (k, coeff) in filter.den.iter().enumerate().skip(1) {
+                    let term = self.emit_scaled(y_prev[k - 1], -coeff * inv_d0);
+                    acc = if acc == F_ZERO { term } else { self.ctx.ins().fadd(acc, term) };
+                }
+                acc
+            }
+            // The same sum with nothing folded, and one division at the end
+            // rather than a reciprocal multiplied into every coefficient.
+            ZiCoeffs::Dyn { num, den } => {
+                let mut acc = F_ZERO;
+                for (k, &coeff) in num.iter().enumerate() {
+                    let term = self.ctx.ins().fmul(x_new[k], coeff);
+                    acc = if acc == F_ZERO { term } else { self.ctx.ins().fadd(acc, term) };
+                }
+                for (k, &coeff) in den.iter().enumerate().skip(1) {
+                    let term = self.ctx.ins().fmul(y_prev[k - 1], coeff);
+                    acc = if acc == F_ZERO {
+                        self.ctx.ins().fneg(term)
+                    } else {
+                        self.ctx.ins().fsub(acc, term)
+                    };
+                }
+                self.ctx.ins().fdiv(acc, den[0])
+            }
+        };
 
         let mut y_new = Vec::with_capacity(y_prev.len());
         y_new.push(acc);
@@ -2183,6 +2403,30 @@ impl BodyLoweringCtx<'_, '_, '_> {
         // `tau`. No delay: a unity filter "exhibits no delay".
         let held = self.ctx.make_select(reached, |_s, b| if b { acc } else { y_prev[0] });
         self.emit_transition(held, F_ZERO, tau, tau, None)
+    }
+
+    /// One side of a Z-transform filter as the values the difference equation
+    /// multiplies by: the vector's own elements where it was written as
+    /// coefficients of `z^-k`, and the constants a root vector multiplies out to
+    /// where it was written as roots.
+    fn zi_coeff_vals(
+        &mut self,
+        arg: ExprId,
+        side: zi_filter::Side,
+        known: Option<Vec<f64>>,
+    ) -> Vec<Value> {
+        match (side, known) {
+            (zi_filter::Side::Coeffs, _) => self.array_coeffs(arg),
+            (zi_filter::Side::Roots, Some(roots)) => {
+                match zi_filter::roots_to_coeffs(&roots, "roots") {
+                    Ok(coeffs) => coeffs.iter().map(|&c| self.ctx.fconst(c)).collect(),
+                    Err(_) => Vec::new(),
+                }
+            }
+            // Rejected during validation: the pairing of the roots cannot be
+            // checked where the numbers are not known.
+            (zi_filter::Side::Roots, None) => Vec::new(),
+        }
     }
 
     /// `val * coeff` with the constant folded away where it is 0 or 1.

@@ -1,0 +1,48 @@
+// VAMS-2023 9.21's data source and 4.5.12's coefficients with the numbers a
+// model card sets: what can be read at run time and what cannot. As many
+// accepted forms as rejected ones, so the test fails if one of the accepted ones
+// starts being reported.
+`include "disciplines.vams"
+
+module carddata_err(a, b);
+    inout electrical a, b;
+
+    parameter real xs[0:2] = '{0.0, 0.5, 1.0};
+    parameter real ys[0:2] = '{0.0, 1.0, 4.0};
+    parameter real short[0:1] = '{0.0, 1.0};
+    parameter real bank[0:1][0:1] = '{'{1.0, -0.5}, '{1.0, -0.25}};
+    parameter real roots[0:1] = '{0.5, 0.0};
+    real var_col[0:2];
+    real acc;
+
+    analog begin
+        var_col[0] = 0.0;
+        var_col[1] = 1.0;
+        var_col[2] = 2.0;
+
+        // Accepted: a card's two columns, interpolated linearly or by closest
+        // point; a card's coefficients; one row of a card's bank of them; and a
+        // card's numerator against poles written where the call is.
+        acc = $table_model(V(a, b), xs, ys, "1L");
+        acc = acc + $table_model(V(a, b), xs, ys, "DC");
+        acc = acc + zi_nd(V(a, b), '{1.0}, bank[1], 1u);
+        acc = acc + zi_np(V(a, b), ys, '{0.5, 0.0}, 1u);
+
+        // A spline's weights are the solution of a system over every ordinate in
+        // the table, so they cannot be built where the ordinates are not known.
+        acc = acc + $table_model(V(a, b), xs, ys, "3L");
+        // Which rows of a table of two dimensions share an ordinate is the data,
+        // so the shape of the table is not known either.
+        acc = acc + $table_model(V(a, b), V(b), xs, xs, ys, "1L,1L");
+        // A sample is an ordinate and a value.
+        acc = acc + $table_model(V(a, b), xs, short, "1L");
+        // A column the module fills in would have to be captured on the first
+        // call, which 9.21.1 asks for and this does not do.
+        acc = acc + $table_model(V(a, b), xs, var_col, "1L");
+        // A root vector has to be known where it is written, because the pairing
+        // 4.5.12 requires is a property of the numbers.
+        acc = acc + zi_zp(V(a, b), , roots, 1u);
+
+        I(a, b) <+ acc;
+    end
+endmodule

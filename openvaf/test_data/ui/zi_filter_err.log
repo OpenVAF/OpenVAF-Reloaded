@@ -1,4 +1,4 @@
-error: invalid $zi_nd: the denominator vector has to be an array of constants. Table 4-20 makes it a constant expression argument, and the filter is compiled into the model, so an array the module computes at run time -- or one a model card sets -- cannot be read here: write it as an array literal
+error: invalid $zi_nd: the denominator vector has to be an array of constants, or an array parameter a model card sets. Table 4-20 makes it a constant expression argument, which 4.5.14 says remains static throughout an analysis: an array the module fills in at run time would be a different filter at every sample
    --> /zi_filter_err.va:19:15
    |
 19 |         acc = zi_nd(V(a, b), {1.0}, coeffs, 1u);

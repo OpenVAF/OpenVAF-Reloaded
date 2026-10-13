@@ -44,11 +44,11 @@ module arrayparam_err(a, b);
         V(a) <+ m[0];
         // A scalar parameter has nothing to index.
         V(a) <+ sel[0];
-        // An operator whose coefficients are compiled into the model cannot take
-        // an array parameter: a model card sets one, which is after that point.
-        // The ones that read their values at run time can, which is what the
-        // `laplace_nd` above does and what `noise_table` does
-        // (`noisetab_err.va`).
-        V(a) <+ zi_nd(V(b), '{1.0}, g, 1u);
+        // A vector of roots is what an array parameter still cannot be: 4.5.12
+        // requires the conjugate of every complex root to be present, which is a
+        // property of the numbers rather than of where they came from. The
+        // operators that take coefficients, samples or a noise table can all read
+        // them from a card (`carddata_err.va`, `noisetab_err.va`).
+        V(a) <+ zi_zp(V(b), , g, 1u);
     end
 endmodule

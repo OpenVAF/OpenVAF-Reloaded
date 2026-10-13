@@ -37,11 +37,11 @@ error: indexing something that is not an array
    |
    = help: declare the range the index is into, as in 'real c[0:2]'
 
-error: invalid $zi_nd: the denominator vector has to be an array of constants. Table 4-20 makes it a constant expression argument, and the filter is compiled into the model, so an array the module computes at run time -- or one a model card sets -- cannot be read here: write it as an array literal
+error: invalid $zi_zp: the poles vector has to be an array of constants. 4.5.12 requires the conjugate of every complex root to be present, and that is a property of the numbers themselves: a root whose conjugate is missing leaves an imaginary coefficient behind, which cannot be caught where the numbers are not known. Write the roots as an array literal, or give the same filter as coefficients of z^-k, which a model card may set
    --> /arrayparam_err.va:52:17
    |
-52 |         V(a) <+ zi_nd(V(b), '{1.0}, g, 1u);
-   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $zi_nd
+52 |         V(a) <+ zi_zp(V(b), , g, 1u);
+   |                 ^^^^^^^^^^^^^^^^^^^^ invalid $zi_zp
 
 error: type mismatch: expected real[0:2] value but found real[0:1] value
    --> /arrayparam_err.va:24:33
