@@ -5,7 +5,7 @@ pub(super) use module::module;
 use module::MODULE_ITEM_OR_ATTR_RECOVERY;
 
 pub(super) const ITEM_RECOVERY_SET: TokenSet =
-    TokenSet::new(&[DISCIPLINE_KW, NATURE_KW, MODULE_KW, EOF]);
+    TokenSet::new(&[DISCIPLINE_KW, NATURE_KW, MODULE_KW, PARAMSET_KW, EOF]);
 
 const DISCIPLINE_RECOVERY_SET: TokenSet =
     ITEM_RECOVERY_SET.union(TokenSet::unique(ENDDISCIPLINE_KW));
@@ -87,8 +87,10 @@ pub(super) fn var_decl(p: &mut Parser, m: Marker) {
 fn var(p: &mut Parser) -> bool {
     let m = p.start();
     name_r(p, TokenSet::new(&[T!['['], T![,], T![=], T![;]]));
-    // Optional array dimension, e.g. `real den[order:0];`.
-    if p.at(T!['[']) {
+    // Optional array dimensions, e.g. `real den[order:0];`. VAMS-2023 3.2 allows
+    // more than one -- `integer flag_array[0:8][0:3];` is its own example -- and
+    // every one of them is a dimension of the same array.
+    while p.at(T!['[']) {
         let dim = p.start();
         p.bump(T!['[']);
         expr(p);
@@ -115,7 +117,19 @@ pub(super) fn parameter_decl(p: &mut Parser, m: Marker) {
 const PARAM_RECOVER: TokenSet = MODULE_ITEM_OR_ATTR_RECOVERY.union(TokenSet::new(&[T![,], T![;]]));
 fn parameter(p: &mut Parser) -> bool {
     let m = p.start();
-    name_r(p, TokenSet::new(&[T![,], T![;]]));
+    name_r(p, TokenSet::new(&[T!['['], T![=], T![,], T![;]]));
+    // A parameter array says its range between its name and its value, the way a
+    // variable array does: VAMS-2023 3.4.4 declares `parameter real poles[0:3] =
+    // '{...}`, and 3.4.8 gives a dimension per range for as many as there are.
+    while p.at(T!['[']) {
+        let dim = p.start();
+        p.bump(T!['[']);
+        expr(p);
+        p.expect(T![:]);
+        expr(p);
+        p.expect(T![']']);
+        dim.complete(p, DIMENSION);
+    }
     p.expect(T![=]);
     expr(p);
     while !p.at_ts(PARAM_RECOVER) {

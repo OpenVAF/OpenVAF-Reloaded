@@ -2,8 +2,8 @@ use std::iter;
 use std::ptr::NonNull;
 
 use hir::CompilationDB;
-use hir_lower::fmt::{DisplayKind, FmtArg, FmtArgKind};
-use hir_lower::{CallBackKind, HirInterner, RetFlag};
+use hir_lower::fmt::{DisplayKind, FmtArg, FmtArgKind, PrintSink};
+use hir_lower::{CallBackKind, FileOp, HirInterner, RetFlag};
 use lasso::Rodeo;
 use llvm_sys::core::{
     LLVMAddIncoming, LLVMAppendBasicBlockInContext, LLVMBuildAdd, LLVMBuildArrayMalloc,
@@ -148,7 +148,7 @@ impl<'a> OsdiModule<'a> {
         module: &'a CompiledModule,
         lim_table: &'a TiSet<OsdiLimId, OsdiLimFunction>,
     ) -> Self {
-        let sym = base_n::encode(module.info.module.uuid(db) as u128, base_n::CASE_INSENSITIVE);
+        let sym = base_n::encode(module.info.uuid(db) as u128, base_n::CASE_INSENSITIVE);
         let CompiledModule {
             info,
             dae_system,
@@ -180,6 +180,10 @@ pub fn general_callbacks<'ll>(
     ret_flags: &'ll llvm_sys::LLVMValue,
     handle: &'ll llvm_sys::LLVMValue,
     simparam: &'ll llvm_sys::LLVMValue,
+    // The instance whose evaluation this is, for the callbacks that keep something
+    // per instance. A null pointer where there is no one instance (a model's own
+    // setup), which the runtime takes as "there is no timepoint either".
+    instance: &'ll llvm_sys::LLVMValue,
 ) -> TiVec<FuncRef, Option<CallbackFun<'ll>>> {
     let ptr_ty = builder.cx.ty_ptr();
     intern
@@ -236,6 +240,36 @@ pub fn general_callbacks<'ll>(
                         num_state: 0,
                     })
                 }
+                // 9.4.1: the line goes to the runtime, which keeps it until the
+                // timepoint it belongs to is final. The level this kind of task logs
+                // at is a constant of the statement, so it rides along with the
+                // handle and the instance rather than being an argument.
+                CallBackKind::StrobeLine { kind } => {
+                    let fun = builder
+                        .cx
+                        .get_func_by_name("va_strobe")
+                        .expect("stdlib function va_strobe is missing");
+                    let int_ty = builder.cx.ty_int();
+                    let fun_ty = builder.cx.ty_func(
+                        &[ptr_ty, ptr_ty, int_ty, int_ty, int_ty, ptr_ty, builder.cx.ty_double()],
+                        builder.cx.ty_void(),
+                    );
+                    let lvl = match kind {
+                        DisplayKind::Debug => LOG_LVL_DEBUG,
+                        DisplayKind::Display | DisplayKind::Monitor => LOG_LVL_DISPLAY,
+                        DisplayKind::Info => LOG_LVL_INFO,
+                        DisplayKind::Warn => LOG_LVL_WARN,
+                        DisplayKind::Error => LOG_LVL_ERR,
+                        DisplayKind::Fatal => LOG_LVL_FATAL,
+                    };
+                    let lvl = builder.cx.const_unsigned_int(lvl);
+                    CallbackFun::Prebuilt(BuiltCallbackFun {
+                        fun_ty,
+                        fun,
+                        state: vec![handle, instance, lvl].into_boxed_slice(),
+                        num_state: 0,
+                    })
+                }
                 // If these derivative were non zero they would have been removed
                 CallBackKind::Derivative(_) | CallBackKind::NodeDerivative(_) => {
                     let zero = builder.cx.const_real(0.0);
@@ -247,6 +281,12 @@ pub fn general_callbacks<'ll>(
                 | CallBackKind::CollapseHint(_, _)
                 | CallBackKind::BuiltinLimit { .. }
                 | CallBackKind::StoreLimit(_)
+                | CallBackKind::StoreRetained(_)
+                | CallBackKind::RetainedFirst(_)
+                | CallBackKind::StoreRetainedStr(_)
+                | CallBackKind::PrevRetainedStr(_)
+                | CallBackKind::RngValue(_)
+                | CallBackKind::RngSeed(_)
                 | CallBackKind::LimDiscontinuity
                 | CallBackKind::Analysis
                 | CallBackKind::NoiseTable(_)
@@ -254,12 +294,41 @@ pub fn general_callbacks<'ll>(
                 | CallBackKind::FlickerNoise { .. }
                 | CallBackKind::TimeDerivative => return None,
 
-                CallBackKind::Print { kind, arg_tys } => {
-                    let (fun, fun_ty) = print_callback(builder.cx, *kind, arg_tys);
+                CallBackKind::Print { kind, sink, arg_tys } => {
+                    let (fun, fun_ty) = print_callback(builder.cx, *kind, *sink, arg_tys);
                     CallbackFun::Prebuilt(BuiltCallbackFun {
                         fun_ty,
                         fun,
                         state: Box::new([handle]),
+                        num_state: 0,
+                    })
+                }
+                // VAMS-2023 9.5: the descriptor tables live in the stdlib, so these
+                // are plain calls with nothing of the instance behind them.
+                CallBackKind::File(op) => {
+                    let name = op.stdlib_name();
+                    let fun = builder
+                        .cx
+                        .get_func_by_name(name)
+                        .unwrap_or_else(|| panic!("stdlib function {name} is missing"));
+                    let int = builder.cx.ty_int();
+                    let ptr = builder.cx.ty_ptr();
+                    let fun_ty = match op {
+                        FileOp::OpenMcd => builder.cx.ty_func(&[ptr], int),
+                        FileOp::Open => builder.cx.ty_func(&[ptr, ptr], int),
+                        FileOp::Flush | FileOp::FlushAll => builder.cx.ty_func(&[int, int], int),
+                        FileOp::Seek => builder.cx.ty_func(&[int, int, int], int),
+                        FileOp::Gets => builder.cx.ty_func(&[int], ptr),
+                        FileOp::Len => builder.cx.ty_func(&[ptr], int),
+                        FileOp::Scan => builder.cx.ty_func(&[ptr, ptr], int),
+                        FileOp::ScanReal => builder.cx.ty_func(&[int], builder.cx.ty_double()),
+                        FileOp::ScanStr => builder.cx.ty_func(&[int], ptr),
+                        _ => builder.cx.ty_func(&[int], int),
+                    };
+                    CallbackFun::Prebuilt(BuiltCallbackFun {
+                        fun_ty,
+                        fun,
+                        state: Box::new([]),
                         num_state: 0,
                     })
                 }
@@ -330,14 +399,31 @@ fn print_module_ir(cx: &CodegenCx, message: &str) {
     }
 }*/
 
+/// The formatting half of 9.4 and 9.5 is the same; only where the line goes
+/// differs.
+///
+/// `PrintSink::File` takes the descriptor as a second parameter -- everything
+/// after it shifts by one -- and hands the finished line to `va_fputs` instead of
+/// straight to the simulator's log. `PrintSink::Str` hands it to nobody and
+/// returns it, which is all 9.5.3's `$swrite` and `$sformat` are.
 fn print_callback<'ll>(
     cx: &CodegenCx<'_, 'll>,
     kind: hir_lower::fmt::DisplayKind,
+    sink: PrintSink,
     arg_tys: &[FmtArg],
 ) -> (&'ll llvm_sys::LLVMValue, &'ll llvm_sys::LLVMType) {
-    let mut args = vec![cx.ty_ptr(), cx.ty_ptr()];
+    let to_file = sink == PrintSink::File;
+    // The index of the format string, which is also how far the value arguments
+    // move along when a descriptor comes first.
+    let fmt_param = if to_file { 2u32 } else { 1u32 };
+    let mut args = vec![cx.ty_ptr()];
+    if to_file {
+        args.push(cx.ty_int());
+    }
+    args.push(cx.ty_ptr());
     args.extend(arg_tys.iter().map(|arg| lltype(&arg.ty, cx)));
-    let fun_ty = cx.ty_func(&args, cx.ty_void());
+    let ret_ty = if sink == PrintSink::Str { cx.ty_ptr() } else { cx.ty_void() };
+    let fun_ty = cx.ty_func(&args, ret_ty);
     let name = cx.local_callback_name();
     let fun = cx.declare_int_fn(&name, fun_ty);
 
@@ -374,11 +460,14 @@ fn print_callback<'ll>(
 
         LLVMPositionBuilderAtEnd(llbuilder, entry_bb);
         let handle = LLVMGetParam(NonNull::from(fun).as_ptr(), 0);
-        let fmt_lit = LLVMGetParam(NonNull::from(fun).as_ptr(), 1);
+        let fmt_lit = LLVMGetParam(NonNull::from(fun).as_ptr(), fmt_param);
+        // Taken here because `fun` is shadowed further down by the intrinsic being
+        // called, and the descriptor is wanted at the very end.
+        let desc = if to_file { LLVMGetParam(NonNull::from(fun).as_ptr(), 1) } else { handle };
         let mut args = vec![
             cx.const_null_ptr(),
             cx.const_usize(0),
-            &*LLVMGetParam(NonNull::from(fun).as_ptr(), 1),
+            &*LLVMGetParam(NonNull::from(fun).as_ptr(), fmt_param),
         ];
 
         let exp_table = cx.get_declared_value("EXP").expect("constant EXP missing from stdlib");
@@ -394,7 +483,7 @@ fn print_callback<'ll>(
         let mut free = Vec::new();
 
         for (i, arg) in arg_tys.iter().enumerate() {
-            let val = LLVMGetParam(NonNull::from(fun).as_ptr(), i as u32 + 2);
+            let val = LLVMGetParam(NonNull::from(fun).as_ptr(), i as u32 + fmt_param + 1);
             match arg.kind {
                 FmtArgKind::Binary => {
                     let mut val_array = [val];
@@ -565,26 +654,49 @@ fn print_callback<'ll>(
         let mut incoming_blocks = [write_bb, err_bb];
         LLVMAddIncoming(msg, incoming_values.as_mut_ptr(), incoming_blocks.as_mut_ptr(), 2);
 
-        let fun_ptr = cx.get_declared_value("osdi_log").expect("symbol osdi_log is missing");
-        let fun_ty = cx.ty_func(&[cx.ty_ptr(), cx.ty_ptr(), cx.ty_int()], cx.ty_void());
-        let fun = LLVMBuildLoad2(
-            llbuilder,
-            NonNull::from(cx.ty_ptr()).as_ptr(),
-            NonNull::from(fun_ptr).as_ptr(),
-            UNNAMED,
-        );
+        if sink == PrintSink::Str {
+            // Nothing to write it to: the line *is* the result.
+            llvm_sys::core::LLVMBuildRet(llbuilder, msg);
+        } else if to_file {
+            // `va_fputs` resolves the descriptor, which may name several files at
+            // once or the simulator's own output; the level comes along for the
+            // descriptors that mean the latter.
+            let sink =
+                cx.get_func_by_name("va_fputs").expect("stdlib function va_fputs is missing");
+            let sink_ty =
+                cx.ty_func(&[cx.ty_ptr(), cx.ty_int(), cx.ty_ptr(), cx.ty_int()], cx.ty_void());
+            let mut args = [handle, desc, msg, flags];
+            LLVMBuildCall2(
+                llbuilder,
+                NonNull::from(sink_ty).as_ptr(),
+                NonNull::from(sink).as_ptr(),
+                args.as_mut_ptr(),
+                4,
+                UNNAMED,
+            );
+            llvm_sys::core::LLVMBuildRetVoid(llbuilder);
+        } else {
+            let fun_ptr = cx.get_declared_value("osdi_log").expect("symbol osdi_log is missing");
+            let fun_ty = cx.ty_func(&[cx.ty_ptr(), cx.ty_ptr(), cx.ty_int()], cx.ty_void());
+            let fun = LLVMBuildLoad2(
+                llbuilder,
+                NonNull::from(cx.ty_ptr()).as_ptr(),
+                NonNull::from(fun_ptr).as_ptr(),
+                UNNAMED,
+            );
 
-        // Fix for LLVMBuildCall2
-        let mut args = [handle, msg, flags];
-        LLVMBuildCall2(
-            llbuilder,
-            NonNull::from(fun_ty).as_ptr(),
-            fun,
-            args.as_mut_ptr(),
-            3,
-            UNNAMED,
-        );
-        llvm_sys::core::LLVMBuildRetVoid(llbuilder);
+            // Fix for LLVMBuildCall2
+            let mut args = [handle, msg, flags];
+            LLVMBuildCall2(
+                llbuilder,
+                NonNull::from(fun_ty).as_ptr(),
+                fun,
+                args.as_mut_ptr(),
+                3,
+                UNNAMED,
+            );
+            llvm_sys::core::LLVMBuildRetVoid(llbuilder);
+        }
         llvm_sys::core::LLVMDisposeBuilder(llbuilder);
     }
 

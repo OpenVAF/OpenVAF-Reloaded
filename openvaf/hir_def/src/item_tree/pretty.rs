@@ -61,7 +61,10 @@ impl<'a> Printer<'a> {
         }
 
         for module in &self.tree.data.modules {
-            wln!(self, "module {}", module.name);
+            match &module.paramset {
+                Some(target) => wln!(self, "paramset {} {}", module.name, target),
+                None => wln!(self, "module {}", module.name),
+            }
             self.indented(|s| s.print_module(module))
         }
     }
@@ -128,6 +131,9 @@ impl<'a> Printer<'a> {
                     wln!(self, "aliasparam {} = {:?}", param.name, param.src);
                 }
             }
+        }
+        for (i, stmt) in module.paramset_stmts.iter().enumerate() {
+            wln!(self, "paramset_stmt{} .{}", i, stmt.param);
         }
     }
 

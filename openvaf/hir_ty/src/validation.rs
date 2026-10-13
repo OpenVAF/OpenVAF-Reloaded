@@ -1,5 +1,7 @@
 use basedb::diagnostics::{Diagnostic, Label, LabelStyle, Report};
-use basedb::lints::builtin::{const_simparam, trivial_probe, variant_const_simparam};
+use basedb::lints::builtin::{
+    const_simparam, ignored_discontinuity, trivial_probe, unscheduled_event, variant_const_simparam,
+};
 use basedb::lints::{self, Lint, LintSrc};
 use basedb::{AstIdMap, BaseDB, FileId};
 pub use body::BodyValidationDiagnostic;
@@ -11,7 +13,7 @@ use hir_def::{
 use syntax::name::Name;
 use syntax::sourcemap::{FileSpan, SourceMap};
 use syntax::{Parse, SourceFile, TextRange};
-pub use types::TypeValidationDiagnostic;
+pub use types::{ParamsetItemKind, TypeValidationDiagnostic};
 
 use crate::db::HirTyDB;
 use crate::inference::BranchWrite;
@@ -130,6 +132,21 @@ impl Diagnostic for BodyValidationDiagnosticWrapped<'_> {
                 let src = self.body_sm.lint_src(stmt, trivial_probe);
                 Some((trivial_probe, src))
             }
+            BodyValidationDiagnostic::UnscheduledEvent { stmt, .. } => {
+                let src = self.body_sm.lint_src(stmt, unscheduled_event);
+                Some((unscheduled_event, src))
+            }
+            // The same lint as an event function that does not schedule: the shape of
+            // the problem is the same one, a body that runs when the event it names
+            // has not occurred.
+            BodyValidationDiagnostic::UnconditionalFinalStep { stmt } => {
+                let src = self.body_sm.lint_src(stmt, unscheduled_event);
+                Some((unscheduled_event, src))
+            }
+            BodyValidationDiagnostic::IgnoredDiscontinuity { stmt, .. } => {
+                let src = self.body_sm.lint_src(stmt, ignored_discontinuity);
+                Some((ignored_discontinuity, src))
+            }
             _ => None,
         }
     }
@@ -244,6 +261,122 @@ impl Diagnostic for BodyValidationDiagnosticWrapped<'_> {
                         "help: in an analog block an event may only be triggered from an event \
                          statement such as '@(timer(1n)) -> ev;'"
                             .to_owned(),
+                    ])
+            }
+            BodyValidationDiagnostic::UnscheduledEvent { stmt, func } => {
+                let FileSpan { range, file } = self.parse.to_file_span(
+                    self.body_sm.stmt_map_back[stmt].as_ref().unwrap().range(),
+                    self.sm,
+                );
+
+                Report::warning()
+                    .with_message(format!("'{func:?}' does not schedule an event yet"))
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: "body is evaluated unconditionally".to_owned(),
+                    }])
+                    .with_notes(vec![
+                        "the event expression is checked but takes no part in scheduling"
+                            .to_owned(),
+                        "the guarded statement runs on every evaluation, not per event".to_owned(),
+                    ])
+            }
+            BodyValidationDiagnostic::UnconditionalFinalStep { stmt } => {
+                let FileSpan { range, file } = self.parse.to_file_span(
+                    self.body_sm.stmt_map_back[stmt].as_ref().unwrap().range(),
+                    self.sm,
+                );
+
+                Report::warning()
+                    .with_message("'final_step' does not select the last point".to_owned())
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: "body is evaluated unconditionally".to_owned(),
+                    }])
+                    .with_notes(vec![
+                        "nothing in OSDI tells a model which point is the last one, so the event \
+                         cannot be scheduled"
+                            .to_owned(),
+                        "an analysis list is honoured, so the body is confined to the analyses it \
+                         names, but runs at every evaluation of them"
+                            .to_owned(),
+                        "help: a file does not need closing for what was written to it to arrive, \
+                         and '$fclose' here closes it on the first evaluation"
+                            .to_owned(),
+                    ])
+            }
+            BodyValidationDiagnostic::IgnoredDiscontinuity { expr, .. } => {
+                let FileSpan { range, file } = self.expr_src(expr);
+
+                Report::warning()
+                    .with_message(
+                        "'$discontinuity' reaches a simulator that reads the timepoint protocol"
+                            .to_owned(),
+                    )
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: "announced, but only honoured by a simulator that reads it"
+                            .to_owned(),
+                    }])
+                    .with_notes(vec![
+                        "info: the degree is left in the instance data at the descriptor's \
+                         'discontinuity_offset' (docs/osdi-timepoint-protocol.md)"
+                            .to_owned(),
+                        "info: a simulator that does not read it keeps its history and its step \
+                         order across the jump, which is what every released one does today"
+                            .to_owned(),
+                        "help: ngspice: patches/ngspice-osdi-timepoints.patch, or cap the step \
+                         across the jump with '$bound_step'"
+                            .to_owned(),
+                    ])
+            }
+            BodyValidationDiagnostic::ScanTargetNotAPlace { arg } => {
+                let FileSpan { range, file } = self.expr_src(arg);
+
+                Report::error()
+                    .with_message("a scanned value has nowhere to go".to_owned())
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: "cannot be assigned to".to_owned(),
+                    }])
+                    .with_notes(vec![
+                        "VAMS-2023 9.5.4 writes each conversion into the argument that follows \
+                         the format, so an argument that is not a variable, or one element of an \
+                         array, has nothing to receive it"
+                            .to_owned(),
+                        "help: scan into a variable, and read the variable where this stands"
+                            .to_owned(),
+                    ])
+            }
+            BodyValidationDiagnostic::ScanTargetTy { arg, spec, ref produces, ref found } => {
+                let FileSpan { range, file } = self.expr_src(arg);
+
+                Report::error()
+                    .with_message(format!(
+                        "'%{spec}' produces a {produces}, which a {found} variable cannot hold"
+                    ))
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: format!("this is a {found}"),
+                    }])
+                    .with_notes(vec![
+                        "VAMS-2023 9.5.4 settles what each conversion produces, and there is no \
+                         conversion between a string and a number"
+                            .to_owned(),
+                        format!(
+                            "help: give this argument a {produces} variable, or change the \
+                             conversion to one that produces a {found}"
+                        ),
                     ])
             }
             BodyValidationDiagnostic::WriteToInputArg { expr, arg } => {
@@ -402,6 +535,17 @@ impl Diagnostic for BodyValidationDiagnosticWrapped<'_> {
                 }
 
                 res
+            }
+            BodyValidationDiagnostic::InvalidOperator { expr, what, ref err } => {
+                let FileSpan { range, file } = self.expr_src(expr);
+                Report::error().with_message(format!("invalid {what}: {err}")).with_labels(vec![
+                    Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: format!("invalid {what}"),
+                    },
+                ])
             }
             BodyValidationDiagnostic::UnsupportedFunction { expr, func } => {
                 let FileSpan { range, file } = self.expr_src(expr);
@@ -788,6 +932,204 @@ impl Diagnostic for TypeValidationDiagnosticWrapped<'_> {
                     .with_notes(vec![
                         format!("info: disciplineless nets are digital and therefore not supported in Verilog-A"),
                         format!("help: add a discipline with 'electrical {name}'"),
+                    ])
+            }
+            // VAMS-2023 6.4 -- paramsets.
+            TypeValidationDiagnostic::StrayParamsetStmt { src } => {
+                let src = self.parse.to_file_span(self.map.get_syntax(src).range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: "there is no paramset here".to_owned(),
+                    }])
+                    .with_message("a paramset statement outside a paramset".to_owned())
+                    .with_notes(vec![
+                        "info: '.name = expr;' sets a parameter of the module a paramset \
+                         names (VAMS-2023 6.4); a module sets its own parameters by \
+                         declaring them"
+                            .to_owned(),
+                    ])
+            }
+            TypeValidationDiagnostic::ParamsetItem { ref src, kind } => {
+                let src = self.parse.to_file_span(src.range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("a paramset cannot declare {}", kind.as_str()),
+                    }])
+                    .with_message(format!("{} in a paramset", kind.as_str()))
+                    .with_notes(vec![
+                        "info: a paramset holds parameter declarations and the statements \
+                         that set the module's parameters; \"the paramset itself contains no \
+                         behavioural code\" (VAMS-2023 6.4)"
+                            .to_owned(),
+                    ])
+            }
+            TypeValidationDiagnostic::ParamsetUnknownTarget { ref decl, ref name, ref target } => {
+                let src = self.parse.to_file_span(decl.range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("'{target}' is not a module of this file"),
+                    }])
+                    .with_message(format!(
+                        "paramset '{name}' collects values for an unknown module '{target}'"
+                    ))
+                    .with_notes(vec![
+                        "info: the name after a paramset's own is the module whose parameters \
+                         its statements set (VAMS-2023 6.4)"
+                            .to_owned(),
+                    ])
+            }
+            TypeValidationDiagnostic::ParamsetChain { ref decl, ref name, ref target } => {
+                let src = self.parse.to_file_span(decl.range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("'{target}' is a paramset, not a module"),
+                    }])
+                    .with_message(format!("paramset '{name}' collects values for a paramset"))
+                    .with_notes(vec![
+                        "info: VAMS-2023 6.4 allows a chain of paramsets, where the statements \
+                         of each set the parameters of the next; what is built here is one \
+                         paramset over a module"
+                            .to_owned(),
+                        format!("help: name the module '{target}' collects values for"),
+                    ])
+            }
+            TypeValidationDiagnostic::ParamsetUnknownParam { src, ref target, ref param } => {
+                let src = self.parse.to_file_span(self.map.get_syntax(src).range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("'{target}' has no parameter '{param}'"),
+                    }])
+                    .with_message(format!("unknown parameter '{param}' of module '{target}'"))
+                    .with_notes(vec![
+                        "info: a paramset statement sets a parameter of the module it names \
+                         (VAMS-2023 6.4)"
+                            .to_owned(),
+                    ])
+            }
+            TypeValidationDiagnostic::ParamsetLocalParam { src, ref target, ref param } => {
+                let src = self.parse.to_file_span(self.map.get_syntax(src).range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("'{param}' is a localparam of '{target}'"),
+                    }])
+                    .with_message(format!("paramset statement sets the localparam '{param}'"))
+                    .with_notes(vec![
+                        "info: a localparam is computed by the module from its parameters and \
+                         is never set from outside it (VAMS-2023 3.4.2)"
+                            .to_owned(),
+                    ])
+            }
+            TypeValidationDiagnostic::DuplicateParamsetStmt(ref info) => {
+                let first =
+                    self.parse.to_file_span(self.map.get_syntax(info.first).range(), self.sm);
+                let mut labels = vec![Label {
+                    style: LabelStyle::Secondary,
+                    file_id: first.file,
+                    range: first.range.into(),
+                    message: "first set here".to_owned(),
+                }];
+                labels.extend(info.subsequent.iter().map(|stmt| {
+                    let src = self.parse.to_file_span(self.map.get_syntax(*stmt).range(), self.sm);
+                    Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: "set again here".to_owned(),
+                    }
+                }));
+
+                Report::error()
+                    .with_labels(labels)
+                    .with_message(format!("parameter '{}' is set twice", info.src))
+                    .with_notes(vec![
+                        "info: a paramset gives each parameter of the module one value \
+                         (VAMS-2023 6.4)"
+                            .to_owned(),
+                    ])
+            }
+            TypeValidationDiagnostic::ParamsetTypeMismatch {
+                src,
+                ref param,
+                ref expected,
+                ref found,
+            } => {
+                let src = self.parse.to_file_span(self.map.get_syntax(src).range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("expected {expected}, found {found}"),
+                    }])
+                    .with_message(format!("type mismatch setting parameter '{param}'"))
+            }
+            TypeValidationDiagnostic::ArrayParamWithoutType { decl, ref name } => {
+                let src = self.parse.to_file_span(self.map.get_syntax(decl).range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("'{name}' is an array and has no type"),
+                    }])
+                    .with_message(format!("no type for array parameter '{name}'"))
+                    .with_notes(vec![
+                        "info: a parameter's type is otherwise taken from its value, and an \
+                         assignment pattern does not say what its elements hold (VAMS-2023 3.4.1)"
+                            .to_owned(),
+                        format!("help: declare it as 'parameter real {name}[...]' or 'parameter integer {name}[...]'"),
+                    ])
+            }
+            TypeValidationDiagnostic::UnknownDefaultDiscipline {
+                decl,
+                ref name,
+                ref discipline,
+            } => {
+                let src = self.parse.to_file_span(self.map.get_syntax(decl).range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("'{name}' takes its discipline from the directive"),
+                    }])
+                    .with_message(format!(
+                        "'{discipline}' is not a discipline, and is the default discipline here"
+                    ))
+                    .with_notes(vec![
+                        "info: '`default_discipline' (10.2) names the discipline a net declared \
+                         without one gets"
+                            .to_owned(),
+                        format!(
+                            "help: declare 'discipline {discipline}', or name one that is declared"
+                        ),
                     ])
             }
             TypeValidationDiagnostic::IncompatibleBranch { branch, node1, node2 } => {

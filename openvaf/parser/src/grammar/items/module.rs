@@ -15,15 +15,26 @@ const MODULE_ITEM_RECOVERY: TokenSet = DIRECTION_TS.union(TokenSet::new(&[
     PARAMETER_KW,
     LOCALPARAM_KW,
     ENDMODULE_KW,
+    // A paramset's terminator, and the `.` that begins one of its statements, are
+    // both places recovery inside a declaration should stop at.
+    ENDPARAMSET_KW,
+    T![.],
     EOF,
 ]));
 pub(super) const MODULE_ITEM_OR_ATTR_RECOVERY: TokenSet =
     MODULE_ITEM_RECOVERY.union(TokenSet::unique(T!["(*"]));
 
+/// A module, or a paramset (VAMS-2023 6.4), which has the same shape with the
+/// module it collects values for in place of the port list.
 pub(crate) fn module(p: &mut Parser, m: Marker) {
-    p.bump(T![module]);
+    let is_paramset = p.at(PARAMSET_KW);
+    p.bump_any();
     name_r(p, TokenSet::new(&[T!['('], T![;]]));
-    if p.at(T!['(']) {
+    if is_paramset {
+        // `paramset nch nmos3;` -- the second name is the module (or, which this
+        // does not do, the paramset) whose parameters the statements below set.
+        name_ref_r(p, TokenSet::unique(T![;]));
+    } else if p.at(T!['(']) {
         let m = p.start();
         p.bump(T!['(']);
         module_ports(p);
@@ -32,9 +43,22 @@ pub(crate) fn module(p: &mut Parser, m: Marker) {
     p.expect(T![;]);
     module_items(p);
 
-    p.expect(ENDMODULE_KW);
+    p.expect(if is_paramset { ENDPARAMSET_KW } else { ENDMODULE_KW });
 
     m.complete(p, MODULE_DECL);
+}
+
+/// VAMS-2023 6.4: `.module_parameter_identifier = paramset_constant_expression ;`
+fn paramset_assign(p: &mut Parser, m: Marker) {
+    p.bump(T![.]);
+    name_ref_r(p, TokenSet::new(&[T![=], T![;]]));
+    p.expect(T![=]);
+    expr(p);
+    if !p.eat(T![;]) {
+        let err = p.unexpected_token_msg(T![;]);
+        p.err_recover(err, MODULE_ITEM_OR_ATTR_RECOVERY);
+    }
+    m.complete(p, PARAMSET_ASSIGN);
 }
 
 const MODULE_PORTS_RECOVERY: TokenSet = TokenSet::new(&[T![;], T![')'], ENDMODULE_KW, EOF]);
@@ -139,7 +163,7 @@ fn module_port(p: &mut Parser) -> bool {
 
 fn module_items(p: &mut Parser) {
     let mut error_range: Option<CompletedMarker> = None;
-    while !p.at_ts(ITEM_RECOVERY_SET.union(TokenSet::unique(ENDMODULE_KW))) {
+    while !p.at_ts(ITEM_RECOVERY_SET.union(TokenSet::new(&[ENDMODULE_KW, ENDPARAMSET_KW]))) {
         let m = p.start();
         attrs(p, MODULE_ITEM_RECOVERY);
 
@@ -169,6 +193,9 @@ fn module_items(p: &mut Parser) {
             }
             ALIASPARAM_KW => {
                 alias_parameter_decl(p, m);
+            }
+            T![.] => {
+                paramset_assign(p, m);
             }
             BRANCH_KW => {
                 branch_decl(p, m);

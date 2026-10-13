@@ -10,7 +10,7 @@ use rustc_hash::FxHasher;
 
 use crate::compilation_unit::OsdiModule;
 use crate::inst_data::{OsdiInstanceData, OsdiInstanceParam};
-use crate::{bitfield, lltype};
+use crate::{bitfield, llelem_ty, lltype, param_elem_indices};
 
 const NUM_CONST_FIELDS: u32 = 1;
 
@@ -72,6 +72,144 @@ impl<'ll> OsdiModelData<'ll> {
         let pos = self.params.get_index_of(&param)? as u32;
         let res = self.nth_param_loc(cx, pos, ptr);
         Some(res)
+    }
+
+    /// Where one element of an array parameter is stored (VAMS-2023 3.4.4).
+    pub fn nth_param_elem_loc(
+        &self,
+        cx: &CodegenCx<'_, 'll>,
+        pos: u32,
+        elem: u32,
+        ptr: &'ll llvm_sys::LLVMValue,
+    ) -> MemLoc<'ll> {
+        let arr_ty = self.params.get_index(pos as usize).unwrap().1;
+        let field = NUM_CONST_FIELDS + pos;
+        MemLoc {
+            ptr,
+            ptr_ty: self.ty,
+            ty: llelem_ty(arr_ty),
+            indices: param_elem_indices(cx, field, elem),
+        }
+    }
+
+    pub fn param_elem_loc(
+        &self,
+        cx: &CodegenCx<'_, 'll>,
+        param: Parameter,
+        elem: u32,
+        ptr: &'ll llvm_sys::LLVMValue,
+    ) -> Option<MemLoc<'ll>> {
+        let pos = self.params.get_index_of(&param)? as u32;
+        Some(self.nth_param_elem_loc(cx, pos, elem, ptr))
+    }
+
+    pub unsafe fn nth_param_elem_ptr(
+        &self,
+        cx: &CodegenCx<'_, 'll>,
+        pos: u32,
+        elem: u32,
+        ptr: &'ll llvm_sys::LLVMValue,
+        llbuilder: &llvm_sys::LLVMBuilder,
+    ) -> (&'ll llvm_sys::LLVMValue, &'ll llvm_sys::LLVMType) {
+        let loc = self.nth_param_elem_loc(cx, pos, elem, ptr);
+        (&*loc.to_ptr(NonNull::from(llbuilder).as_ptr()), loc.ty)
+    }
+
+    pub unsafe fn param_elem_ptr(
+        &self,
+        cx: &CodegenCx<'_, 'll>,
+        param: Parameter,
+        elem: u32,
+        ptr: &'ll llvm_sys::LLVMValue,
+        llbuilder: &llvm_sys::LLVMBuilder,
+    ) -> Option<(&'ll llvm_sys::LLVMValue, &'ll llvm_sys::LLVMType)> {
+        let pos = self.params.get_index_of(&param)? as u32;
+        Some(self.nth_param_elem_ptr(cx, pos, elem, ptr, llbuilder))
+    }
+
+    pub unsafe fn store_nth_param_elem(
+        &self,
+        cx: &CodegenCx<'_, 'll>,
+        pos: u32,
+        elem: u32,
+        ptr: &'ll llvm_sys::LLVMValue,
+        val: &'ll llvm_sys::LLVMValue,
+        llbuilder: &llvm_sys::LLVMBuilder,
+    ) {
+        let (ptr, _) = self.nth_param_elem_ptr(cx, pos, elem, ptr, llbuilder);
+        LLVMBuildStore(
+            NonNull::from(llbuilder).as_ptr(),
+            NonNull::from(val).as_ptr(),
+            NonNull::from(ptr).as_ptr(),
+        );
+    }
+
+    /// The same, for an instance parameter's copy in the model data.
+    pub fn nth_inst_param_elem_loc(
+        &self,
+        inst_data: &OsdiInstanceData<'ll>,
+        cx: &CodegenCx<'_, 'll>,
+        pos: u32,
+        elem: u32,
+        ptr: &'ll llvm_sys::LLVMValue,
+    ) -> MemLoc<'ll> {
+        let arr_ty = inst_data.params.get_index(pos as usize).unwrap().1;
+        let field = NUM_CONST_FIELDS + self.params.len() as u32 + pos;
+        MemLoc {
+            ptr,
+            ptr_ty: self.ty,
+            ty: llelem_ty(arr_ty),
+            indices: param_elem_indices(cx, field, elem),
+        }
+    }
+
+    pub unsafe fn nth_inst_param_elem_ptr(
+        &self,
+        inst_data: &OsdiInstanceData<'ll>,
+        cx: &CodegenCx<'_, 'll>,
+        pos: u32,
+        elem: u32,
+        ptr: &'ll llvm_sys::LLVMValue,
+        llbuilder: &llvm_sys::LLVMBuilder,
+    ) -> (&'ll llvm_sys::LLVMValue, &'ll llvm_sys::LLVMType) {
+        let loc = self.nth_inst_param_elem_loc(inst_data, cx, pos, elem, ptr);
+        (&*loc.to_ptr(NonNull::from(llbuilder).as_ptr()), loc.ty)
+    }
+
+    pub unsafe fn store_nth_inst_param_elem(
+        &self,
+        inst_data: &OsdiInstanceData<'ll>,
+        cx: &CodegenCx<'_, 'll>,
+        pos: u32,
+        elem: u32,
+        ptr: &'ll llvm_sys::LLVMValue,
+        val: &'ll llvm_sys::LLVMValue,
+        llbuilder: &llvm_sys::LLVMBuilder,
+    ) {
+        let (ptr, _) = self.nth_inst_param_elem_ptr(inst_data, cx, pos, elem, ptr, llbuilder);
+        LLVMBuildStore(
+            NonNull::from(llbuilder).as_ptr(),
+            NonNull::from(val).as_ptr(),
+            NonNull::from(ptr).as_ptr(),
+        );
+    }
+
+    pub unsafe fn read_nth_inst_param_elem(
+        &self,
+        inst_data: &OsdiInstanceData<'ll>,
+        cx: &CodegenCx<'_, 'll>,
+        pos: u32,
+        elem: u32,
+        ptr: &'ll llvm_sys::LLVMValue,
+        llbuilder: &llvm_sys::LLVMBuilder,
+    ) -> &'ll llvm_sys::LLVMValue {
+        let (ptr, ty) = self.nth_inst_param_elem_ptr(inst_data, cx, pos, elem, ptr, llbuilder);
+        &*LLVMBuildLoad2(
+            NonNull::from(llbuilder).as_ptr(),
+            NonNull::from(ty).as_ptr(),
+            NonNull::from(ptr).as_ptr(),
+            UNNAMED,
+        )
     }
 
     pub unsafe fn param_ptr(

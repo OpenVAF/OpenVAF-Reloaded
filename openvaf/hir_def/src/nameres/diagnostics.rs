@@ -9,6 +9,15 @@ use syntax::{Parse, SourceFile};
 
 use super::{ResolvedPath, ScopeDefItem};
 use crate::db::HirDefDB;
+use crate::Lookup;
+
+/// Whether a declaration is a paramset (VAMS-2023 6.4) rather than a module, which
+/// it shares an item with.
+fn is_paramset(db: &dyn HirDefDB, def: &ScopeDefItem) -> bool {
+    let ScopeDefItem::ModuleId(module) = *def else { return false };
+    let loc = module.lookup(db);
+    loc.item_tree(db)[loc.id].paramset.is_some()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathResolveError {
@@ -82,9 +91,29 @@ impl Diagnostic for DefDiagnosticWrapped<'_> {
                         message: format!("help '{}' was first declared here", name),
                     })
                 }
+                // 6.4.2 lets paramsets share a name and leaves the choice between
+                // them to elaboration, from the ranges of their parameters. A
+                // descriptor is instantiated by name, so by the time one is
+                // reached the choice has already been made.
+                let notes = if is_paramset(self.db, old) && is_paramset(self.db, new) {
+                    vec![
+                        "info: VAMS-2023 6.4.2 lets paramsets share a name, and leaves the \
+                         choice between them to elaboration, by the ranges of their \
+                         parameters; what a simulator instantiates here is a name"
+                            .to_owned(),
+                        format!(
+                            "help: give each paramset a name of its own, or fold them into \
+                             one '{name}' whose parameters cover both"
+                        ),
+                    ]
+                } else {
+                    Vec::new()
+                };
+
                 Report::error()
                     .with_message(format!("'{}' was already declared in this scope", name))
                     .with_labels(labels)
+                    .with_notes(notes)
             }
         }
     }

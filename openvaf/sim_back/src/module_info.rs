@@ -6,6 +6,7 @@ use hir::{
     CompilationDB, CompilationUnit, DiagnosticSink, Module, ParamSysFun, Parameter,
     ResolvedAliasParameter, ScopeDef, Variable,
 };
+use hir_lower::ParamsetInit;
 use indexmap::IndexMap;
 use rustc_hash::FxHasher;
 use smol_str::SmolStr;
@@ -30,11 +31,27 @@ pub fn collect_modules(
         return None;
     }
 
-    let res = cu
-        .modules(db)
+    // A paramset (VAMS-2023 6.4) shares the declaration a module uses, so the two
+    // are told apart by whether it named a module to collect values for.
+    let decls = cu.modules(db);
+    let (paramsets, modules): (Vec<Module>, Vec<Module>) =
+        decls.into_iter().partition(|decl| decl.paramset_target(db).is_some());
+
+    let mut res: Vec<ModuleInfo> = modules
         .into_iter()
         .map(|module| ModuleInfo::collect(db, cu, module, sink, all_vars_opvars))
         .collect();
+
+    // One descriptor per paramset, beside the module's own: the paramset is what a
+    // netlist instantiates, and the module is still a module.
+    let mut sets = Vec::with_capacity(paramsets.len());
+    for decl in paramsets {
+        if let Some(info) = ModuleInfo::collect_paramset(db, cu, decl, &res, sink, all_vars_opvars)
+        {
+            sets.push(info);
+        }
+    }
+    res.extend(sets);
 
     if sink.summary(&name) {
         return None;
@@ -44,13 +61,107 @@ pub fn collect_modules(
 }
 
 pub struct ModuleInfo {
+    /// The module whose behaviour this unit compiles. For a paramset that is the
+    /// module it names, not the paramset itself: "the paramset itself contains no
+    /// behavioural code" (VAMS-2023 6.4).
     pub module: Module,
+    /// The parameters an instance may set. For a paramset those are the paramset's
+    /// own, and the module's are not among them.
     pub params: IndexMap<Parameter, ParamInfo, BuildHasherDefault<FxHasher>>,
     pub sys_fun_alias: IndexMap<ParamSysFun, Vec<SmolStr>, BuildHasherDefault<FxHasher>>,
     pub op_vars: IndexMap<Variable, OpVar, BuildHasherDefault<FxHasher>>,
+    /// Set when this unit compiles a paramset over `module` rather than `module`
+    /// itself.
+    pub paramset: Option<ParamsetInfo>,
+}
+
+/// A paramset (VAMS-2023 6.4) and what it does to the module it names.
+pub struct ParamsetInfo {
+    /// The paramset declaration: its name is the descriptor's, and its statements
+    /// are the entry statements of its body.
+    pub decl: Module,
+    /// Every parameter of the target module, in declaration order. None of them is
+    /// settable: each one's value is the paramset's statement for it, or its own
+    /// declared default.
+    pub target_params: Vec<Parameter>,
+    /// A target parameter and the index of the statement that sets it.
+    pub assigns: Vec<(Parameter, usize)>,
 }
 
 impl ModuleInfo {
+    /// The name a netlist instantiates: the paramset's where there is one.
+    pub fn name(&self, db: &CompilationDB) -> String {
+        match &self.paramset {
+            Some(set) => set.decl.name(db),
+            None => self.module.name(db),
+        }
+    }
+
+    /// What makes this descriptor's symbols unique. A paramset and the module it
+    /// names are two descriptors, so they cannot share one.
+    pub fn uuid(&self, db: &CompilationDB) -> u32 {
+        match &self.paramset {
+            Some(set) => set.decl.uuid(db),
+            None => self.module.uuid(db),
+        }
+    }
+
+    /// The substitution [`hir_lower`](hir_lower) applies to the module's body, or
+    /// `None` for a module compiled as itself.
+    pub fn paramset_init(&self, db: &CompilationDB) -> Option<ParamsetInit<'_>> {
+        let set = self.paramset.as_ref()?;
+        Some(ParamsetInit {
+            target_params: &set.target_params,
+            body: set.decl.paramset_block(db),
+            assigns: &set.assigns,
+        })
+    }
+
+    /// The unit that compiles `decl`, a paramset, as the module it names. `None`
+    /// when the target is not a module of this file, which `hir_ty` reports.
+    fn collect_paramset(
+        db: &CompilationDB,
+        cu: CompilationUnit,
+        decl: Module,
+        modules: &[ModuleInfo],
+        sink: &mut ConsoleSink,
+        all_vars_opvars: bool,
+    ) -> Option<ModuleInfo> {
+        let target_name = decl.paramset_target(db)?;
+        let base = modules.iter().find(|info| info.module.name(db) == target_name)?;
+
+        // The paramset's own declarations: its parameters, and the aliases for them.
+        let own = ModuleInfo::collect(db, cu, decl, sink, all_vars_opvars);
+
+        let target_params: Vec<Parameter> = base.params.keys().copied().collect();
+        let assigns: Vec<(Parameter, usize)> = decl
+            .paramset_stmts(db)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(stmt, name)| {
+                // A statement naming something that is not a settable parameter of
+                // the target is reported by `hir_ty`; here it just sets nothing,
+                // and the parameter keeps its declared default.
+                let (param, _) = base
+                    .params
+                    .iter()
+                    .find(|(param, info)| info.name == name && !param.is_local(db))?;
+                Some((*param, stmt))
+            })
+            .collect();
+
+        Some(ModuleInfo {
+            module: base.module,
+            params: own.params,
+            // The system parameters are the module's, because they are what its
+            // behaviour reads; the paramset's own aliases ride along with its
+            // parameters.
+            sys_fun_alias: base.sys_fun_alias.clone(),
+            op_vars: base.op_vars.clone(),
+            paramset: Some(ParamsetInfo { decl, target_params, assigns }),
+        })
+    }
+
     fn collect(
         db: &CompilationDB,
         cu: CompilationUnit,
@@ -198,7 +309,7 @@ impl ModuleInfo {
             }
         }
 
-        ModuleInfo { module, params, op_vars, sys_fun_alias }
+        ModuleInfo { module, params, op_vars, sys_fun_alias, paramset: None }
     }
 }
 

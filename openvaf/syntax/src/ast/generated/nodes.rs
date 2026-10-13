@@ -141,14 +141,8 @@ impl ast::AttrsOwner for EventStmt {}
 impl EventStmt {
     pub fn at_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![@]) }
     pub fn l_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['(']) }
-    pub fn initial_step_token(&self) -> Option<SyntaxToken> {
-        support::token(&self.syntax, T![initial_step])
-    }
-    pub fn final_step_token(&self) -> Option<SyntaxToken> {
-        support::token(&self.syntax, T![final_step])
-    }
+    pub fn events(&self) -> AstChildren<EventExpr> { support::children(&self.syntax) }
     pub fn r_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![')']) }
-    pub fn event(&self) -> Option<Expr> { support::child(&self.syntax) }
     pub fn stmt(&self) -> Option<Stmt> { support::child(&self.syntax) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -216,6 +210,21 @@ impl Case {
     pub fn default_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![default]) }
     pub fn colon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![:]) }
     pub fn stmt(&self) -> Option<Stmt> { support::child(&self.syntax) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EventExpr {
+    pub(crate) syntax: SyntaxNode,
+}
+impl EventExpr {
+    pub fn initial_step_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![initial_step])
+    }
+    pub fn final_step_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![final_step])
+    }
+    pub fn l_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['(']) }
+    pub fn r_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![')']) }
+    pub fn event(&self) -> Option<Expr> { support::child(&self.syntax) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BlockScope {
@@ -339,8 +348,15 @@ pub struct ArgList {
 }
 impl ArgList {
     pub fn l_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T!['(']) }
-    pub fn args(&self) -> AstChildren<Expr> { support::children(&self.syntax) }
+    pub fn args(&self) -> AstChildren<Arg> { support::children(&self.syntax) }
     pub fn r_paren_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![')']) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Arg {
+    pub(crate) syntax: SyntaxNode,
+}
+impl Arg {
+    pub fn expr(&self) -> Option<Expr> { support::child(&self.syntax) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SysFun {
@@ -397,12 +413,19 @@ pub struct ModuleDecl {
 impl ast::AttrsOwner for ModuleDecl {}
 impl ModuleDecl {
     pub fn module_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![module]) }
+    pub fn paramset_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![paramset])
+    }
     pub fn name(&self) -> Option<Name> { support::child(&self.syntax) }
     pub fn module_ports(&self) -> Option<ModulePorts> { support::child(&self.syntax) }
+    pub fn target(&self) -> Option<NameRef> { support::child(&self.syntax) }
     pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
     pub fn module_items(&self) -> AstChildren<ModuleItem> { support::children(&self.syntax) }
     pub fn endmodule_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, T![endmodule])
+    }
+    pub fn endparamset_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![endparamset])
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -520,6 +543,18 @@ impl AliasParam {
     pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ParamsetAssign {
+    pub(crate) syntax: SyntaxNode,
+}
+impl ast::AttrsOwner for ParamsetAssign {}
+impl ParamsetAssign {
+    pub fn dot_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![.]) }
+    pub fn param(&self) -> Option<NameRef> { support::child(&self.syntax) }
+    pub fn eq_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![=]) }
+    pub fn val(&self) -> Option<Expr> { support::child(&self.syntax) }
+    pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GenvarDecl {
     pub(crate) syntax: SyntaxNode,
 }
@@ -574,7 +609,7 @@ pub struct Var {
 }
 impl Var {
     pub fn name(&self) -> Option<Name> { support::child(&self.syntax) }
-    pub fn dimension(&self) -> Option<Dimension> { support::child(&self.syntax) }
+    pub fn dimensions(&self) -> AstChildren<Dimension> { support::children(&self.syntax) }
     pub fn eq_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![=]) }
     pub fn default(&self) -> Option<Expr> { support::child(&self.syntax) }
 }
@@ -594,6 +629,7 @@ pub struct Param {
 }
 impl Param {
     pub fn name(&self) -> Option<Name> { support::child(&self.syntax) }
+    pub fn dimensions(&self) -> AstChildren<Dimension> { support::children(&self.syntax) }
     pub fn eq_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![=]) }
     pub fn default(&self) -> Option<Expr> { support::child(&self.syntax) }
     pub fn constraints(&self) -> AstChildren<Constraint> { support::children(&self.syntax) }
@@ -698,6 +734,7 @@ pub enum ModuleItem {
     VarDecl(VarDecl),
     ParamDecl(ParamDecl),
     AliasParam(AliasParam),
+    ParamsetAssign(ParamsetAssign),
     GenvarDecl(GenvarDecl),
     EventDecl(EventDecl),
 }
@@ -951,6 +988,17 @@ impl AstNode for Case {
     }
     fn syntax(&self) -> &SyntaxNode { &self.syntax }
 }
+impl AstNode for EventExpr {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == EVENT_EXPR }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
 impl AstNode for BlockScope {
     fn can_cast(kind: SyntaxKind) -> bool { kind == BLOCK_SCOPE }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -1096,6 +1144,17 @@ impl AstNode for PortFlow {
 }
 impl AstNode for ArgList {
     fn can_cast(kind: SyntaxKind) -> bool { kind == ARG_LIST }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
+impl AstNode for Arg {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == ARG }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
         if Self::can_cast(syntax.kind()) {
             Some(Self { syntax })
@@ -1261,6 +1320,17 @@ impl AstNode for BranchDecl {
 }
 impl AstNode for AliasParam {
     fn can_cast(kind: SyntaxKind) -> bool { kind == ALIAS_PARAM }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+}
+impl AstNode for ParamsetAssign {
+    fn can_cast(kind: SyntaxKind) -> bool { kind == PARAMSET_ASSIGN }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
         if Self::can_cast(syntax.kind()) {
             Some(Self { syntax })
@@ -1675,6 +1745,9 @@ impl From<ParamDecl> for ModuleItem {
 impl From<AliasParam> for ModuleItem {
     fn from(node: AliasParam) -> ModuleItem { ModuleItem::AliasParam(node) }
 }
+impl From<ParamsetAssign> for ModuleItem {
+    fn from(node: ParamsetAssign) -> ModuleItem { ModuleItem::ParamsetAssign(node) }
+}
 impl From<GenvarDecl> for ModuleItem {
     fn from(node: GenvarDecl) -> ModuleItem { ModuleItem::GenvarDecl(node) }
 }
@@ -1685,7 +1758,8 @@ impl AstNode for ModuleItem {
     fn can_cast(kind: SyntaxKind) -> bool {
         match kind {
             BODY_PORT_DECL | NET_DECL | ANALOG_BEHAVIOUR | PROCEDURAL_BLOCK | FUNCTION
-            | BRANCH_DECL | VAR_DECL | PARAM_DECL | ALIAS_PARAM | GENVAR_DECL | EVENT_DECL => true,
+            | BRANCH_DECL | VAR_DECL | PARAM_DECL | ALIAS_PARAM | PARAMSET_ASSIGN | GENVAR_DECL
+            | EVENT_DECL => true,
             _ => false,
         }
     }
@@ -1700,6 +1774,7 @@ impl AstNode for ModuleItem {
             VAR_DECL => ModuleItem::VarDecl(VarDecl { syntax }),
             PARAM_DECL => ModuleItem::ParamDecl(ParamDecl { syntax }),
             ALIAS_PARAM => ModuleItem::AliasParam(AliasParam { syntax }),
+            PARAMSET_ASSIGN => ModuleItem::ParamsetAssign(ParamsetAssign { syntax }),
             GENVAR_DECL => ModuleItem::GenvarDecl(GenvarDecl { syntax }),
             EVENT_DECL => ModuleItem::EventDecl(EventDecl { syntax }),
             _ => return None,
@@ -1717,6 +1792,7 @@ impl AstNode for ModuleItem {
             ModuleItem::VarDecl(it) => &it.syntax,
             ModuleItem::ParamDecl(it) => &it.syntax,
             ModuleItem::AliasParam(it) => &it.syntax,
+            ModuleItem::ParamsetAssign(it) => &it.syntax,
             ModuleItem::GenvarDecl(it) => &it.syntax,
             ModuleItem::EventDecl(it) => &it.syntax,
         }
@@ -1970,6 +2046,11 @@ impl std::fmt::Display for Case {
         std::fmt::Display::fmt(self.syntax(), f)
     }
 }
+impl std::fmt::Display for EventExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
 impl std::fmt::Display for BlockScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
@@ -2036,6 +2117,11 @@ impl std::fmt::Display for PortFlow {
     }
 }
 impl std::fmt::Display for ArgList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
+impl std::fmt::Display for Arg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
     }
@@ -2111,6 +2197,11 @@ impl std::fmt::Display for BranchDecl {
     }
 }
 impl std::fmt::Display for AliasParam {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
+impl std::fmt::Display for ParamsetAssign {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
     }

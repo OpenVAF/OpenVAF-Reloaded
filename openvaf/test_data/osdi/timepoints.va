@@ -1,0 +1,31 @@
+// The timepoint protocol (docs/osdi-timepoint-protocol.md): the two things a model
+// has to be able to say to an integrator, and which OSDI had no channel for.
+//
+//   the instant   `timer` knows exactly when its next event is, so it asks for a
+//                 timepoint there instead of only capping the step on the way. The
+//                 cap is still made, because every simulator honours that.
+//   the jump      the handler switches the output, which is a discontinuity in the
+//                 value itself: degree 0 of VAMS-2023 9.17.1. Announced at the
+//                 instant it happens, which is the point the solver has in hand.
+`include "disciplines.vams"
+
+module timepoints(out, in);
+    inout out;
+    electrical out;
+    input in;
+    electrical in;
+
+    parameter real start = 2.0;
+    parameter real period = 4.0;
+
+    integer state;
+
+    analog begin
+        @(timer(start, period)) begin
+            state = !state;
+            $discontinuity(0);
+        end
+
+        V(out) <+ state;
+    end
+endmodule

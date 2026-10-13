@@ -1,0 +1,34 @@
+// VAMS-2023 9.5.4's reads are sequential: one record per read. An analog block is
+// evaluated many times for one timepoint, so the rate that matters is per what:
+// this model reads one record per *timepoint*, which is what the clause's reads
+// mean once they are used to drive anything.
+//
+// `val` carries the record in hand and `nrec` how many have been taken, so the
+// test can see both: every evaluation of one point has to produce the same pair,
+// and a point the solver goes back on has to leave the file where it found it.
+`include "disciplines.vams"
+
+module read_point(out, nrec);
+    output out, nrec;
+    electrical out, nrec;
+
+    parameter string fname = "openvaf_read_point_test.txt";
+
+    integer fd, n, taken;
+    real val;
+
+    analog begin
+        @(initial_step) begin
+            fd = $fopen(fname, "r");
+            taken = 0;
+            val = 0.0;
+        end
+
+        // One record, taken once per point however many evaluations it takes.
+        n = $fscanf(fd, "%e", val);
+        if (n == 1) taken = taken + 1;
+
+        V(out) <+ val;
+        V(nrec) <+ taken;
+    end
+endmodule

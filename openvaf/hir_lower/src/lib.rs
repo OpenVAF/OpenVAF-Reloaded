@@ -3,7 +3,8 @@ use std::iter::FilterMap;
 
 use ahash::{AHashMap, AHashSet};
 use bitset::HybridBitSet;
-pub use callbacks::{CallBackKind, NoiseTable, ParamInfoKind, RetFlag};
+pub use callbacks::{CallBackKind, FileOp, NoiseTable, ParamInfoKind, RetFlag, RngDist};
+pub use fmt::PrintSink;
 use hir::{
     Branch, BranchWrite, CompilationDB, Module, Node, ParamSysFun, Parameter, Type, Variable,
 };
@@ -37,8 +38,11 @@ mod ctx;
 mod expr;
 pub mod fmt;
 mod parameters;
+mod paramset;
 mod state;
 mod stmt;
+
+pub use paramset::ParamsetInit;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ImplicitEquationKind {
@@ -87,16 +91,31 @@ impl TryFrom<CurrentKind> for BranchWrite {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ParamKind {
     Param(Parameter),
+    /// Element `idx` of an array parameter (VAMS-2023 3.4.4), in row-major order.
+    ///
+    /// The simulator keeps the array in one slot and overrides it as a whole, so
+    /// there is one `given` flag for the parameter; the model reads one element at
+    /// a time, so there is one input per element.
+    ParamElement(Parameter, u32),
     Abstime,
     EnableIntegration,
     EnableLim,
     PrevState(LimitState),
     NewState(LimitState),
-    Voltage { hi: Node, lo: Option<Node> },
+    /// The value a retained slot held at the end of the previous accepted timestep.
+    PrevRetained(RetainedState),
+    Voltage {
+        hi: Node,
+        lo: Option<Node>,
+    },
     Current(CurrentKind),
     Temperature,
-    ParamGiven { param: Parameter },
-    PortConnected { port: Node },
+    ParamGiven {
+        param: Parameter,
+    },
+    PortConnected {
+        port: Node,
+    },
     ParamSysFun(ParamSysFun),
     HiddenState(Variable),
     ImplicitUnknown(ImplicitEquation),
@@ -121,6 +140,7 @@ impl ParamKind {
                 | ParamKind::HiddenState(_)
                 | ParamKind::PrevState(_)
                 | ParamKind::NewState(_)
+                | ParamKind::PrevRetained(_)
                 | ParamKind::EnableLim
         )
     }
@@ -182,9 +202,18 @@ pub enum PlaceKind {
     IsVoltageSrc(BranchWrite),
     /// A parameter during param initiliztion is mutable (write default in case its not given)
     Param(Parameter),
+    /// Element `idx` of an array parameter during its initialization.
+    ParamElement(Parameter, u32),
     ParamMin(Parameter),
     ParamMax(Parameter),
     BoundStep,
+    /// The instant a model asked for a timepoint at, as an absolute time: the
+    /// earliest of the requests made during one evaluation, or `f64::MAX` when
+    /// none was made. See `docs/osdi-timepoint-protocol.md`.
+    Breakpoint,
+    /// The lowest degree of discontinuity announced during one evaluation
+    /// (VAMS-2023 9.17.1), or a negative value when none was.
+    Discontinuity,
     /// Whether a named event (VAMS-2023 5.10.4) has been triggered during this
     /// evaluation of the analog block. `false` at the start of the block, set by
     /// `-> ev;` and read by `@(ev)`.
@@ -195,19 +224,23 @@ impl PlaceKind {
     pub fn ty(&self, db: &CompilationDB) -> Type {
         match *self {
             PlaceKind::Var(var) => var.ty(db),
-            PlaceKind::VarElement(var, _) => match var.ty(db) {
-                Type::Array { ty, .. } => *ty,
-                ty => ty,
-            },
+            // One element of an array, of any number of dimensions: what it holds is
+            // the array's base type.
+            PlaceKind::VarElement(var, _) => var.ty(db).base_type().clone(),
             PlaceKind::FunctionReturn(fun) => fun.return_ty(db),
             PlaceKind::FunctionArg(arg) => arg.ty(db),
 
             PlaceKind::ImplicitResidual { .. }
             | PlaceKind::Contribute { .. }
-            | PlaceKind::BoundStep => Type::Real,
+            | PlaceKind::BoundStep
+            | PlaceKind::Breakpoint
+            | PlaceKind::Discontinuity => Type::Real,
             PlaceKind::ParamMin(param) | PlaceKind::ParamMax(param) | PlaceKind::Param(param) => {
                 param.ty(db)
             }
+            // One element of an array parameter holds the array's base type, the
+            // same way one element of an array variable does.
+            PlaceKind::ParamElement(param, _) => param.ty(db).base_type().clone(),
             PlaceKind::IsVoltageSrc(_)
             | PlaceKind::CollapseImplicitEquation(_)
             | PlaceKind::NamedEvent(_) => Type::Bool,
@@ -246,6 +279,22 @@ impl_debug_display! {
     match LimitState {LimitState(i) => "lim_state{}", i;}
 }
 
+/// A value that has to survive from one accepted timestep to the next: the latch
+/// behind an `@(cross)` variable, or the previous value of a monitored expression.
+///
+/// Distinct from [`LimitState`]. Both are "state" in the loose sense, but a limit
+/// state is a node voltage carried between *Newton iterations* and lives in the
+/// simulator's OSDI state array, whereas a retained slot is a value carried between
+/// *accepted timesteps* and lives in the instance data (see the retained-state note
+/// at the top of `openvaf/osdi/stdlib.c`). Keeping them apart also keeps retained
+/// slots out of the limit-specific derivative and limit-rhs passes.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RetainedState(u32);
+impl_idx_from!(RetainedState(u32));
+impl_debug_display! {
+    match RetainedState {RetainedState(i) => "retained_state{}", i;}
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum AbsDelayInput {
     Voltage { hi: Node, lo: Option<Node> },
@@ -260,6 +309,35 @@ pub struct AbsDelayInfo {
     pub max_delay: Option<Value>,
 }
 
+/// How `absdelay` (VAMS-2023 4.5.7) is realized.
+///
+/// The operator needs the input's history over the delay window, and a single model
+/// evaluation has no history. There are two ways to come by it and they are not
+/// equivalent, so this is a choice rather than an optimization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbsDelayMode {
+    /// Hand the delay to the simulator through the OSDI descriptor
+    /// ([`AbsDelayInfo`] becomes `OsdiAbsDelayInfo`): it owns the history and stamps
+    /// the output row. Exact, and the output row is *only* stamped there -- a
+    /// simulator that does not implement the protocol leaves it empty and its matrix
+    /// singular.
+    Simulator,
+    /// Keep the history in the model: a shift register of `depth` retained
+    /// (time, value) pairs, linear interpolation between them, and `$bound_step`
+    /// capped at their spacing. Runs on any OSDI simulator, at the cost of resolving
+    /// the delay to that spacing instead of exactly.
+    InModel { depth: usize },
+}
+
+impl AbsDelayMode {
+    /// Deep enough that the delay is resolved to a few percent, shallow enough that
+    /// the timestep cap it implies is not punishing.
+    pub const DEFAULT_DEPTH: usize = 32;
+    /// Two samples bracket one interval; a third is the one that may fall off the
+    /// end of the window while the other two still cover the target time.
+    pub const MIN_DEPTH: usize = 3;
+}
+
 /// A mapping between abstractions used in the MIR and the corresponding
 /// information from the HIR. This allows the MIR to remain independent of the frontend/HIR
 #[derive(Debug, PartialEq, Clone)]
@@ -272,11 +350,10 @@ pub struct HirInterner {
     pub tagged_reads: IndexMap<Value, Variable, BuildHasherDefault<FxHasher>>,
     pub implicit_equations: TiVec<ImplicitEquation, ImplicitEquationKind>,
     pub lim_state: TiMap<LimitState, Value, Vec<(Value, bool)>>,
-    /// Limit-state slots that actually back `@(cross)` retained variables (latch
-    /// state stored across timesteps). They reuse the limit state-array machinery
-    /// but carry no limit function, so the limit-specific derivative/value passes
-    /// must skip them.
-    pub retained_lim_states: ahash::AHashSet<LimitState>,
+    /// The value each retained slot holds before anything has written to it, in slot
+    /// order. The length is the number of slots; the backend turns each into a pair
+    /// of instance-data fields initialized to this value. See [`RetainedState`].
+    pub retained_init: TiVec<RetainedState, f64>,
 }
 
 pub type LiveParams<'a> = FilterMap<
@@ -295,7 +372,7 @@ impl Default for HirInterner {
             tagged_reads: IndexMap::with_hasher(BuildHasherDefault::<FxHasher>::default()),
             implicit_equations: TiVec::default(),
             lim_state: TiMap::default(),
-            retained_lim_states: ahash::AHashSet::default(),
+            retained_init: TiVec::new(),
         }
     }
 }
@@ -367,12 +444,7 @@ impl HirInterner {
             }
         }
 
-        for (state, (param, vals)) in self.lim_state.iter_enumerated() {
-            // Retained `@(cross)` slots are not limited node voltages; their key is a
-            // synthetic constant, so skip the limit derivative handling for them.
-            if self.retained_lim_states.contains(&state) {
-                continue;
-            }
+        for (param, vals) in self.lim_state.raw.iter() {
             for &(val, neg) in vals {
                 let param = func.dfg.value_def(*param).unwrap_param();
 
@@ -477,6 +549,7 @@ pub struct MirBuilder<'a> {
     /// When set, lower the module's imperative `initial`/`final` procedural body
     /// (the standalone runner lane) instead of the analog DAE bodies.
     procedural: bool,
+    absdelay: AbsDelayMode,
 }
 
 impl<'a> MirBuilder<'a> {
@@ -496,7 +569,15 @@ impl<'a> MirBuilder<'a> {
             lower_equations: false,
             tag_writes: false,
             procedural: false,
+            absdelay: AbsDelayMode::Simulator,
         }
+    }
+
+    /// How to realize `absdelay`; see [`AbsDelayMode`]. The descriptor protocol is
+    /// the default, so a caller that does not care keeps the ABI it had.
+    pub fn with_absdelay(mut self, mode: AbsDelayMode) -> Self {
+        self.absdelay = mode;
+        self
     }
 
     /// Lower the module's standalone `initial`/`final` procedural body instead of the
@@ -560,7 +641,11 @@ impl<'a> MirBuilder<'a> {
         let path = self.module.name(self.db);
 
         let mut ctx = LoweringCtx::new(self.db, builder, !self.lower_equations, &mut interner)
-            .with_tagged_vars(self.tagged_reads);
+            .with_tagged_vars(self.tagged_reads)
+            .with_absdelay(self.absdelay)
+            // Read off the module rather than configured by the caller: 10.3 is a
+            // property of the source, so every caller wants the same answer.
+            .with_default_transition(self.module.default_transition(self.db));
 
         if self.procedural {
             // Runner lane: lower only the imperative procedural body (all `initial`

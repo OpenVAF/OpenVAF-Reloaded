@@ -1,0 +1,48 @@
+param "$mfactor"
+units = "", desc = "Multiplier (Verilog-A $mfactor)", flags = ParameterFlags(PARA_KIND_INST)
+
+12 terminals
+node "out0" units = "V", runits = "A"
+node "out1" units = "V", runits = "A"
+node "out2" units = "V", runits = "A"
+node "rowv" units = "V", runits = "A"
+node "patv" units = "V", runits = "A"
+node "pickv" units = "V", runits = "A"
+node "cubev" units = "V", runits = "A"
+node "in0" units = "V", runits = "A"
+node "in1" units = "V", runits = "A"
+node "in2" units = "V", runits = "A"
+node "seli" units = "V", runits = "A"
+node "selj" units = "V", runits = "A"
+node(flow) "flow(out0)" units = "A", runits = "V"
+node(flow) "flow(out1)" units = "A", runits = "V"
+node(flow) "flow(out2)" units = "A", runits = "V"
+node(flow) "flow(rowv)" units = "A", runits = "V"
+node(flow) "flow(patv)" units = "A", runits = "V"
+node(flow) "flow(pickv)" units = "A", runits = "V"
+node(flow) "flow(cubev)" units = "A", runits = "V"
+jacobian (out0, flow(out0)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (out1, flow(out1)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (out2, flow(out2)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (rowv, flow(rowv)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (patv, flow(patv)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (pickv, flow(pickv)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (cubev, flow(cubev)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out0), out0) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out0), in0) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out0), in1) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out0), in2) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out1), out1) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out1), in0) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out1), in1) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out1), in2) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out2), out2) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out2), in0) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out2), in1) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(out2), in2) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(rowv), rowv) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(patv), patv) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(pickv), pickv) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(cubev), cubev) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+0 states
+has bound_step false

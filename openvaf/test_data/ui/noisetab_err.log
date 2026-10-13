@@ -1,0 +1,18 @@
+error: type mismatch: expected array (real) or string value but found real[0:1][0:3] parameter ref
+   --> /noisetab_err.va:36:32
+   |
+36 |         I(a, b) <+ noise_table(bank, "bank");
+   |                                ^^^^ expected array (real) or string value
+
+error: invalid noise_table: the table is a vector of (frequency, power) pairs, and 3 values is not a whole number of them
+   --> /noisetab_err.va:31:20
+   |
+31 |         I(a, b) <+ noise_table(odd, "odd");
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^ invalid noise_table
+
+error: invalid noise_table: the table is a vector of (frequency, power) pairs, and 0 values is not a whole number of them
+   --> /noisetab_err.va:34:20
+   |
+34 |         I(a, b) <+ noise_table({}, "empty");
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^ invalid noise_table
+

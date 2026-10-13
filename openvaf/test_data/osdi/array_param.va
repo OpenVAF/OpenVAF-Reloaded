@@ -1,0 +1,43 @@
+// VAMS-2023 3.4.4: a parameter array, declared with its range and initialised by
+// an assignment pattern, and 3.4.8's nested pattern for more than one dimension.
+//
+// Each output carries one reading of one array, so a test can tell a default from
+// an override, and row-major order from any other order.
+`include "disciplines.vams"
+
+module array_param(one, all, matrix, ints, loc, sized);
+    output one, all, matrix, ints, loc, sized;
+    electrical one, all, matrix, ints, loc, sized;
+
+    // 3.4.4's own form. The range applies to every element of the array.
+    parameter real g[0:2] = '{1.0, 2.0, 3.0} from [0:100];
+    // 3.4.8: one pattern per dimension, and the elements in row-major order.
+    parameter real m[0:1][0:2] = '{'{11.0, 12.0, 13.0}, '{21.0, 22.0, 23.0}};
+    parameter integer k[0:1] = '{7, 9};
+    // Which element to read is a parameter of its own, so the index is not a
+    // constant the compiler can fold away.
+    parameter integer sel = 0 from [0:2];
+    // 3.4.4: the range may be sized by a parameter declared before it.
+    parameter integer n = 2;
+    parameter real s[0:n-1] = '{4.0, 5.0};
+    // A local parameter is never overridable, so this one is always its default.
+    localparam real h[0:1] = '{0.5, 1.5};
+
+    real sum;
+    integer i;
+
+    analog begin
+        // Every element, by an index the model computes.
+        sum = 0.0;
+        for (i = 0; i <= 2; i = i + 1) begin
+            sum = sum + g[i];
+        end
+
+        V(one) <+ g[sel];
+        V(all) <+ sum;
+        V(matrix) <+ m[1][1];
+        V(ints) <+ k[0] + k[1];
+        V(loc) <+ h[0] + h[1];
+        V(sized) <+ 10.0 * s[0] + s[1];
+    end
+endmodule

@@ -1,0 +1,125 @@
+// VAMS-2023 6.4: what a paramset may hold, and what it may not.
+//
+// The accepted forms come first, so what the log records is only what is rejected.
+`include "disciplines.vams"
+
+module res(a, b);
+    inout a, b;
+    electrical a, b;
+    parameter real r = 1.0 from (0:inf);
+    parameter integer n = 1 from [1:8];
+    parameter real c[0:1] = '{1.0, 2.0};
+    parameter string lab = "res";
+    localparam real two = 2.0;
+    real v;
+    analog begin
+        v = V(a, b);
+        I(a, b) <+ n * v / (r * c[0] * c[1]);
+    end
+endmodule
+
+// --- accepted ---------------------------------------------------------------
+
+// The clause's own shape: a parameter of its own, and a statement per parameter
+// of the module it sets.
+paramset ok_plain res;
+    parameter real w = 1.0 from (0:inf);
+    .r = 100.0 / w;
+    .n = 2;
+endparamset
+
+// A localparam of the paramset, which is where the process's numbers go.
+paramset ok_local res;
+    parameter real w = 1.0 from (0:inf);
+    localparam real rsheet = 250.0;
+    .r = rsheet * w;
+endparamset
+
+// An array parameter is set as a whole, by an assignment pattern (3.4.4).
+paramset ok_array res;
+    parameter real k = 1.0;
+    .c = '{k, 2.0 * k};
+endparamset
+
+// A string parameter, and an alias for the paramset's own parameter.
+paramset ok_string res;
+    parameter real w = 1.0;
+    aliasparam width = w;
+    .lab = "fitted";
+    .r = w;
+endparamset
+
+// An integer parameter set from an integer expression, and nothing else: the rest
+// of the module's parameters keep their declared defaults.
+paramset ok_quiet res;
+    parameter integer fingers = 1 from [1:4];
+    .n = 2 * fingers;
+endparamset
+
+// --- rejected ---------------------------------------------------------------
+
+// The second name is not a module of this file.
+paramset bad_target nosuchmodule;
+    parameter real w = 1.0;
+    .r = w;
+endparamset
+
+// 6.4's chain: a paramset over a paramset.
+paramset bad_chain ok_plain;
+    parameter real w = 1.0;
+    .r = w;
+endparamset
+
+// A statement that names nothing the module has, a localparam of the module, and
+// one parameter set twice.
+paramset bad_stmts res;
+    parameter real w = 1.0;
+    .nosuch = w;
+    .two = 3.0;
+    .r = w;
+    .r = 2.0 * w;
+endparamset
+
+// A value the parameter cannot hold.
+paramset bad_types res;
+    parameter real w = 1.0;
+    .r = "text";
+    .lab = w;
+    .c = w;
+endparamset
+
+// Declarations that belong to the module, not to the paramset.
+paramset bad_items res;
+    parameter real w = 1.0;
+    electrical extra;
+    real tmp;
+    branch (extra, extra) br;
+    analog tmp = 1.0;
+    .r = w;
+endparamset
+
+// 6.4.1: a paramset statement is a constant expression over the paramset's own
+// parameters, so there is no behaviour for it to read.
+paramset bad_const res;
+    parameter real w = 1.0;
+    .r = ddt(w);
+endparamset
+
+// 6.4.2's overloading: two paramsets of one name.
+paramset bad_dup res;
+    parameter real w = 1.0;
+    .r = w;
+endparamset
+
+paramset bad_dup res;
+    parameter real w = 2.0;
+    .r = w;
+endparamset
+
+// A paramset statement in a module, which has no paramset to belong to.
+module stray(a, b);
+    inout a, b;
+    electrical a, b;
+    .r = 1.0;
+    analog I(a, b) <+ V(a, b);
+endmodule
