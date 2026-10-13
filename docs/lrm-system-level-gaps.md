@@ -449,6 +449,7 @@ compile.
 | Multi-dimensional arrays | 3.2, 3.3 | Implemented, for as many dimensions as a declaration gives. One row of one is readable but not assignable. |
 | Array parameters | 3.4.4 | Implemented, of one dimension or several: one parameter of as many elements as it was declared with, which a model card sets in one go. The size is fixed when the model is compiled. |
 | `noise_table` from a model card | 4.6.3 | Implemented. A table whose values are not constants is read at run time, so a measured spectrum is a model card rather than a rebuild. A table of constants still folds into the model. |
+| A `$table_model` or `zi_*` vector from a model card | 9.21, 4.5.12 | Implemented for the shapes that can be emitted over values: a table of one dimension interpolated linearly or by closest point, and a vector of coefficients. A spline's weights are a solve over every ordinate and a root vector has to be paired, so both still have to be constants. |
 | `paramset` | 6.x | Parse error: `expected 'discipline', 'nature' or 'module'`. Matters more for device libraries than for system-level work. |
 
 ### The directives that supply a default
@@ -577,11 +578,11 @@ array variable)", so a filter's coefficients can come from the model card:
 `laplace_nd(V(in), num, den)` with `den` a parameter array is what
 `sim_regression/arrayparam` measures, and the pole lands where the card says.
 The operators that build their table or their coefficients at *compile* time
-cannot take one, and now say so: `$table_model` and the `zi_*` filters reject an
-array parameter with a diagnostic. `noise_table` would otherwise have accepted
-one (a parameter is a constant expression, which is all its check asked for) and
+could not take one, and said so. `noise_table` would otherwise have accepted one
+(a parameter is a constant expression, which is all its check asked for) and
 compiled an empty spectrum, so it was made to reject one too, which is where the
-next section starts.
+next two sections start: both now read what a card sets, and what is left of the
+refusal is the shapes that cannot be read at run time at all.
 
 **Indexing something that is not an array crashed the compiler**, and had nothing
 to do with parameters: `x[0]` on a scalar typed as `Err`, and the cast inserted
@@ -640,12 +641,87 @@ vector of (frequency, power) pairs, and 3 values is not a whole number of them".
 its own right, so `noise_table(bank[1], "...")` is the second of as many spectra
 as the card declares, read with the row machinery 3.2's arrays already use.
 
-What this does not extend to is the two other operators that build their data in.
+The two other operators that build their data in are the next section's: a
 `$table_model` reduces its samples to a piecewise polynomial so that the existing
-autodiff can differentiate the lookup, and 9.21.1 captures the data source on the
-first call in any case; the `zi_*` filters fold their coefficients into the
-recurrence. Both still reject an array parameter, and both say so in terms of a
-model card.
+autodiff can differentiate the lookup, and the `zi_*` filters fold their
+coefficients into a recurrence. Both read a model card's vector now, for the
+shapes where that is possible at all.
+
+### A measured curve and a filter from a model card
+
+9.21's `$table_model` and 4.5.12's `zi_*` are the other two operators whose
+numbers were built into the model, and the thing a netlist most wants to set per
+part is exactly a measured curve: the grid a part was measured on is the same for
+every part, and the column measured on it is not.
+
+Both now read a vector a model card sets, and the shape of the generated code is
+the shape it already had.
+
+For a filter, the difference equation is the same sum with nothing folded: a
+coefficient that is a value multiplies rather than scaling a constant, and the
+leading denominator coefficient divides once at the end rather than being
+inverted into every term. The order is the length of the vectors, which a
+declaration gives whether or not it gives their contents, so the retained history
+is sized at compile time as before. A card that sets the leading denominator
+coefficient to zero parks the filter instead of dividing by zero, the way a
+non-positive period already did.
+
+For a table, the lookup is a line through each pair of samples and a chain of
+comparisons that picks the piece the lookup falls in, which is what the
+compiled-in form emits with the slopes folded. **The derivative still falls out of
+it**, which is the point of the whole design: the ordinates do not depend on the
+lookup expression, and the derivative of a select is a select, so the existing
+autodiff differentiates a card-driven lookup exactly as it does a compiled-in one.
+`test_card_data` checks that against a central difference of `hir_ty`'s own
+reduction, and the descriptor dump shows the entry it produces: a linear table
+has `jacobian (flow(lin), x)`, and a closest-point table has no such entry at
+all, because a piecewise-constant lookup has no derivative to carry.
+
+What a vector may be is narrower here than for a noise table, and both clauses say
+why. Table 4-20 makes a filter's coefficients constant expression arguments, which
+4.5.14 says remain static throughout an analysis: an array the module fills in
+would make the filter a different filter at every sample. 9.21.1 captures the data
+source "on the first call to the table model function" and ignores later changes,
+which a column read at every evaluation does not do. A parameter satisfies both,
+because a model card sets it once and nothing moves it afterwards, so that is
+exactly what is accepted: an array parameter, or one row of one, which makes a
+bank of fits on one card a matrix with a row per vector.
+
+As with a noise table, nothing can sort what it cannot see. A table of constants
+is sorted into its isoline tree as it is built, and its duplicate samples dropped
+the way 9.21 says; a card's column is read in the order the array gives it, so its
+ordinates have to ascend. A repeated ordinate is harmless, because the piece it
+spans is empty, but a column out of order is a column read out of order.
+
+Three shapes stay compiled-in, and the diagnostics say which and why.
+
+**A spline's weights are a solve.** `segments` builds the quadratic and cubic
+interpolants' coefficients from the solution of a tridiagonal system over every
+ordinate in the dimension, which is what spares the generated code a run-time
+solve. Linear and closest-point weights are a closed form of two neighbouring
+ordinates, so those are the two interpolation methods a card-driven table may ask
+for.
+
+**The shape of a table of more than one dimension is the data.** Which rows share
+an ordinate is what makes the isoline tree, so a two-dimensional table whose
+ordinates are not known has no shape to emit code for.
+
+**A root vector has to be paired.** 4.5.12 requires the conjugate of every complex
+root to be present, and the multiplying-out checks that the imaginary parts
+cancel; a root whose conjugate is missing would otherwise leave an imaginary
+coefficient behind. That check is a property of the numbers, so `zi_zp`'s two
+vectors and the root halves of `zi_zd` and `zi_np` still have to be constants. The
+same filter written as coefficients of `z^-k` can come from the card.
+
+`sim_regression/carddata` measures both devices against the numbers in the
+netlist, and turned up one thing worth knowing about lookup tables in a circuit
+rather than in a compiler: **a table is a kinked device.** A timepoint is accepted
+on a voltage tolerance, so with ngspice's default `reltol` the accepted solution
+can sit a few hundred microvolts across a knot from the voltage the device was
+last evaluated at, and the current is then the neighbouring segment's. One row in
+859 was off by 5.5e-06 A, which is the difference between the two slopes times
+that step; a tighter solve leaves 1.3e-10 A, which is the precision the waveform
+file is written with.
 
 ## A PLL, part by part
 
@@ -660,7 +736,7 @@ write a PLL in this". So, by part, with the state of each measured in
 | Phase/frequency detector | `@(cross(V(ref) - vth, +1))`, arms cleared when both are up | works; `cross` steers the step onto each edge |
 | Phase error as a number | `last_crossing` (4.5.10) | works; crossing times exact to 0.00e+00 s in `sim_regression/last_crossing` |
 | Charge pump | `I(ctrl) <+ -transition(icp * (up - dn), 0, tr)` | works |
-| Loop filter | RC in the netlist, or `laplace_nd`/`laplace_zp` (4.5.11) | works, and its coefficients can be an array parameter the model card sets (`sim_regression/arrayparam`) |
+| Loop filter | RC in the netlist, or `laplace_nd`/`laplace_zp` (4.5.11), or `zi_nd` (4.5.12) for a discrete-time one | works, and either kind can take its coefficients from an array parameter the model card sets (`sim_regression/arrayparam`, `sim_regression/carddata`) |
 | Oscillator, event-driven | `@(timer)` with the period recomputed per edge | works; period exact, and the control voltage settles where the arithmetic says |
 | Oscillator, phase-domain | `idtmod(freq, 0, 1, 0)` and a threshold | works, but nothing steers the timestep onto the wrap, so the edge lands where the solver stepped |
 | Divider | `@(cross)` counting, `transition` on the output | works; exactly one output edge per `ndiv` input edges |
@@ -682,9 +758,11 @@ continuously — which is what a real oscillator does anyway.
 
 So nothing on this page now blocks writing a PLL, measuring one, driving one
 from a file, or shaping one from its model card, and nothing is left in the table
-above: what remains in Tier 4 is `paramset`, which matters for device libraries
-rather than for system-level work, and the two 9.5 tasks a testbench does not
-reach for.
+above: what remains in Tier 4 is `paramset`, and the two 9.5 tasks a testbench
+does not reach for. The feature itself matters for device libraries rather than
+for system-level work, but it is a *parse* error, which takes the whole file with
+it: a vendor library that defines one paramset beside its modules compiles none
+of them. That is why item 23 queues it anyway.
 
 ## 9.5 — files
 
@@ -904,13 +982,23 @@ tasks (9.5, see above), and the compiler directives of 10.2 through 10.6.
     odd-length table is a diagnostic instead of a spectrum of nothing, one row of
     a two-dimensional array is a table (so a bank of them is a matrix), and a
     run-time table has to ascend in frequency, because nothing can sort it there.
-22. **`$table_model` and the `zi_*` filters from a model card** — the two
-    operators whose data is still built in. `$table_model` reduces its samples to
-    a piecewise polynomial, which is what lets the existing autodiff
-    differentiate the lookup, so a run-time table has to emit that same
-    arithmetic over values: the comparisons stay selects, whose derivative is a
-    select, so it should carry its Jacobian the way the compiled-in form does.
-    The `zi_*` coefficients are the same shape of problem one step further in,
-    since they multiply a retained recurrence. A measured I(V) curve or a
-    measured Kvco per part number is the thing this buys, the way a measured
-    spectrum was for item 21.
+22. ~~**`$table_model` and the `zi_*` filters from a model card**~~ — done, for
+    the shapes that can be emitted over values: a table of one dimension
+    interpolated linearly or by closest point, and a vector of coefficients. The
+    lookup keeps its derivative, which was the thing to prove, and
+    `sim_regression/carddata` measures a part's I(V) curve and the filter behind
+    it against the numbers on the card (1.260e-10 A and 4.767e-10 V, both the
+    file's own precision). What stays compiled in is a spline's weights (a solve
+    over every ordinate), a table of more than one dimension (whose shape is the
+    data) and a root vector (whose conjugate pairing is a property of the
+    numbers). A card's vector has to be a parameter rather than any array,
+    because 4.5.14 and 9.21.1 both say the numbers cannot move once the
+    simulation is running.
+23. **`paramset`** — 6.x, and the last row of the Tier 4 table. Today it is a
+    parse error (`expected 'discipline', 'nature' or 'module'`), and because it is
+    a parse error the whole file fails: a vendor library that defines one paramset
+    beside its modules does not compile at all, modules included, which is a
+    bigger problem than the feature itself. OSDI has no notion of a paramset, so
+    the shape of the work is a descriptor per paramset: the same compiled module,
+    with the set's overrides applied where a model card's would be, and the set's
+    own name for the simulator to instantiate by.

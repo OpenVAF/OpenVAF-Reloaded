@@ -1,0 +1,37 @@
+// What a model card wants to carry: a part's measured curve, and the filter that
+// smooths what is read off it (VAMS-2023 9.21's data source and 4.5.12's
+// coefficients, as numbers the netlist sets).
+//
+// Neither device has its numbers in the source. The ordinates a part was measured
+// at are the same for every part; the column measured there, and the filter the
+// board wants behind it, belong to the card.
+`include "disciplines.vams"
+
+module partcurve(p, n);
+    inout p, n;
+    electrical p, n;
+
+    // The measurement grid, and the current measured at each point of it.
+    parameter real vs[0:4] = '{0.0, 0.25, 0.5, 0.75, 1.0};
+    parameter real is[0:4] = '{0.0, 1.0e-4, 1.0e-3, 4.0e-3, 1.0e-2};
+
+    analog begin
+        // Linear between the measured points and linear off both ends, which is
+        // what a measured curve asks for: the part does not stop conducting where
+        // the measurement stopped.
+        I(p, n) <+ $table_model(V(p, n), vs, is, "1LL");
+    end
+endmodule
+
+module cardfilt(in, out);
+    inout in, out;
+    electrical in, out;
+
+    parameter real num[0:0] = '{0.25};
+    parameter real den[0:1] = '{1.0, -0.75};
+    parameter real ts = 2u from (0:inf);
+
+    analog begin
+        V(out) <+ zi_nd(V(in), num, den, ts);
+    end
+endmodule

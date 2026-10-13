@@ -33,6 +33,7 @@ directives     PASS
 multidim       PASS
 arrayparam     PASS
 noisetab       PASS
+carddata       PASS
 absdelay       PASS
 timepoints     PASS
 filelog        PASS
@@ -581,6 +582,55 @@ the second spectrum was a second build of the model.
 Neither earlier compiler reaches a spectrum here at all: `parameter real
 sn[0:7] = '{...}` is a parse error before array parameters, and `noise_table` of
 an array parameter is an invalid-operator error after them.
+
+## carddata — passing
+
+VAMS-2023 9.21's data source and 4.5.12's coefficients read at run time, which is
+the other half of what a model card wants to carry: not just a spectrum
+(`noisetab`) but a measured curve and the filter behind it.
+
+`carddata.va` has two devices, neither with its numbers in the source:
+
+* `partcurve`, whose I(V) curve is a `$table_model` over two array parameters, the
+  grid a part was measured on and the column measured there. Each instance is in
+  series with a 100 ohm sense resistor, so the waveform carries both the voltage
+  across the device and the current through it, and the ramp runs past both ends
+  of the grid so the extrapolation is measured too.
+* `cardfilt`, whose `zi_nd` coefficients are array parameters. The two cards place
+  the corner an octave and a half apart (`num=[0.1] den=[1 -0.9]` against the
+  declared `'{0.25}` and `'{1.0, -0.75}`).
+
+The analyzer reads the vectors out of the netlist and recomputes both: the lookup
+knee by knee from the device's own voltage, and the filter as the difference
+equation over the samples the waveform carries at the instants the filter asked
+the simulator for. The cards are written with their ordinates ascending, which a
+card has to be: a table of constants is sorted as it is built into the model, and
+a card's column is read in the order it gives.
+
+```
+a measured curve from the model card, 5 samples: worst current error 1.260e-10 A
+on the default card, 1.240e-10 A on the measured one
+a filter from the model card, over 50 samples of the grid it asked for: worst
+error 4.767e-10 V and 4.895e-10 V
+```
+
+Both residuals are the file's own precision: `wrdata` writes nine significant
+digits, which on a 10 mA current is about 1e-11 A, and the lookup is recomputed
+from a difference of two printed voltages.
+
+What the case turned up is worth keeping. **A table is a kinked device.** Between
+two samples it is a straight line, and at a sample its slope changes. A timepoint
+is accepted on a voltage tolerance, so with the default `reltol` the accepted
+solution can sit a few hundred microvolts across a knot from the voltage the
+device was last evaluated at, and the current in the file is then the neighbouring
+segment's: one row out of 859 was off by 5.5e-06 A, which is the difference
+between the two slopes times that step. The curve is not wrong there, the solve
+is; `.options reltol=1e-8 vntol=1e-10` leaves the precision above. Anyone putting
+a measured curve in a netlist should expect to tighten the solve at the knees.
+
+The previous compiler does not reach a waveform here at all: a data column or a
+coefficient vector that was not an array of constants was an invalid-operator
+error.
 
 ## timepoints — passing
 
