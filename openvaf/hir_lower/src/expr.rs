@@ -1261,8 +1261,15 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 self.ins_display(DisplayKind::Display, false, args);
                 GRAVESTONE
             }
-            BuiltIn::display | BuiltIn::monitor => {
+            BuiltIn::display => {
                 self.ins_display(DisplayKind::Display, true, args);
+                GRAVESTONE
+            }
+            // 9.4.1: `$monitor` is `$strobe` with a condition on it. It writes the
+            // whole argument list for an accepted timepoint, and only when one of
+            // the arguments is not what it was at the last one.
+            BuiltIn::monitor => {
+                self.monitor(None, args);
                 GRAVESTONE
             }
             // 9.4.1: `$strobe` "displays the simulation data at the end of the
@@ -1275,7 +1282,11 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
 
             // -- 9.5.2: the same tasks, writing to a descriptor -----------------
-            BuiltIn::fdisplay | BuiltIn::fwrite | BuiltIn::fdebug | BuiltIn::fstrobe => {
+            BuiltIn::fdisplay
+            | BuiltIn::fwrite
+            | BuiltIn::fdebug
+            | BuiltIn::fstrobe
+            | BuiltIn::fmonitor => {
                 let desc = self.lower_expr(args[0]);
                 let rest = &args[1..];
                 let kind = if builtin == BuiltIn::fdebug {
@@ -1285,6 +1296,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 };
                 match builtin {
                     BuiltIn::fstrobe => self.strobe(kind, Some(desc), rest),
+                    BuiltIn::fmonitor => self.monitor(Some(desc), rest),
                     // "$fwrite ... does not append a newline".
                     BuiltIn::fwrite => self.ins_display_file(kind, false, desc, rest),
                     _ => self.ins_display_file(kind, true, desc, rest),
@@ -2169,6 +2181,100 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 body.ins_display(kind, true, &args);
             }
         });
+    }
+
+    /// 9.4.1/9.5.2: `$monitor` and `$fmonitor` write the argument list for a
+    /// timepoint only when one of the arguments is not what it was at the last one.
+    ///
+    /// The clause describes a mechanism rather than a write: "for each accepted
+    /// step, if the variable or an expression in the argument list changes value
+    /// compared with the last accepted step -- with the exception of the `$abstime`
+    /// or `$realtime` system functions -- the entire argument list is displayed at
+    /// the end of the time step as if reported by the `$strobe` task". So this is
+    /// [BodyLoweringCtx::strobe] with a condition, and both halves of it are already
+    /// here: a slot that retains a value from one accepted step to the next, which
+    /// is what "compared with the last accepted step" asks for, and the runtime
+    /// holding the composed line until the point turns out to be the one the
+    /// simulator kept.
+    ///
+    /// The line is composed at every evaluation, as a strobe's is, and the flag says
+    /// what to do with it. That is what makes the comparison the clause's one: a
+    /// point the solver iterates on hands over a line and a flag per evaluation, and
+    /// the last word is the evaluation that converged -- a change an abandoned
+    /// iteration reported is retracted by the next, because the runtime drops the
+    /// pending line of an evaluation whose flag is false.
+    ///
+    /// The exception matters more than it looks. A line that reports `$abstime`
+    /// carries a different number at every timepoint, so comparing that argument too
+    /// would turn every monitor into a strobe. It is printed and not compared, which
+    /// is what the clause says. (`$realtime` is the digital half of the same
+    /// exception and has no analog context: Table 9-1.)
+    ///
+    /// The first point of an analysis has nothing to differ from, and 9.4.1 has the
+    /// mechanism report what it was given as soon as it is set up, so it writes.
+    /// [LoweringCtx::first_eval] is the flag for that, the same one `@(initial_step)`
+    /// uses: in an analysis where time never moves it stays true, so a monitor in an
+    /// operating point writes its line there.
+    fn monitor(&mut self, desc: Option<Value>, args: &[ExprId]) {
+        let kind = DisplayKind::Monitor;
+        // Nothing retains a value and no point is ever accepted (instance setup,
+        // verilogae): there is no previous timepoint to compare with, and the line
+        // is written as it stands, which is what `$strobe` does there too.
+        if self.ctx.no_equations {
+            match desc {
+                Some(desc) => self.ins_display_file(kind, true, desc, args),
+                None => self.ins_display(kind, true, args),
+            }
+            return;
+        }
+
+        let mut vals = Vec::new();
+        let Some(line) = self.ins_fmt_str_tracked(kind, args, &mut vals) else {
+            return;
+        };
+
+        let first = self.ctx.first_eval();
+        let mut changed = self.ctx.ins().bicast(first);
+        for (expr, val) in vals {
+            if self.is_abstime(expr) {
+                continue;
+            }
+            // The type the format call lowered the argument to, so the comparison is
+            // between the value that was printed and the value that was printed
+            // last: `%d` of a real reports the integer, and that is what changes.
+            let ty = self.resolved_ty(expr);
+            let slot = self.ctx.alloc_retained_state(0.0);
+            let prev = self.retained_load(slot, &ty);
+            let differs = match ty {
+                Type::String => self.ctx.ins().sne(val, prev),
+                Type::Real => self.ctx.ins().fne(val, prev),
+                _ => self.ctx.ins().ine(val, prev),
+            };
+            self.retained_save(slot, val, &ty);
+            let differs = self.ctx.ins().bicast(differs);
+            changed = self.ctx.ins().ior(changed, differs);
+        }
+
+        // Which statement this is, so that two in one module keep their own pending
+        // line and their own idea of what changed.
+        let site = self.ctx.next_strobe_site();
+        let site = self.ctx.iconst(site);
+        let now = self.ctx.use_param(ParamKind::Abstime);
+        // 9.5.1: bit 0 of a multichannel descriptor is the simulator's own output,
+        // which is where 9.4's form of the task writes.
+        let desc = desc.unwrap_or_else(|| self.ctx.iconst(1));
+        self.ctx.call(CallBackKind::MonitorLine { kind }, &[site, desc, line, now, changed]);
+    }
+
+    /// Whether an argument is `$abstime` itself, which 9.4.1 excepts from a
+    /// monitor's comparison. The exception is for the system function, not for
+    /// anything computed from it: `$abstime` reports the timepoint, and a value that
+    /// merely depends on it is a value worth reporting a change in.
+    fn is_abstime(&self, expr: ExprId) -> bool {
+        matches!(
+            self.body.get_expr(expr),
+            Expr::Call { fun: ResolvedFun::BuiltIn(BuiltIn::abstime), .. }
+        )
     }
 
     /// An optional analog-operator argument. Absent and written as a null argument

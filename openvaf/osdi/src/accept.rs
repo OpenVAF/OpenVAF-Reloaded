@@ -25,7 +25,12 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
     pub fn has_accept_work(&self) -> bool {
         self.inst_data.num_retained != 0
             || self.module.intern.callbacks.raw.iter().any(|cb| {
-                matches!(cb, CallBackKind::StrobeLine { .. } | CallBackKind::File(FileOp::Gets))
+                matches!(
+                    cb,
+                    CallBackKind::StrobeLine { .. }
+                        | CallBackKind::MonitorLine { .. }
+                        | CallBackKind::File(FileOp::Gets)
+                )
             })
     }
 

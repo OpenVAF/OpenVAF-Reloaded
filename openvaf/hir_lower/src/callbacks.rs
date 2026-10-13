@@ -131,6 +131,13 @@ pub enum CallBackKind {
     /// `$abstime`; the instance it belongs to and the level this kind of task logs
     /// at come from the simulator and from the descriptor's own constants.
     StrobeLine { kind: DisplayKind },
+    /// A line `$monitor` or `$fmonitor` composed, with whether any of the arguments
+    /// it reports is not what it was at the last accepted timepoint (VAMS-2023
+    /// 9.4.1). The same arguments as [CallBackKind::StrobeLine] and that flag: a
+    /// line composed at an evaluation that reports no change is one the runtime
+    /// drops, which also retracts whatever an earlier evaluation of the same point
+    /// left pending.
+    MonitorLine { kind: DisplayKind },
     File(FileOp),
     /// Whether this is the first evaluation at the current timepoint, which is what
     /// 9.4.1's "at the end of the current simulation time" needs in order not to
@@ -231,6 +238,13 @@ impl CallBackKind {
                 name: format!("$strobe_line[{kind:?}]"),
                 // site, descriptor, line, time
                 params: 4,
+                returns: 0,
+                has_sideeffects: true,
+            },
+            CallBackKind::MonitorLine { kind } => FunctionSignature {
+                name: format!("$monitor_line[{kind:?}]"),
+                // site, descriptor, line, time, changed
+                params: 5,
                 returns: 0,
                 has_sideeffects: true,
             },
@@ -393,6 +407,7 @@ impl CallBackKind {
                 | CallBackKind::RetainedFirst(_)
                 | CallBackKind::File(_)
                 | CallBackKind::StrobeLine { .. }
+                | CallBackKind::MonitorLine { .. }
                 | CallBackKind::RngValue(_)
                 | CallBackKind::RngSeed(_)
                 | CallBackKind::Analysis
@@ -407,7 +422,12 @@ impl CallBackKind {
     }
 
     pub fn tracked(&self) -> bool {
-        !matches!(self, CallBackKind::Print { .. } | CallBackKind::StrobeLine { .. })
+        !matches!(
+            self,
+            CallBackKind::Print { .. }
+                | CallBackKind::StrobeLine { .. }
+                | CallBackKind::MonitorLine { .. }
+        )
     }
 }
 

@@ -46,7 +46,7 @@ pub struct FmtArg {
 
 impl BodyLoweringCtx<'_, '_, '_> {
     pub fn ins_display(&mut self, kind: DisplayKind, newline: bool, args: &[ExprId]) {
-        self.ins_fmt(kind, newline, args, None, PrintSink::Log);
+        self.ins_fmt(kind, newline, args, None, PrintSink::Log, None);
     }
 
     /// VAMS-2023 9.5.2: the same task, writing to whatever `desc` names. The
@@ -59,7 +59,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
         desc: mir::Value,
         args: &[ExprId],
     ) {
-        self.ins_fmt(kind, newline, args, Some(desc), PrintSink::File);
+        self.ins_fmt(kind, newline, args, Some(desc), PrintSink::File, None);
     }
 
     /// VAMS-2023 9.5.3: `$swrite` and `$sformat` format into a string instead of
@@ -67,7 +67,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
     pub fn ins_sformat(&mut self, args: &[ExprId]) -> mir::Value {
         // Neither appends a newline: 9.5.3 gives them `$write`'s behaviour, not
         // `$display`'s.
-        self.ins_fmt(DisplayKind::Display, false, args, None, PrintSink::Str)
+        self.ins_fmt(DisplayKind::Display, false, args, None, PrintSink::Str, None)
             .expect("the string sink returns the formatted string")
     }
 
@@ -75,7 +75,34 @@ impl BodyLoweringCtx<'_, '_, '_> {
     ///  composes, which is handed over rather than written (see
     /// [BodyLoweringCtx::strobe]).
     pub fn ins_fmt_str(&mut self, kind: DisplayKind, args: &[ExprId]) -> Option<mir::Value> {
-        self.ins_fmt(kind, true, args, None, PrintSink::Str)
+        self.ins_fmt(kind, true, args, None, PrintSink::Str, None)
+    }
+
+    /// The same line, with every argument that carried a value recorded next to the
+    /// value it lowered to. 9.4.1's monitor has to compare those values with the
+    /// ones of the last accepted timepoint, and lowering the arguments a second time
+    /// to get at them would evaluate whatever they contain twice.
+    pub fn ins_fmt_str_tracked(
+        &mut self,
+        kind: DisplayKind,
+        args: &[ExprId],
+        vals: &mut Vec<(ExprId, mir::Value)>,
+    ) -> Option<mir::Value> {
+        self.ins_fmt(kind, true, args, None, PrintSink::Str, Some(vals))
+    }
+
+    /// One argument of a format call, recorded for a caller that has to compare it
+    /// (9.4.1's monitor) and lowered once either way.
+    fn lower_fmt_arg(
+        &mut self,
+        expr: ExprId,
+        vals: &mut Option<&mut Vec<(ExprId, mir::Value)>>,
+    ) -> mir::Value {
+        let val = self.lower_expr(expr);
+        if let Some(vals) = vals.as_deref_mut() {
+            vals.push((expr, val));
+        }
+        val
     }
 
     fn ins_fmt(
@@ -85,6 +112,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
         args: &[ExprId],
         desc: Option<mir::Value>,
         sink: PrintSink,
+        mut vals: Option<&mut Vec<(ExprId, mir::Value)>>,
     ) -> Option<mir::Value> {
         let mut fmt_lit = String::new();
         let mut call_args = match desc {
@@ -157,7 +185,8 @@ impl BodyLoweringCtx<'_, '_, '_> {
                                 while !matches!(c, 'e'..='g'|'E'..='G'|'r'|'R') {
                                     if c == '*' {
                                         arg_tys.push(Type::Integer.into());
-                                        call_args.push(self.lower_expr(args[i]));
+                                        let val = self.lower_fmt_arg(args[i], &mut vals);
+                                        call_args.push(val);
                                         i += 1;
                                     }
                                     fmt_lit.push(c);
@@ -176,7 +205,8 @@ impl BodyLoweringCtx<'_, '_, '_> {
                         };
 
                         arg_tys.push(ty);
-                        call_args.push(self.lower_expr(args[i]));
+                        let val = self.lower_fmt_arg(args[i], &mut vals);
+                        call_args.push(val);
                         i += 1;
                     } else {
                         fmt_lit.push(c)
@@ -200,7 +230,8 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 }
 
                 arg_tys.push(ty.into());
-                call_args.push(self.lower_expr(expr));
+                let val = self.lower_fmt_arg(expr, &mut vals);
+                call_args.push(val);
             }
         }
         if newline {

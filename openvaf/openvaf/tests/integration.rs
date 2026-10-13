@@ -2968,6 +2968,126 @@ fn test_paramset() -> Result<()> {
     Ok(())
 }
 
+/// VAMS-2023 9.4.1/9.5.2: `$fmonitor` writes the argument list for an accepted
+/// timepoint, and only when one of the arguments is not what it was at the last
+/// accepted one.
+///
+/// `fmonitor.va` puts a monitor, a strobe and a monitor of nothing but `$abstime`
+/// over one state machine, so every line below is the same model looking at the
+/// same values. The schedule drives it through the cases the clause decides:
+///
+///   * a point where nothing changed writes nothing, where the strobe beside it
+///     writes a line;
+///   * a change an abandoned iteration reported is taken back by the evaluation
+///     that converged, because the comparison the clause asks for is the accepted
+///     step's;
+///   * the step after a point that was evaluated and never accepted is compared
+///     with the last *accepted* one, so a value that only an abandoned point
+///     moved away from and back is not a change;
+///   * the first point of all writes, having nothing to differ from;
+///   * and a monitor whose only argument is `$abstime` writes once in a run,
+///     which is the clause's own exception.
+fn test_fmonitor() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+
+    let log = std::path::Path::new("openvaf_fmonitor_test.txt");
+    let _ = std::fs::remove_file(log);
+
+    // (the voltages of the three evaluations of the point, whether it is accepted).
+    // The thresholds in the model are 5 and 15, so these are states 0, 1 and 2.
+    const SCHEDULE: [([f64; 3], bool); 7] = [
+        // the first point: nothing to differ from, so it writes
+        ([0.0, 0.0, 0.0], true),
+        // the same state again: the strobe writes, the monitor has nothing to say
+        ([0.0, 0.0, 0.0], true),
+        // a change the solver went back on: two iterations at state 1, converging
+        // at state 0, which is the state of the last accepted point
+        ([10.0, 10.0, 0.0], true),
+        // a change at the evaluation that converged
+        ([0.0, 0.0, 10.0], true),
+        // state 2, evaluated and never accepted
+        ([20.0, 20.0, 20.0], false),
+        // back to state 1, which is what the last *accepted* point was at
+        ([10.0, 10.0, 10.0], true),
+        // and a change from it
+        ([0.0, 0.0, 0.0], true),
+    ];
+
+    let desc = test_descriptor(&openvaf_test_data("osdi").join("fmonitor.va"))?;
+    let model = desc.new_model();
+    model.process_params()?;
+    let mut instance = model.new_instance();
+    let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+
+    let mut first = true;
+    for (volts, accepted) in SCHEDULE {
+        for volt in volts {
+            if !first {
+                sim.next_iter();
+            }
+            first = false;
+            sim.set_voltage("a", volt);
+            sim.set_voltage("b", 0.0);
+            instance.eval(&model, &mut sim, EvalFlags::empty());
+            instance.load_dae(&model, &mut sim);
+        }
+        if accepted {
+            // The model has accepted-point work, so the descriptor offers the
+            // callback to do it with.
+            assert!(instance.accept(&model), "the descriptor offers no accept");
+        }
+        sim.advance_time(1.0);
+    }
+
+    let text = std::fs::read_to_string(log)
+        .unwrap_or_else(|e| panic!("the model did not leave {} behind: {e}", log.display()));
+    let _ = std::fs::remove_file(log);
+    let lines: Vec<&str> = text.lines().collect();
+
+    assert_eq!(
+        lines,
+        vec![
+            // The first point, written as it is composed: nothing has said that a
+            // point was accepted yet, so this is the fallback path, and the three
+            // statements write in the order they stand in.
+            "monitor 0 0",
+            "strobe 0 0",
+            "clock 0",
+            // From here on a line is written when the point is accepted. The state
+            // is the state of the last accepted point, so only the strobe writes.
+            "strobe 1 0",
+            // Two iterations at state 1 and a converged one back at state 0: the
+            // line the first two composed is retracted by the third, and the strobe
+            // reports the converged state as it always does.
+            "strobe 2 0",
+            // A change at the evaluation that converged. The monitor's line comes
+            // first because its statement does.
+            "monitor 3 1",
+            "strobe 3 1",
+            // Point 4 reached state 2 and was never accepted: no line of any kind,
+            // and nothing it saw counts as the state to compare with.
+            // So point 5, back at state 1, is compared with point 3's state 1 and
+            // writes nothing, although the evaluations in between saw state 2.
+            "strobe 5 1",
+            // And a change from the last accepted state.
+            "monitor 6 0",
+            "strobe 6 0",
+        ],
+        "the lines the model left behind"
+    );
+
+    // What the two tasks cost over the same run: a line per accepted point against
+    // a line per change, and one line in all for the monitor that reports the time.
+    let count = |prefix: &str| lines.iter().filter(|l| l.starts_with(prefix)).count();
+    assert_eq!(count("strobe"), 6, "one line per accepted timepoint");
+    assert_eq!(count("monitor"), 3, "one line per change");
+    assert_eq!(count("clock"), 1, "`$abstime` is printed, not compared");
+
+    Ok(())
+}
+
 harness! {
     // TODO: run this in CI, somehow this test is flakey tough regarding the linker invocation (and really slow)
     Test::from_dir("integration", &integration_test, &ignore_dev_tests, &project_root().join("integration_tests")),
@@ -2977,5 +3097,5 @@ harness! {
     Test::from_dir_filtered("vacask_spice", &vacask_spice_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice")),
     // VACASK simplified SPICE models
     Test::from_dir_filtered("vacask_spice_sn", &vacask_spice_sn_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice/sn")),
-    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros),Test::new("laplace_roots", &test_laplace_roots),Test::new("slew", &test_slew),Test::new("cross_detect", &test_cross_detect),Test::new("above_detect", &test_above_detect),Test::new("last_crossing", &test_last_crossing),Test::new("var_persistence", &test_var_persistence),Test::new("timer_detect", &test_timer_detect),Test::new("rng_stream", &test_rng_stream),Test::new("transition_pwl", &test_transition_pwl),Test::new("table_model", &test_table_model),Test::new("zi_filter", &test_zi_filter),Test::new("absdelay", &test_absdelay),Test::new("absdelay_in_model", &test_absdelay_in_model),Test::new("timer_resched", &test_timer_resched),Test::new("case_default", &test_case_default),Test::new("file_io", &test_file_io),Test::new("file_scan", &test_file_scan),Test::new("global_events", &test_global_events),Test::new("scan_target", &test_scan_target),Test::new("directives", &test_directives),Test::new("multidim", &test_multidim),Test::new("timepoints", &test_timepoints),Test::new("accept", &test_accept),Test::new("read_point", &test_read_point),Test::new("array_param", &test_array_param),Test::new("noise_table_param", &test_noise_table_param),Test::new("card_data", &test_card_data),Test::new("paramset", &test_paramset)]
+    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros),Test::new("laplace_roots", &test_laplace_roots),Test::new("slew", &test_slew),Test::new("cross_detect", &test_cross_detect),Test::new("above_detect", &test_above_detect),Test::new("last_crossing", &test_last_crossing),Test::new("var_persistence", &test_var_persistence),Test::new("timer_detect", &test_timer_detect),Test::new("rng_stream", &test_rng_stream),Test::new("transition_pwl", &test_transition_pwl),Test::new("table_model", &test_table_model),Test::new("zi_filter", &test_zi_filter),Test::new("absdelay", &test_absdelay),Test::new("absdelay_in_model", &test_absdelay_in_model),Test::new("timer_resched", &test_timer_resched),Test::new("case_default", &test_case_default),Test::new("file_io", &test_file_io),Test::new("file_scan", &test_file_scan),Test::new("global_events", &test_global_events),Test::new("scan_target", &test_scan_target),Test::new("directives", &test_directives),Test::new("multidim", &test_multidim),Test::new("timepoints", &test_timepoints),Test::new("accept", &test_accept),Test::new("read_point", &test_read_point),Test::new("array_param", &test_array_param),Test::new("noise_table_param", &test_noise_table_param),Test::new("card_data", &test_card_data),Test::new("paramset", &test_paramset),Test::new("fmonitor", &test_fmonitor)]
 }

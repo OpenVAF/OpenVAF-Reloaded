@@ -270,6 +270,44 @@ pub fn general_callbacks<'ll>(
                         num_state: 0,
                     })
                 }
+                // 9.4.1: the same line, with the flag that says whether anything
+                // it reports has changed since the last accepted timepoint. False
+                // also retracts what an earlier evaluation of this point left.
+                CallBackKind::MonitorLine { kind } => {
+                    let fun = builder
+                        .cx
+                        .get_func_by_name("va_monitor")
+                        .expect("stdlib function va_monitor is missing");
+                    let int_ty = builder.cx.ty_int();
+                    let fun_ty = builder.cx.ty_func(
+                        &[
+                            ptr_ty,
+                            ptr_ty,
+                            int_ty,
+                            int_ty,
+                            int_ty,
+                            ptr_ty,
+                            builder.cx.ty_double(),
+                            int_ty,
+                        ],
+                        builder.cx.ty_void(),
+                    );
+                    let lvl = match kind {
+                        DisplayKind::Debug => LOG_LVL_DEBUG,
+                        DisplayKind::Display | DisplayKind::Monitor => LOG_LVL_DISPLAY,
+                        DisplayKind::Info => LOG_LVL_INFO,
+                        DisplayKind::Warn => LOG_LVL_WARN,
+                        DisplayKind::Error => LOG_LVL_ERR,
+                        DisplayKind::Fatal => LOG_LVL_FATAL,
+                    };
+                    let lvl = builder.cx.const_unsigned_int(lvl);
+                    CallbackFun::Prebuilt(BuiltCallbackFun {
+                        fun_ty,
+                        fun,
+                        state: vec![handle, instance, lvl].into_boxed_slice(),
+                        num_state: 0,
+                    })
+                }
                 // If these derivative were non zero they would have been removed
                 CallBackKind::Derivative(_) | CallBackKind::NodeDerivative(_) => {
                     let zero = builder.cx.const_real(0.0);

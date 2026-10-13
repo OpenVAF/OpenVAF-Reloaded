@@ -68,6 +68,7 @@ pub fn stub_callbacks<'ll>(
                 }
                 CallBackKind::Print { .. }
                 | CallBackKind::StrobeLine { .. }
+                | CallBackKind::MonitorLine { .. }
                 | CallBackKind::ParamInfo(_, _)
                 | CallBackKind::BuiltinLimit { .. }
                 | CallBackKind::StoreLimit(_)

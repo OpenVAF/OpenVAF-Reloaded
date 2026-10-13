@@ -482,6 +482,11 @@ typedef struct VaStrobe {
   uint32_t lvl;
   /* The `$abstime` it was composed at, which is how a new point is recognized. */
   double at;
+  /* Whether a line for `at` has gone out already, on a simulator that does not
+   * confirm its points. One line per timepoint is what these tasks promise, and
+   * for a monitor the evaluation that has something to report is not necessarily
+   * the first one. */
+  bool wrote;
   /* Owned here, and freed when written or replaced. */
   char *line;
 } VaStrobe;
@@ -536,6 +541,7 @@ static VaStrobe *va_strobe_slot(void *inst, int32_t site) {
   va_nstrobes += 1;
   slot->inst = NULL;
   slot->line = NULL;
+  slot->wrote = 0;
   return slot;
 }
 
@@ -545,38 +551,56 @@ static VaStrobe *va_strobe_slot(void *inst, int32_t site) {
  * `inst` is NULL where there is no instance to key on (a model's own setup, or
  * verilogae), and then there is no timepoint either, so the line is written as it
  * stands.
+ *
+ * `write` is what `$monitor` adds: a line this evaluation has nothing to say with
+ * (see `va_monitor`). It is dropped, and so is whatever an earlier evaluation of
+ * the same point left pending, which is how an evaluation the solver went back on
+ * is taken back.
  */
-void va_strobe(void *handle, void *inst, uint32_t lvl, int32_t site, int32_t desc,
-               char *line, double at) {
+static void va_strobe_line(void *handle, void *inst, uint32_t lvl, int32_t site,
+                           int32_t desc, char *line, double at, bool write) {
   VaStrobe *slot;
   if (line == NULL) {
     return;
   }
   if (inst == NULL) {
-    va_fputs(handle, desc, line, lvl);
+    if (write) {
+      va_fputs(handle, desc, line, lvl);
+    }
     free(line);
     return;
   }
   slot = va_strobe_slot(inst, site);
   if (slot == NULL) {
-    va_fputs(handle, desc, line, lvl);
+    if (write) {
+      va_fputs(handle, desc, line, lvl);
+    }
     free(line);
     return;
   }
 
   if (!va_accept_seen) {
     /* No simulator has said that a point was accepted, so this one is assumed not
-     * to: write the first evaluation at each new time and keep nothing. That is
-     * what this task did before there was an accept callback, down to the line it
-     * picks, so a simulator that does not call one sees no change at all. The slot
-     * is kept for the time, which is all that is needed to recognize a new point.
+     * to: write the first evaluation that has something to say at each new time and
+     * keep nothing. For a strobe, which always has, that is the first evaluation of
+     * the point -- what this task did before there was an accept callback, down to
+     * the line it picks, so a simulator that does not call one sees no change at
+     * all. For a monitor it is the first evaluation at which something it reports
+     * has changed, which is not always the first one: the solver can settle a point
+     * over several evaluations and a state the model computes from the solution can
+     * turn over on any of them. Nothing here can take such a line back if the point
+     * is then abandoned, which is the price of a simulator that does not say.
      */
     bool is_new = slot->inst != inst || slot->at != at;
     slot->inst = inst;
     slot->site = site;
     slot->at = at;
     if (is_new) {
+      slot->wrote = 0;
+    }
+    if (write && !slot->wrote) {
       va_fputs(handle, desc, line, lvl);
+      slot->wrote = 1;
     }
     free(line);
     return;
@@ -587,13 +611,36 @@ void va_strobe(void *handle, void *inst, uint32_t lvl, int32_t site, int32_t des
    * the last word. A point the solver goes back on is simply overwritten. */
   if (slot->inst == inst && slot->line != NULL) {
     free(slot->line);
+    slot->line = NULL;
   }
   slot->inst = inst;
   slot->site = site;
   slot->desc = desc;
   slot->lvl = lvl;
   slot->at = at;
-  slot->line = line;
+  if (write) {
+    slot->line = line;
+  } else {
+    free(line);
+  }
+}
+
+void va_strobe(void *handle, void *inst, uint32_t lvl, int32_t site, int32_t desc,
+               char *line, double at) {
+  va_strobe_line(handle, inst, lvl, site, desc, line, at, 1);
+}
+
+/* 9.4.1's `$monitor` and `$fmonitor`: the same line, written only for a point at
+ * which something it reports is not what it was at the last accepted one.
+ *
+ * The comparison itself is the model's, because that is where the values are: a
+ * retained slot per argument, `$abstime` excepted, as the clause excepts it. What
+ * is left here is which line of a point survives it, and that is the same
+ * question `$strobe` asks, so it is answered in the same place.
+ */
+void va_monitor(void *handle, void *inst, uint32_t lvl, int32_t site, int32_t desc,
+                char *line, double at, int32_t changed) {
+  va_strobe_line(handle, inst, lvl, site, desc, line, at, changed != 0);
 }
 
 /* The descriptor's `accept`: the timepoint just evaluated is final. So every line

@@ -26,15 +26,13 @@ const ANALOG_OPERATORS: [&str; 17] = [
 ];
 
 // What is left of 9.5: `$ferror`, whose error codes are implementation-defined
-// and which this runtime has nothing to tell them apart with, and `$fmonitor`,
-// which has to notice its arguments changing.
-const UNSUPPORTED: [&str; 7] = [
+// and which this runtime has nothing to tell them apart with.
+const UNSUPPORTED: [&str; 6] = [
     "simprobe",
     "analog_node_alias",
     "analog_port_alias",
     "test_plusargs",
     "value_plusargs",
-    "fmonitor",
     "ferror",
 ];
 

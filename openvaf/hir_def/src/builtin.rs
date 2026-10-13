@@ -188,7 +188,6 @@ impl BuiltIn {
             | BuiltIn::analog_port_alias
             | BuiltIn::test_plusargs
             | BuiltIn::value_plusargs
-            | BuiltIn::fmonitor
             | BuiltIn::ferror => true,
             _ => false,
         }

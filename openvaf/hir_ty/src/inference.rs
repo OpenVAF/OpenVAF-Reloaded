@@ -851,6 +851,7 @@ impl Ctx<'_> {
             | BuiltIn::fdisplay
             | BuiltIn::fwrite
             | BuiltIn::fstrobe
+            | BuiltIn::fmonitor
             | BuiltIn::fdebug
             | BuiltIn::fatal => self.infere_display(stmt, args),
 

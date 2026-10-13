@@ -1,0 +1,72 @@
+// VAMS-2023 9.4.1/9.5.2: the forms of a monitor, and the ones around it that an
+// analog block does not have.
+//
+// The accepted forms come first, so what the log records is only what is rejected.
+`include "disciplines.vams"
+
+module mon(a, b);
+    inout a, b;
+    electrical a, b;
+    parameter real thr = 0.5;
+    integer fd, state;
+    real hist[0:1];
+    string label;
+
+    analog function integer say;
+        input x, f;
+        integer x, f;
+        begin
+            $fmonitor(f, "in a function %d", x);
+            say = x;
+        end
+    endfunction
+
+    analog begin
+        @(initial_step) fd = $fopen("mon.log", "w");
+
+        state = (V(a, b) > thr) ? 1 : 0;
+        hist[0] = V(a, b);
+        hist[1] = state;
+        if (state == 1)
+            label = "on";
+        else
+            label = "off";
+
+        // --- accepted -------------------------------------------------------
+
+        // The task itself, in both of its forms: 9.5.2's to a descriptor and
+        // 9.4.1's to the simulator's own output.
+        $fmonitor(fd, "state %g %d", $abstime, state);
+        $monitor("state %d", state);
+
+        // What is compared is what is printed, whatever its type: an integer, a
+        // real, a string, one element of an array, a parameter that never changes.
+        $fmonitor(fd, "%d %g %s %g %g", state, hist[0], label, hist[1], thr);
+
+        // With nothing to report, which 9.4.1 gives the same meaning as `$strobe`
+        // without arguments: a newline, written once, since nothing can change.
+        $fmonitor(fd);
+
+        // In a function, and under a condition, where what it compares with is the
+        // last value it saw rather than the last one there was.
+        state = say(state, fd);
+        if (state == 1)
+            $fmonitor(fd, "on at %g", $abstime);
+
+        // --- rejected -------------------------------------------------------
+
+        // Table 9-1: `$monitoron` and `$monitoroff` are digital-only, so an analog
+        // block has no such task to reach.
+        $monitoroff;
+        $monitoron;
+
+        // The formatting diagnostics are 9.4's, shared with every other form of
+        // the task: a specifier with no argument, and an argument of the wrong
+        // type for it.
+        $fmonitor(fd, "no argument for this: %d");
+        $fmonitor(fd, "a string where a real goes: %g", label);
+        $fmonitor(fd, "and a real where a string goes: %s", hist[0]);
+
+        I(a, b) <+ V(a, b);
+    end
+endmodule
