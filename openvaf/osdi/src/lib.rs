@@ -88,7 +88,7 @@ pub fn compile<'a>(
     initialize_llvm();
     let mut literals = Rodeo::new();
     let mut lim_table = TiSet::default();
-    let mnames: Vec<_> = modules.iter().map(|m| m.module.name(db)).collect();
+    let mnames: Vec<_> = modules.iter().map(|m| m.name(db)).collect();
     let modules: Vec<_> = modules
         .iter()
         .map(|module| {
@@ -424,7 +424,7 @@ pub fn compile<'a>(
 
 impl OsdiModule<'_> {
     fn intern_names(&self, literals: &mut Rodeo, db: &CompilationDB) {
-        literals.get_or_intern(&*self.info.module.name(db));
+        literals.get_or_intern(&*self.info.name(db));
         self.intern_node_strs(literals, db);
         literals.get_or_intern_static("Multiplier (Verilog-A $mfactor)");
         literals.get_or_intern_static("deg");

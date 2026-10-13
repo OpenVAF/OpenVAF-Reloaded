@@ -12,7 +12,7 @@ use typed_index_collections::TiVec;
 use super::{
     Block, Branch, BranchKind, Discipline, DisciplineAttr, DisciplineAttrKind, Domain, Event,
     Function, FunctionArg, FunctionItem, ItemTree, ItemTreeId, Module, ModuleItem, Nature,
-    NatureAttr, NatureRef, NatureRefKind, Net, Node, Param, Port, RootItem, Var,
+    NatureAttr, NatureRef, NatureRefKind, Net, Node, Param, ParamsetStmt, Port, RootItem, Var,
 };
 // use tracing::trace;
 use crate::db::HirDefDB;
@@ -264,7 +264,21 @@ impl Ctx {
         let num_ports = nodes.len() as u32;
         self.lower_module_items(decl.module_items(), &mut nodes, &mut items);
 
-        let res = Module { name, nodes, items, ast_id, num_ports };
+        // A paramset names the module it collects values for where a module names
+        // its ports (VAMS-2023 6.4).
+        let paramset = decl.target().map(|target| target.as_name());
+        let paramset_stmts = decl
+            .module_items()
+            .filter_map(|item| match item {
+                ast::ModuleItem::ParamsetAssign(assign) => Some(ParamsetStmt {
+                    param: assign.param()?.as_name(),
+                    ast_id: self.source_ast_id_map.ast_id(&assign),
+                }),
+                _ => None,
+            })
+            .collect();
+
+        let res = Module { name, nodes, items, ast_id, num_ports, paramset, paramset_stmts };
         Some(self.tree.data.modules.push_and_get_key(res))
     }
 
@@ -309,6 +323,9 @@ impl Ctx {
                 // entity. The genvar `for` loop is unrolled during body lowering, so
                 // there is nothing to lower here.
                 ast::ModuleItem::GenvarDecl(_) => {}
+                // A paramset statement declares nothing; its expression is lowered
+                // with the paramset's body and its target is resolved by `hir_ty`.
+                ast::ModuleItem::ParamsetAssign(_) => {}
                 ast::ModuleItem::EventDecl(decl) => self.lower_event_decl(decl, dst),
             };
         }

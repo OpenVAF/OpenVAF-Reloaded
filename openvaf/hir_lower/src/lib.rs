@@ -38,8 +38,11 @@ mod ctx;
 mod expr;
 pub mod fmt;
 mod parameters;
+mod paramset;
 mod state;
 mod stmt;
+
+pub use paramset::ParamsetInit;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ImplicitEquationKind {

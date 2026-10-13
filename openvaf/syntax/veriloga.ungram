@@ -212,10 +212,15 @@ NatureDecl =
 NatureAttr =
   Name '=' val: Expr ';'
 
+// A paramset (VAMS-2023 6.4) is a module-shaped declaration: a name, the module
+// it collects values for, and a list of items. It shares this node so that
+// everything downstream -- the item tree, name resolution, bodies -- resolves a
+// paramset's parameters exactly as it resolves a module's. `paramset_token` and
+// `target` are what tell the two apart.
 ModuleDecl =
-  AttrList* 'module' Name ModulePorts? ';'
+  AttrList* ('module' | 'paramset') Name (ModulePorts | target:NameRef)? ';'
    ModuleItem*
-  'endmodule'
+  ('endmodule' | 'endparamset')
 
 ModuleItem =
   BodyPortDecl
@@ -227,6 +232,7 @@ ModuleItem =
 | VarDecl
 | ParamDecl
 | AliasParam
+| ParamsetAssign
 | GenvarDecl
 | EventDecl
 
@@ -265,6 +271,10 @@ ParamDecl =
 
 AliasParam =
   AttrList* 'aliasparam' name: Name '=' src: ParamRef ';'
+
+// VAMS-2023 6.4: `.module_parameter_identifier = paramset_constant_expression ;`
+ParamsetAssign =
+  AttrList* '.' param: NameRef '=' val: Expr ';'
 
 ParamRef =
   Path | SysFun

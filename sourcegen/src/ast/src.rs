@@ -88,6 +88,10 @@ pub(crate) const KINDS_SRC: KindsSrc = KindsSrc {
         "integer",
         "module",
         "nature",
+        // VAMS-2023 6.4: a paramset collects parameter values for a module, the
+        // way a SPICE model card does.
+        "paramset",
+        "endparamset",
         "output",
         "parameter",
         "localparam",
@@ -159,6 +163,7 @@ pub(crate) const KINDS_SRC: KindsSrc = KindsSrc {
         "PARAM",
         "ALIAS_PARAM",
         "PARAM_DECL",
+        "PARAMSET_ASSIGN",
         "PAREN_EXPR",
         "PATH",
         "PATH_EXPR",

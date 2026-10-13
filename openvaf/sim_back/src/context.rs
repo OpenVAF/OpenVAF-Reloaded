@@ -58,6 +58,13 @@ impl<'a> Context<'a> {
         .with_tagged_writes()
         .with_absdelay(absdelay)
         .build(literals);
+        // A paramset's statements take the place of the module's model card
+        // (VAMS-2023 6.4), on the freshly lowered body so that everything after
+        // this point -- the derivatives, the split into setup and evaluation, the
+        // descriptor -- sees a module whose parameters are the paramset's.
+        if let Some(init) = module.paramset_init(db) {
+            intern.insert_paramset_init(db, &mut func, literals, &init);
+        }
         // TODO hidden state
         intern.insert_var_init(db, &mut func, literals);
 

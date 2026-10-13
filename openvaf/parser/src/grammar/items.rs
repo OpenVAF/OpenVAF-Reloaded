@@ -5,7 +5,7 @@ pub(super) use module::module;
 use module::MODULE_ITEM_OR_ATTR_RECOVERY;
 
 pub(super) const ITEM_RECOVERY_SET: TokenSet =
-    TokenSet::new(&[DISCIPLINE_KW, NATURE_KW, MODULE_KW, EOF]);
+    TokenSet::new(&[DISCIPLINE_KW, NATURE_KW, MODULE_KW, PARAMSET_KW, EOF]);
 
 const DISCIPLINE_RECOVERY_SET: TokenSet =
     ITEM_RECOVERY_SET.union(TokenSet::unique(ENDDISCIPLINE_KW));

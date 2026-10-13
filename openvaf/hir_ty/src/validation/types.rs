@@ -1,12 +1,13 @@
 use std::iter::once;
 
 use basedb::{AstId, ErasedAstId, FileId};
+use hir_def::db::HirDefDB;
 use hir_def::nameres::diagnostics::PathResolveError;
 use hir_def::nameres::{DefMap, ScopeDefItem};
 use hir_def::{
-    AliasParamId, Branch, BranchId, BranchKind, DisciplineId, ItemLoc, ItemTree,
-    LocalDisciplineAttrId, LocalNatureAttrId, Lookup, ModuleId, ModuleLoc, NatureId, NodeId,
-    NodeTypeDecl, ParamId, Path, ScopeId,
+    AliasParamId, Branch, BranchId, BranchKind, DefWithBodyId, DisciplineId, ItemLoc, ItemTree,
+    LocalDisciplineAttrId, LocalNatureAttrId, Lookup, ModuleBodyKind, ModuleId, ModuleLoc,
+    NatureId, NodeId, NodeTypeDecl, ParamId, Path, ScopeId, Stmt, Type,
 };
 use syntax::ast::ArgListOwner;
 use syntax::name::Name;
@@ -24,18 +25,113 @@ pub struct DuplicateItem<Item, Def> {
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum TypeValidationDiagnostic {
-    PathError { err: PathResolveError, src: SyntaxNodePtr },
+    PathError {
+        err: PathResolveError,
+        src: SyntaxNodePtr,
+    },
     DuplicateDisciplineAttr(DuplicateItem<LocalDisciplineAttrId, DisciplineId>),
     DuplicateNatureAttr(DuplicateItem<LocalNatureAttrId, NatureId>),
     MultipleDirections(DuplicateItem<AstId<ast::PortDecl>, NodeId>),
     MultipleDisciplines(DuplicateItem<ErasedAstId, NodeId>),
     MultipleGnds(DuplicateItem<ErasedAstId, NodeId>),
-    PortWithoutDirection { decl: ErasedAstId, name: Name },
-    NodeWithoutDiscipline { decl: ErasedAstId, name: Name },
-    ArrayParamWithoutType { decl: ErasedAstId, name: Name },
-    UnknownDefaultDiscipline { decl: ErasedAstId, name: Name, discipline: Name },
-    ExpectedPort { node: NodeId, src: ErasedAstId },
-    IncompatibleBranch { branch: BranchId, node1: NodeId, node2: NodeId },
+    PortWithoutDirection {
+        decl: ErasedAstId,
+        name: Name,
+    },
+    NodeWithoutDiscipline {
+        decl: ErasedAstId,
+        name: Name,
+    },
+    ArrayParamWithoutType {
+        decl: ErasedAstId,
+        name: Name,
+    },
+    UnknownDefaultDiscipline {
+        decl: ErasedAstId,
+        name: Name,
+        discipline: Name,
+    },
+    ExpectedPort {
+        node: NodeId,
+        src: ErasedAstId,
+    },
+    IncompatibleBranch {
+        branch: BranchId,
+        node1: NodeId,
+        node2: NodeId,
+    },
+
+    /// A `.name = expr;` statement in a module, which has no paramset to belong to.
+    StrayParamsetStmt {
+        src: ErasedAstId,
+    },
+    /// Something a paramset may not declare (VAMS-2023 6.4).
+    ParamsetItem {
+        src: SyntaxNodePtr,
+        kind: ParamsetItemKind,
+    },
+    /// The name after a paramset's own is not a module of this file.
+    ParamsetUnknownTarget {
+        decl: SyntaxNodePtr,
+        name: Name,
+        target: Name,
+    },
+    /// 6.4's other form: the second identifier is a second paramset.
+    ParamsetChain {
+        decl: SyntaxNodePtr,
+        name: Name,
+        target: Name,
+    },
+    /// A statement sets something that is not a parameter of the target module.
+    ParamsetUnknownParam {
+        src: ErasedAstId,
+        target: Name,
+        param: Name,
+    },
+    /// A statement sets a `localparam` of the target module, which nothing outside
+    /// it may set.
+    ParamsetLocalParam {
+        src: ErasedAstId,
+        target: Name,
+        param: Name,
+    },
+    /// Two statements of one paramset set the same parameter.
+    DuplicateParamsetStmt(DuplicateItem<ErasedAstId, Name>),
+    /// A statement's value cannot be the parameter's.
+    ParamsetTypeMismatch {
+        src: ErasedAstId,
+        param: Name,
+        expected: Type,
+        found: Type,
+    },
+}
+
+/// What a paramset may not hold. VAMS-2023 6.4 gives it parameter declarations and
+/// statements; the behaviour, the nodes and everything that reads them belong to
+/// the module it names.
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum ParamsetItemKind {
+    Net,
+    Port,
+    Branch,
+    Function,
+    Event,
+    Variable,
+    Behaviour,
+}
+
+impl ParamsetItemKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ParamsetItemKind::Net => "a net",
+            ParamsetItemKind::Port => "a port",
+            ParamsetItemKind::Branch => "a branch",
+            ParamsetItemKind::Function => "a function",
+            ParamsetItemKind::Event => "an event",
+            ParamsetItemKind::Variable => "a variable",
+            ParamsetItemKind::Behaviour => "behaviour",
+        }
+    }
 }
 
 impl TypeValidationDiagnostic {
@@ -74,14 +170,152 @@ impl TypeValidationCtx<'_> {
 
     fn verify_module(&mut self, module: ModuleId) {
         let loc = module.lookup(self.db.upcast());
+        // A paramset shares this item (VAMS-2023 6.4), and what can be said about
+        // its contents is said in one place.
+        let is_paramset = self.tree[loc.id].paramset.is_some();
         let scope = loc.scope.local_scope;
         for item in self.def_map[scope].declarations.values() {
             match item {
+                // Reported as something a paramset may not declare instead.
+                ScopeDefItem::NodeId(_) | ScopeDefItem::BranchId(_) if is_paramset => (),
                 ScopeDefItem::NodeId(node) => self.verify_node(*node, loc),
                 ScopeDefItem::BranchId(branch) => self.verify_branch(*branch),
                 ScopeDefItem::AliasParamId(alias) => self.verify_alias(*alias),
                 ScopeDefItem::ParamId(param) => self.verify_param(*param),
                 _ => (),
+            }
+        }
+        if is_paramset {
+            self.verify_paramset(module, loc);
+        } else {
+            // `.name = expr;` sets a parameter of the module a paramset names, so
+            // in a module it names nothing.
+            for stmt in &*self.tree[loc.id].paramset_stmts {
+                self.report(TypeValidationDiagnostic::StrayParamsetStmt {
+                    src: stmt.ast_id.erased(),
+                });
+            }
+        }
+    }
+
+    /// VAMS-2023 6.4: a paramset collects parameter values for a module, so what it
+    /// holds is parameter declarations and statements that set that module's
+    /// parameters. Everything else belongs to the module it names.
+    fn verify_paramset(&mut self, module: ModuleId, loc: ModuleLoc) {
+        let decl = &self.tree[loc.id];
+        let name = decl.name.clone();
+        let target_name = decl.paramset.clone().expect("called for a paramset only");
+        let stmts = decl.paramset_stmts.clone();
+        let ast = loc.source(self.db.upcast());
+        // The target name, or the declaration when the parser never got one.
+        let decl_src = match ast.target() {
+            Some(target) => SyntaxNodePtr::new(target.syntax()),
+            None => SyntaxNodePtr::new(ast.syntax()),
+        };
+
+        for item in ast.module_items() {
+            let kind = match item {
+                ast::ModuleItem::ParamDecl(_)
+                | ast::ModuleItem::AliasParam(_)
+                | ast::ModuleItem::ParamsetAssign(_) => continue,
+                ast::ModuleItem::NetDecl(_) => ParamsetItemKind::Net,
+                ast::ModuleItem::BodyPortDecl(_) => ParamsetItemKind::Port,
+                ast::ModuleItem::BranchDecl(_) => ParamsetItemKind::Branch,
+                ast::ModuleItem::Function(_) => ParamsetItemKind::Function,
+                ast::ModuleItem::EventDecl(_) | ast::ModuleItem::GenvarDecl(_) => {
+                    ParamsetItemKind::Event
+                }
+                ast::ModuleItem::VarDecl(_) => ParamsetItemKind::Variable,
+                ast::ModuleItem::AnalogBehaviour(_) | ast::ModuleItem::ProceduralBlock(_) => {
+                    ParamsetItemKind::Behaviour
+                }
+            };
+            let src = SyntaxNodePtr::new(item.syntax());
+            self.report(TypeValidationDiagnostic::ParamsetItem { src, kind });
+        }
+
+        let root = self.def_map.root();
+        let target = match self.def_map[root].declarations.get(&target_name) {
+            Some(ScopeDefItem::ModuleId(target)) => *target,
+            _ => {
+                self.report(TypeValidationDiagnostic::ParamsetUnknownTarget {
+                    decl: decl_src.clone(),
+                    name,
+                    target: target_name,
+                });
+                return;
+            }
+        };
+        let target_loc = target.lookup(self.db.upcast());
+        if self.tree[target_loc.id].paramset.is_some() {
+            self.report(TypeValidationDiagnostic::ParamsetChain {
+                decl: decl_src,
+                name,
+                target: target_name,
+            });
+            return;
+        }
+
+        let def = DefWithBodyId::ModuleId { kind: ModuleBodyKind::Paramset, module };
+        let def_db: &dyn HirDefDB = self.db.upcast();
+        let body = def_db.body(def);
+        let infer = self.db.inference_result(def);
+        let target_scope = target_loc.scope.local_scope;
+
+        // One statement per parameter, each of them a settable parameter of the
+        // target, each value the type that parameter holds.
+        let mut seen: Vec<(Name, DuplicateItem<ErasedAstId, Name>)> = Vec::new();
+        for (i, stmt) in stmts.iter().enumerate() {
+            let src = stmt.ast_id.erased();
+            match seen.iter_mut().find(|(name, _)| *name == stmt.param) {
+                Some((_, dup)) => {
+                    dup.subsequent.push(src);
+                    continue;
+                }
+                None => seen.push((
+                    stmt.param.clone(),
+                    DuplicateItem { src: stmt.param.clone(), first: src, subsequent: Vec::new() },
+                )),
+            }
+
+            let param = match self.def_map[target_scope].declarations.get(&stmt.param) {
+                Some(ScopeDefItem::ParamId(param)) => *param,
+                _ => {
+                    self.report(TypeValidationDiagnostic::ParamsetUnknownParam {
+                        src,
+                        target: target_name.clone(),
+                        param: stmt.param.clone(),
+                    });
+                    continue;
+                }
+            };
+            if def_db.param_data(param).is_local {
+                self.report(TypeValidationDiagnostic::ParamsetLocalParam {
+                    src,
+                    target: target_name.clone(),
+                    param: stmt.param.clone(),
+                });
+                continue;
+            }
+
+            // The conversions an assignment to the parameter would do, which is
+            // where an integer becomes a real but a string never becomes either.
+            let Stmt::Expr(expr) = body.stmts[body.entry_stmts[i]] else { continue };
+            let Some(found) = infer.expr_types[expr].to_value() else { continue };
+            let expected = self.db.param_ty(param);
+            if !found.is_convertible_to(&expected) {
+                self.report(TypeValidationDiagnostic::ParamsetTypeMismatch {
+                    src,
+                    param: stmt.param.clone(),
+                    expected,
+                    found,
+                });
+            }
+        }
+
+        for (_, dup) in seen {
+            if !dup.subsequent.is_empty() {
+                self.report(TypeValidationDiagnostic::DuplicateParamsetStmt(dup));
             }
         }
     }

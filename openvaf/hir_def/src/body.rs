@@ -109,6 +109,20 @@ impl Body {
                     ModuleBodyKind::Analog => {
                         ast.analog_behaviour().map(|stmt| ctx.collect_stmt(stmt)).collect()
                     }
+                    // VAMS-2023 6.4: one entry statement per `.name = expr;`, in
+                    // source order, so that the item tree's list of targets lines
+                    // up with them by index.
+                    ModuleBodyKind::Paramset => ast
+                        .module_items()
+                        .filter_map(|item| match item {
+                            ast::ModuleItem::ParamsetAssign(assign) => Some(assign),
+                            _ => None,
+                        })
+                        .map(|assign| {
+                            let val = ctx.collect_opt_expr(assign.val());
+                            ctx.alloc_stmt_desugared(Stmt::Expr(val))
+                        })
+                        .collect(),
                     // Procedural runner lane: all `initial` blocks (source order) then
                     // all `final` blocks, as one imperative sequence.
                     ModuleBodyKind::Procedural => ast

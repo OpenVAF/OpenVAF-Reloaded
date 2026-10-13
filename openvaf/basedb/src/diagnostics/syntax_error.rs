@@ -72,7 +72,7 @@ impl Diagnostic for SyntaxError {
                 panic_end: Some(panic_end),
                 ..
             } => {
-                let message = if expected.data.len() < 4 {
+                let message = if expected.data.len() < 5 {
                     format!("expected {}", expected)
                 } else {
                     "unexpected_token".to_owned()
@@ -95,7 +95,7 @@ impl Diagnostic for SyntaxError {
             }
 
             SyntaxError::UnexpectedToken { ref expected, span, missing_delimiter, .. } => {
-                let message = if expected.data.len() < 4 {
+                let message = if expected.data.len() < 5 {
                     format!("expected {}", expected)
                 } else {
                     "unexpected_token".to_owned()

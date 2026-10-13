@@ -47,7 +47,10 @@ pub(crate) fn source_file(p: &mut Parser) {
                 error_range.take();
                 items::nature(p, m)
             }
-            MODULE_KW => {
+            // VAMS-2023 6.4: a paramset is parsed into the same node as a module
+            // (see `veriloga.ungram`), so one declaration beside another compiles
+            // both rather than failing the file.
+            MODULE_KW | PARAMSET_KW => {
                 error_range.take();
                 items::module(p, m)
             }
@@ -60,7 +63,12 @@ pub(crate) fn source_file(p: &mut Parser) {
                     }
                     Some(error_range.undo_completion(p).complete(p, ERROR))
                 } else {
-                    let err = p.unexpected_tokens_msg(vec![DISCIPLINE_KW, NATURE_KW, MODULE_KW]);
+                    let err = p.unexpected_tokens_msg(vec![
+                        DISCIPLINE_KW,
+                        NATURE_KW,
+                        MODULE_KW,
+                        PARAMSET_KW,
+                    ]);
                     p.error(err);
                     p.bump_any();
                     while !p.at_ts(ITEM_RECOVERY_SET) {

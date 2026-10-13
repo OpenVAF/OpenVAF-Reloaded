@@ -33,6 +33,26 @@ impl OsdiDescriptor {
         unsafe { slice::from_raw_parts(self.param_opvar, self.num_params as usize) }
     }
 
+    /// Every unknown this descriptor carries, by name.
+    pub fn node_names(&self) -> Vec<&str> {
+        // SAFETY: the descriptor is assumed valid
+        self.nodes().iter().map(|node| unsafe { osdi_str(node.name) }).collect()
+    }
+
+    /// The name a simulator instantiates this descriptor by.
+    pub fn name(&self) -> &str {
+        // SAFETY: the descriptor is assumed valid
+        unsafe { osdi_str(self.name) }
+    }
+
+    /// Whether the descriptor carries a parameter of this name at all, which is
+    /// what a paramset changes about a module (VAMS-2023 6.4).
+    pub fn has_param(&self, name: &str) -> bool {
+        self.params()
+            .iter()
+            .any(|param| unsafe { osdi_str(*param.name) }.eq_ignore_ascii_case(name))
+    }
+
     /// The id of a parameter, by the name a simulator looks it up with, and the
     /// number of elements the descriptor says it has (0 for a scalar).
     ///

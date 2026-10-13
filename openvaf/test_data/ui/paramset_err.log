@@ -1,0 +1,121 @@
+error: paramset 'bad_target' collects values for an unknown module 'nosuchmodule'
+   --> /paramset_err.va:62:21
+   |
+62 | paramset bad_target nosuchmodule;
+   |                     ^^^^^^^^^^^^ 'nosuchmodule' is not a module of this file
+   |
+   = info: the name after a paramset's own is the module whose parameters its statements set (VAMS-2023 6.4)
+
+error: paramset 'bad_chain' collects values for a paramset
+   --> /paramset_err.va:68:20
+   |
+68 | paramset bad_chain ok_plain;
+   |                    ^^^^^^^^ 'ok_plain' is a paramset, not a module
+   |
+   = info: VAMS-2023 6.4 allows a chain of paramsets, where the statements of each set the parameters of the next; what is built here is one paramset over a module
+   = help: name the module 'ok_plain' collects values for
+
+error: unknown parameter 'nosuch' of module 'res'
+   --> /paramset_err.va:77:5
+   |
+77 |     .nosuch = w;
+   |     ^^^^^^^^^^^^ 'res' has no parameter 'nosuch'
+   |
+   = info: a paramset statement sets a parameter of the module it names (VAMS-2023 6.4)
+
+error: paramset statement sets the localparam 'two'
+   --> /paramset_err.va:78:5
+   |
+78 |     .two = 3.0;
+   |     ^^^^^^^^^^^ 'two' is a localparam of 'res'
+   |
+   = info: a localparam is computed by the module from its parameters and is never set from outside it (VAMS-2023 3.4.2)
+
+error: parameter 'r' is set twice
+   --> /paramset_err.va:80:5
+   |
+79 |     .r = w;
+   |     ------- first set here
+80 |     .r = 2.0 * w;
+   |     ^^^^^^^^^^^^^ set again here
+   |
+   = info: a paramset gives each parameter of the module one value (VAMS-2023 6.4)
+
+error: type mismatch setting parameter 'r'
+   --> /paramset_err.va:86:5
+   |
+86 |     .r = "text";
+   |     ^^^^^^^^^^^^ expected real, found string
+
+error: type mismatch setting parameter 'lab'
+   --> /paramset_err.va:87:5
+   |
+87 |     .lab = w;
+   |     ^^^^^^^^^ expected string, found real
+
+error: type mismatch setting parameter 'c'
+   --> /paramset_err.va:88:5
+   |
+88 |     .c = w;
+   |     ^^^^^^^ expected real[0:1], found real
+
+error: a net in a paramset
+   --> /paramset_err.va:94:5
+   |
+94 |     electrical extra;
+   |     ^^^^^^^^^^^^^^^^^ a paramset cannot declare a net
+   |
+   = info: a paramset holds parameter declarations and the statements that set the module's parameters; "the paramset itself contains no behavioural code" (VAMS-2023 6.4)
+
+error: a variable in a paramset
+   --> /paramset_err.va:95:5
+   |
+95 |     real tmp;
+   |     ^^^^^^^^^ a paramset cannot declare a variable
+   |
+   = info: a paramset holds parameter declarations and the statements that set the module's parameters; "the paramset itself contains no behavioural code" (VAMS-2023 6.4)
+
+error: a branch in a paramset
+   --> /paramset_err.va:96:5
+   |
+96 |     branch (extra, extra) br;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^ a paramset cannot declare a branch
+   |
+   = info: a paramset holds parameter declarations and the statements that set the module's parameters; "the paramset itself contains no behavioural code" (VAMS-2023 6.4)
+
+error: behaviour in a paramset
+   --> /paramset_err.va:97:5
+   |
+97 |     analog tmp = 1.0;
+   |     ^^^^^^^^^^^^^^^^^ a paramset cannot declare behaviour
+   |
+   = info: a paramset holds parameter declarations and the statements that set the module's parameters; "the paramset itself contains no behavioural code" (VAMS-2023 6.4)
+
+error: a paramset statement outside a paramset
+    --> /paramset_err.va:123:5
+    |
+123 |     .r = 1.0;
+    |     ^^^^^^^^^ there is no paramset here
+    |
+    = info: '.name = expr;' sets a parameter of the module a paramset names (VAMS-2023 6.4); a module sets its own parameters by declaring them
+
+error: 'bad_dup' was already declared in this scope
+    --> /paramset_err.va:114:10
+    |
+109 | paramset bad_dup res;
+    |          ------- help 'bad_dup' was first declared here
+    .
+114 | paramset bad_dup res;
+    |          ^^^^^^^ already declared in this scope
+    |
+    = info: VAMS-2023 6.4.2 lets paramsets share a name, and leaves the choice between them to elaboration, by the ranges of their parameters; what a simulator instantiates here is a name
+    = help: give each paramset a name of its own, or fold them into one 'bad_dup' whose parameters cover both
+
+error: analog operator 'ddt' is not allowed in constants
+    --> /paramset_err.va:105:10
+    |
+105 |     .r = ddt(w);
+    |          ^^^^^^ not allowed here
+    |
+    = help: analog operators are only allowed in the main-analog block
+

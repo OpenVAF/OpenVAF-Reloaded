@@ -3,7 +3,7 @@ use hir_lower::{AbsDelayMode, CurrentKind, HirInterner, ImplicitEquation, ParamK
 use lasso::Rodeo;
 use mir::Function;
 use mir_opt::{simplify_cfg, sparse_conditional_constant_propagation};
-pub use module_info::{collect_modules, ModuleInfo};
+pub use module_info::{collect_modules, ModuleInfo, ParamsetInfo};
 use stdx::impl_debug_display;
 
 use crate::context::{Context, OptimiziationStage};

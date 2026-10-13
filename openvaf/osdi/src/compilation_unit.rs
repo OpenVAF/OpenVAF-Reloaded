@@ -148,7 +148,7 @@ impl<'a> OsdiModule<'a> {
         module: &'a CompiledModule,
         lim_table: &'a TiSet<OsdiLimId, OsdiLimFunction>,
     ) -> Self {
-        let sym = base_n::encode(module.info.module.uuid(db) as u128, base_n::CASE_INSENSITIVE);
+        let sym = base_n::encode(module.info.uuid(db) as u128, base_n::CASE_INSENSITIVE);
         let CompiledModule {
             info,
             dae_system,

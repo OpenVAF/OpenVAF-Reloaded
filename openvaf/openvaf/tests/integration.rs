@@ -22,6 +22,12 @@ fn compile_and_load(root_file: &Utf8Path) -> &'static OsdiDescriptor {
     compile_and_load_with(root_file, AbsDelayMode::Simulator, "osdi")
 }
 
+/// Every descriptor of a file, for the one case where a file carries more than
+/// one: a module and the paramsets over it (VAMS-2023 6.4).
+fn compile_and_load_all(root_file: &Utf8Path) -> &'static [OsdiDescriptor] {
+    compile_and_load_all_with(root_file, AbsDelayMode::Simulator, "osdi")
+}
+
 /// Compile with a chosen `absdelay` realization. The two realizations of one model
 /// have to land in different libraries, hence the extension.
 fn compile_and_load_with(
@@ -29,6 +35,16 @@ fn compile_and_load_with(
     absdelay: AbsDelayMode,
     extension: &str,
 ) -> &'static OsdiDescriptor {
+    let libs = compile_and_load_all_with(root_file, absdelay, extension);
+    assert_eq!(libs.len(), 1);
+    &libs[0]
+}
+
+fn compile_and_load_all_with(
+    root_file: &Utf8Path,
+    absdelay: AbsDelayMode,
+    extension: &str,
+) -> &'static [OsdiDescriptor] {
     let openvaf_opts = openvaf::Opts {
         defines: Vec::new(),
         codegen_opts: Vec::new(),
@@ -57,9 +73,7 @@ fn compile_and_load_with(
             panic!("openvaf: compilation of {root_file} failed");
         }
     };
-    let libs = unsafe { load_osdi_lib(&lib_file).unwrap() };
-    assert_eq!(libs.len(), 1);
-    &libs[0]
+    unsafe { load_osdi_lib(&lib_file).unwrap() }
 }
 
 // fn integration_test(dir: &str) -> Result {
@@ -105,6 +119,30 @@ fn is_va_file(path: &Path) -> bool {
 /// Get path to VACASK devices directory
 fn vacask_devices() -> std::path::PathBuf {
     project_root().join("external/vacask/devices")
+}
+
+/// Snapshot every descriptor of a file, for the one case where a file carries more
+/// than one: a module and the paramsets over it (VAMS-2023 6.4). Each descriptor is
+/// headed by the name a simulator instantiates it by.
+fn test_descriptors(main_file: &Path) -> Result<&'static [OsdiDescriptor]> {
+    let main_file: &Utf8Path = main_file.try_into().unwrap();
+    let name = main_file.file_stem().unwrap();
+    let descs = compile_and_load_all(main_file);
+
+    let mut expect = String::new();
+    for desc in descs {
+        expect.push_str(&format!("=== {} ===\n{desc:?}", desc.name()));
+    }
+    let test_dir = openvaf_test_data("osdi");
+    expect_file![test_dir.join(format!("{name}.snap"))].assert_eq(&expect);
+
+    for desc in descs {
+        let default_model = desc.new_model();
+        default_model.process_params()?;
+        let mut instance = default_model.new_instance();
+        instance.process_params(&default_model, desc.num_terminals, 300.0)?;
+    }
+    Ok(descs)
 }
 
 fn test_descriptor(main_file: &Path) -> Result<&'static OsdiDescriptor> {
@@ -2795,6 +2833,141 @@ fn test_absdelay_in_model() -> Result<()> {
     Ok(())
 }
 
+/// VAMS-2023 6.4: a paramset is the module it names with the paramset's statements
+/// in place of the model card.
+///
+/// `paramset.va` holds one module and two paramsets over it, so what is under test
+/// is that the three descriptors are the same compiled module seen through three
+/// parameter lists: the module's own, and one per paramset. Each output carries one
+/// reading, so each descriptor's answer is read directly:
+///
+///   * a paramset's parameters are the only ones it has, and the module's are gone
+///     from it, which is what the clause asks for;
+///   * a module parameter the paramset is silent about keeps its declared default,
+///     including a default that reads a parameter declared before it;
+///   * `$param_given` of a module parameter is whether the paramset sets it, and it
+///     is a constant, which the descriptor shows;
+///   * an array parameter is set as a whole, element by element;
+///   * the module's own descriptor with the equivalent card gives the same numbers,
+///     which is the claim: nothing of the behaviour changed.
+fn test_paramset() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+
+    let descs = test_descriptors(&openvaf_test_data("osdi").join("paramset.va"))?;
+    // The modules first, then one descriptor per paramset.
+    let names: Vec<&str> = descs.iter().map(|desc| desc.name()).collect();
+    assert_eq!(names, vec!["probe", "wide", "leaky"], "a descriptor per paramset, named for it");
+
+    let module = &descs[0];
+    let wide = &descs[1];
+    let leaky = &descs[2];
+
+    // The module's parameters belong to the module. A paramset has its own, and an
+    // instance of it cannot reach past them.
+    for name in ["g", "gmin", "fingers", "c", "gtot"] {
+        assert!(module.has_param(name), "the module has '{name}'");
+        assert!(!wide.has_param(name), "'wide' does not expose the module's '{name}'");
+        assert!(!leaky.has_param(name), "'leaky' does not expose the module's '{name}'");
+    }
+    assert_eq!(module.param("c").1, 3, "an array parameter is one parameter of three elements");
+    assert!(wide.has_param("w") && wide.has_param("nf"));
+    assert!(leaky.has_param("leak"));
+    assert!(!leaky.has_param("w"), "each paramset has only its own parameters");
+
+    // `$param_given` of a module parameter is a constant under a paramset: 'wide'
+    // is silent about gmin, so `V(flag) <+ 0` is a short and the unknown behind it
+    // is gone. On the module itself, and on the paramset that does set gmin, it is
+    // an unknown like any other.
+    let flag = |desc: &OsdiDescriptor| desc.node_names().contains(&"flow(flag)");
+    assert!(flag(module), "the module reads a given flag the card decides");
+    assert!(!flag(wide), "a paramset that is silent folds the flag to false");
+    assert!(flag(leaky), "a paramset that sets gmin folds it to true, which is not a short");
+
+    // The three readings every descriptor carries: the dependent default, the
+    // array, and the current the substituted parameters drive at one volt.
+    let read = |desc: &'static OsdiDescriptor, model: &OsdiModel| -> Result<Vec<f64>> {
+        let mut instance = model.new_instance();
+        let mut sim = instance.mock_simulation(model, desc.num_terminals, 300.0)?;
+        for node in desc.node_names() {
+            sim.set_voltage(node, 0.0);
+        }
+        sim.set_voltage("p", 1.0);
+        sim.set_voltage("n", 0.0);
+        instance.eval(model, &mut sim, EvalFlags::empty());
+        instance.load_dae(model, &mut sim);
+        Ok(vec![
+            sim.read_residual("flow(gsum)").0,
+            sim.read_residual("flow(arr)").0,
+            sim.read_residual("p").0,
+        ])
+    };
+
+    // `wide` on its declared defaults: w = 1 and nf = 1, so g = 2.5 * 1 and
+    // fingers = 1, while gmin is the module's 1e-12 and gtot is the module's own
+    // default read over them. The array is the paramset's.
+    //
+    //   gsum = 1 * 2.5 + 1e-12, arr = 0.5 + 10*1.5 + 100*2.5 = 265.5
+    let model = wide.new_model();
+    model.process_params()?;
+    assert_eq!(
+        read(wide, &model)?,
+        vec![2.5 + 1e-12, 265.5, 2.5 + 1e-12],
+        "the paramset's declared defaults"
+    );
+
+    // And on a card: the paramset's parameters are what moves, and the module's
+    // follow from its statements.
+    let model = wide.new_model();
+    model.set_real_param(wide.param("w").0, 2.0);
+    model.set_int_param(wide.param("nf").0, 3);
+    model.process_params()?;
+    let from_set = read(wide, &model)?;
+    assert_eq!(from_set, vec![15.0 + 1e-12, 265.5, 15.0 + 1e-12], "w = 2 and nf = 3");
+
+    // The same module with the card those statements amount to. This is the claim:
+    // a paramset is the module with its own numbers, and nothing else.
+    let model = module.new_model();
+    model.set_real_param(module.param("g").0, 5.0);
+    model.set_int_param(module.param("fingers").0, 3);
+    model.set_real_param_vec(module.param("c").0, &[0.5, 1.5, 2.5]);
+    model.process_params()?;
+    assert_eq!(read(module, &model)?, from_set, "the module with the card the paramset applies");
+
+    // `leaky` sets one parameter and leaves the rest: g = 1, fingers = 1 and the
+    // array are the module's defaults, and gmin is the paramset's.
+    //
+    //   gsum = 1 * 1 + 1e-3, arr = 1 + 20 + 300 = 321
+    let model = leaky.new_model();
+    model.set_real_param(leaky.param("leak").0, 1e-3);
+    model.process_params()?;
+    assert_eq!(
+        read(leaky, &model)?,
+        vec![1.0 + 1e-3, 321.0, 1.0 + 1e-3],
+        "one statement, and the module's defaults for the rest"
+    );
+    let mut instance = model.new_instance();
+    let mut sim = instance.mock_simulation(&model, leaky.num_terminals, 300.0)?;
+    for node in leaky.node_names() {
+        sim.set_voltage(node, 0.0);
+    }
+    instance.eval(&model, &mut sim, EvalFlags::empty());
+    instance.load_dae(&model, &mut sim);
+    assert_eq!(sim.read_residual("flow(flag)").0, 1.0, "the paramset sets gmin, so it is given");
+
+    // A paramset's own ranges are the ones a card is held to: 6.4.2 says the
+    // simulator "shall consider only the ranges of the paramset's own parameters".
+    let model = wide.new_model();
+    model.set_int_param(wide.param("nf").0, 9);
+    assert!(model.process_params().is_err(), "9 is outside nf's `from [1:4]`");
+    let model = wide.new_model();
+    model.set_real_param(wide.param("w").0, 0.0);
+    assert!(model.process_params().is_err(), "0 is outside w's `from (0:10]`");
+
+    Ok(())
+}
+
 harness! {
     // TODO: run this in CI, somehow this test is flakey tough regarding the linker invocation (and really slow)
     Test::from_dir("integration", &integration_test, &ignore_dev_tests, &project_root().join("integration_tests")),
@@ -2804,5 +2977,5 @@ harness! {
     Test::from_dir_filtered("vacask_spice", &vacask_spice_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice")),
     // VACASK simplified SPICE models
     Test::from_dir_filtered("vacask_spice_sn", &vacask_spice_sn_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice/sn")),
-    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros),Test::new("laplace_roots", &test_laplace_roots),Test::new("slew", &test_slew),Test::new("cross_detect", &test_cross_detect),Test::new("above_detect", &test_above_detect),Test::new("last_crossing", &test_last_crossing),Test::new("var_persistence", &test_var_persistence),Test::new("timer_detect", &test_timer_detect),Test::new("rng_stream", &test_rng_stream),Test::new("transition_pwl", &test_transition_pwl),Test::new("table_model", &test_table_model),Test::new("zi_filter", &test_zi_filter),Test::new("absdelay", &test_absdelay),Test::new("absdelay_in_model", &test_absdelay_in_model),Test::new("timer_resched", &test_timer_resched),Test::new("case_default", &test_case_default),Test::new("file_io", &test_file_io),Test::new("file_scan", &test_file_scan),Test::new("global_events", &test_global_events),Test::new("scan_target", &test_scan_target),Test::new("directives", &test_directives),Test::new("multidim", &test_multidim),Test::new("timepoints", &test_timepoints),Test::new("accept", &test_accept),Test::new("read_point", &test_read_point),Test::new("array_param", &test_array_param),Test::new("noise_table_param", &test_noise_table_param),Test::new("card_data", &test_card_data)]
+    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros),Test::new("laplace_roots", &test_laplace_roots),Test::new("slew", &test_slew),Test::new("cross_detect", &test_cross_detect),Test::new("above_detect", &test_above_detect),Test::new("last_crossing", &test_last_crossing),Test::new("var_persistence", &test_var_persistence),Test::new("timer_detect", &test_timer_detect),Test::new("rng_stream", &test_rng_stream),Test::new("transition_pwl", &test_transition_pwl),Test::new("table_model", &test_table_model),Test::new("zi_filter", &test_zi_filter),Test::new("absdelay", &test_absdelay),Test::new("absdelay_in_model", &test_absdelay_in_model),Test::new("timer_resched", &test_timer_resched),Test::new("case_default", &test_case_default),Test::new("file_io", &test_file_io),Test::new("file_scan", &test_file_scan),Test::new("global_events", &test_global_events),Test::new("scan_target", &test_scan_target),Test::new("directives", &test_directives),Test::new("multidim", &test_multidim),Test::new("timepoints", &test_timepoints),Test::new("accept", &test_accept),Test::new("read_point", &test_read_point),Test::new("array_param", &test_array_param),Test::new("noise_table_param", &test_noise_table_param),Test::new("card_data", &test_card_data),Test::new("paramset", &test_paramset)]
 }

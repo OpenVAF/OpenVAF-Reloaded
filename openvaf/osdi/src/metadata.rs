@@ -453,7 +453,7 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
             let absdelay_count = absdelay_info.len() as u32;
 
             OsdiDescriptor {
-                name: module.info.module.name(db),
+                name: module.info.name(db),
                 num_nodes: module.dae_system.unknowns.len() as u32,
                 num_terminals: module.info.module.ports(db).len() as u32,
                 nodes: self.nodes(target_data, db),

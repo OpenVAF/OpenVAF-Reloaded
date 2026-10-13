@@ -13,7 +13,7 @@ use hir_def::{
 use syntax::name::Name;
 use syntax::sourcemap::{FileSpan, SourceMap};
 use syntax::{Parse, SourceFile, TextRange};
-pub use types::TypeValidationDiagnostic;
+pub use types::{ParamsetItemKind, TypeValidationDiagnostic};
 
 use crate::db::HirTyDB;
 use crate::inference::BranchWrite;
@@ -933,6 +933,160 @@ impl Diagnostic for TypeValidationDiagnosticWrapped<'_> {
                         format!("info: disciplineless nets are digital and therefore not supported in Verilog-A"),
                         format!("help: add a discipline with 'electrical {name}'"),
                     ])
+            }
+            // VAMS-2023 6.4 -- paramsets.
+            TypeValidationDiagnostic::StrayParamsetStmt { src } => {
+                let src = self.parse.to_file_span(self.map.get_syntax(src).range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: "there is no paramset here".to_owned(),
+                    }])
+                    .with_message("a paramset statement outside a paramset".to_owned())
+                    .with_notes(vec![
+                        "info: '.name = expr;' sets a parameter of the module a paramset \
+                         names (VAMS-2023 6.4); a module sets its own parameters by \
+                         declaring them"
+                            .to_owned(),
+                    ])
+            }
+            TypeValidationDiagnostic::ParamsetItem { ref src, kind } => {
+                let src = self.parse.to_file_span(src.range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("a paramset cannot declare {}", kind.as_str()),
+                    }])
+                    .with_message(format!("{} in a paramset", kind.as_str()))
+                    .with_notes(vec![
+                        "info: a paramset holds parameter declarations and the statements \
+                         that set the module's parameters; \"the paramset itself contains no \
+                         behavioural code\" (VAMS-2023 6.4)"
+                            .to_owned(),
+                    ])
+            }
+            TypeValidationDiagnostic::ParamsetUnknownTarget { ref decl, ref name, ref target } => {
+                let src = self.parse.to_file_span(decl.range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("'{target}' is not a module of this file"),
+                    }])
+                    .with_message(format!(
+                        "paramset '{name}' collects values for an unknown module '{target}'"
+                    ))
+                    .with_notes(vec![
+                        "info: the name after a paramset's own is the module whose parameters \
+                         its statements set (VAMS-2023 6.4)"
+                            .to_owned(),
+                    ])
+            }
+            TypeValidationDiagnostic::ParamsetChain { ref decl, ref name, ref target } => {
+                let src = self.parse.to_file_span(decl.range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("'{target}' is a paramset, not a module"),
+                    }])
+                    .with_message(format!("paramset '{name}' collects values for a paramset"))
+                    .with_notes(vec![
+                        "info: VAMS-2023 6.4 allows a chain of paramsets, where the statements \
+                         of each set the parameters of the next; what is built here is one \
+                         paramset over a module"
+                            .to_owned(),
+                        format!("help: name the module '{target}' collects values for"),
+                    ])
+            }
+            TypeValidationDiagnostic::ParamsetUnknownParam { src, ref target, ref param } => {
+                let src = self.parse.to_file_span(self.map.get_syntax(src).range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("'{target}' has no parameter '{param}'"),
+                    }])
+                    .with_message(format!("unknown parameter '{param}' of module '{target}'"))
+                    .with_notes(vec![
+                        "info: a paramset statement sets a parameter of the module it names \
+                         (VAMS-2023 6.4)"
+                            .to_owned(),
+                    ])
+            }
+            TypeValidationDiagnostic::ParamsetLocalParam { src, ref target, ref param } => {
+                let src = self.parse.to_file_span(self.map.get_syntax(src).range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("'{param}' is a localparam of '{target}'"),
+                    }])
+                    .with_message(format!("paramset statement sets the localparam '{param}'"))
+                    .with_notes(vec![
+                        "info: a localparam is computed by the module from its parameters and \
+                         is never set from outside it (VAMS-2023 3.4.2)"
+                            .to_owned(),
+                    ])
+            }
+            TypeValidationDiagnostic::DuplicateParamsetStmt(ref info) => {
+                let first =
+                    self.parse.to_file_span(self.map.get_syntax(info.first).range(), self.sm);
+                let mut labels = vec![Label {
+                    style: LabelStyle::Secondary,
+                    file_id: first.file,
+                    range: first.range.into(),
+                    message: "first set here".to_owned(),
+                }];
+                labels.extend(info.subsequent.iter().map(|stmt| {
+                    let src = self.parse.to_file_span(self.map.get_syntax(*stmt).range(), self.sm);
+                    Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: "set again here".to_owned(),
+                    }
+                }));
+
+                Report::error()
+                    .with_labels(labels)
+                    .with_message(format!("parameter '{}' is set twice", info.src))
+                    .with_notes(vec![
+                        "info: a paramset gives each parameter of the module one value \
+                         (VAMS-2023 6.4)"
+                            .to_owned(),
+                    ])
+            }
+            TypeValidationDiagnostic::ParamsetTypeMismatch {
+                src,
+                ref param,
+                ref expected,
+                ref found,
+            } => {
+                let src = self.parse.to_file_span(self.map.get_syntax(src).range(), self.sm);
+
+                Report::error()
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: src.file,
+                        range: src.range.into(),
+                        message: format!("expected {expected}, found {found}"),
+                    }])
+                    .with_message(format!("type mismatch setting parameter '{param}'"))
             }
             TypeValidationDiagnostic::ArrayParamWithoutType { decl, ref name } => {
                 let src = self.parse.to_file_span(self.map.get_syntax(decl).range(), self.sm);

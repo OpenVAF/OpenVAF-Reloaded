@@ -242,7 +242,25 @@ pub struct Module {
     pub nodes: TiVec<LocalNodeId, Node>,
     pub num_ports: u32,
     pub items: Vec<ModuleItem>,
+    /// `Some(target)` when this declaration is a paramset (VAMS-2023 6.4) and not
+    /// a module: the name after the paramset's own, which is the module whose
+    /// parameters its statements set. A paramset shares this item so that its
+    /// parameters are declared, resolved and lowered exactly as a module's are.
+    pub paramset: Option<Name>,
+    /// One per `.name = expr;` statement, in source order. The expression itself
+    /// lives in the [`ModuleBodyKind::Paramset`](crate::ModuleBodyKind) body, at
+    /// the entry statement of the same index.
+    pub paramset_stmts: Box<[ParamsetStmt]>,
     pub ast_id: AstId<ast::ModuleDecl>,
+}
+
+/// The left-hand side of a paramset statement (VAMS-2023 6.4): the name of a
+/// parameter of the target module. It is not resolved here, because the target is
+/// a different item; `hir_ty` reports a name that is not one of its parameters.
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub struct ParamsetStmt {
+    pub param: Name,
+    pub ast_id: AstId<ast::ParamsetAssign>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]

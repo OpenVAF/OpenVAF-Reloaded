@@ -1,6 +1,6 @@
-error: unexpected token identifier; expected 'discipline', 'nature' or 'module'
+error: unexpected token identifier; expected 'discipline', 'nature', 'module' or 'paramset'
   --> /source_map.va:7:1
   |
 7 | foo
-  | ^^^ expected 'discipline', 'nature' or 'module'
+  | ^^^ expected 'discipline', 'nature', 'module' or 'paramset'
 
