@@ -38,6 +38,7 @@ paramset       PASS
 absdelay       PASS
 timepoints     PASS
 filelog        PASS
+fmonitor       PASS
 vecstream      PASS
 pll            PASS
 ```
@@ -797,6 +798,63 @@ point is accepted, so it carries the values of the evaluation that converged and
 point the solver went back on leaves none behind. The periods the model measured
 are the same either way, which is the other half of the assertion: what changed is
 which evaluation each line came from, not the measurement.
+
+## fmonitor — passing
+
+9.4.1 has three tasks that write the same line at different moments, and this is
+the case where the difference is worth its keep. A level detector with
+hysteresis (a Schmitt trigger on three cycles of a 1 kHz sine) reports a state
+that changes six times over fifteen hundred timepoints, which is the shape of
+what a system-level testbench logs: a mode, a lock, a fault flag.
+
+```
+plain: 1508 timepoints, the state the model contributed and the detector recomputed from v(in) agree on 1508 of 1508
+plain: $fdisplay wrote 3023 lines, $fstrobe 1508, $fmonitor 7, and the monitor of $abstime alone 1
+plain: the recomputed detector changes at 6 of 1508 timepoints, and the monitor wrote 7 lines
+plain: worst disagreement between a monitor's time and the timepoint it belongs to: 0.00e+00 relative
+plain: 1 of 7 monitor lines are a line the strobe beside them wrote too
+```
+
+**3023, 1508, 7 and 1**, from the same values in one run. `$fdisplay` writes
+whenever the statement is reached, which is once per Newton iteration;
+`$fstrobe` once per timepoint; `$fmonitor` once per timepoint at which something
+it reports has changed. The fourth statement is a monitor of nothing but
+`$abstime`, which the clause excepts from the comparison: it writes one line in
+the whole run, where comparing it would have written 1508.
+
+Nothing in the file is checked against the file. The thresholds come off the
+`.model` card, the voltage the detector saw and the state it reported come out of
+`wrdata`, and the analyzer recomputes the detector from that voltage: a Schmitt
+trigger has to be walked in order, so its state is something no single timepoint
+can give. The recomputed state agrees with the state the model contributed on all
+1508 rows, and the monitor's seven lines are exactly the first point and the six
+changes of that recomputed state, each at the timepoint the waveform puts it at.
+
+### The last line is the accept callback, again
+
+`1 of 7`. A strobe on a simulator that does not confirm its points writes the
+line its point's *first* evaluation composed, because 9.4.1 offers no other
+moment to a model that cannot be told. The first evaluation of the point where a
+state turns over is the one that has not turned over yet, so the strobe beside
+the monitor reports the old state at exactly the six points the monitor has
+something to say about. A monitor is not free to do the same: it decides whether
+to write at all, and a decision taken at the first evaluation would miss every
+change that appears later in the solve. So it hands the runtime a line and a flag
+per evaluation, and the last flag is the answer.
+
+Point `NGSPICE_TIMEPOINTS` at a simulator that makes the call
+(`patches/ngspice-osdi-timepoints.patch`) and the same model is run twice:
+
+```
+accepting: $fdisplay wrote 3023 lines, $fstrobe 1508, $fmonitor 7, and the monitor of $abstime alone 1
+accepting: 7 of 7 monitor lines are a line the strobe beside them wrote too
+the states reported, either way: [0, 1, 0, 1, 0, 1, 0] and [0, 1, 0, 1, 0, 1, 0]
+```
+
+Both lines of a point now come from the evaluation that converged, so all seven
+agree. And the sequence of states is the same either way, which is the claim that
+matters: what the callback changes is which evaluation a line comes from, not
+which changes are reported.
 
 ## pll — passing
 

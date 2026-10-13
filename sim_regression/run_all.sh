@@ -220,6 +220,41 @@ run_filelog() {
     fi
 }
 
+# 9.4.1's monitor, which writes a line when something it reports has changed
+# rather than one per timepoint. The comparison it asks for is with the last
+# *accepted* point, so this one also runs under both binaries when there is a
+# second: the changes have to be the same whether the simulator confirms its
+# points or the model has to infer it.
+run_fmonitor() {
+    dir=fmonitor
+    cd "$here/$dir" || return 1
+    rm -f fm_log.txt fm_out.txt fm_log_proto.txt fm_out_proto.txt
+
+    if ! "$OV" fmonitor.va -o fmonitor.osdi >/dev/null 2>&1; then
+        printf '%-14s COMPILE FAILED\n' "$dir"
+        "$OV" fmonitor.va -o fmonitor.osdi
+        fail=1
+        return
+    fi
+
+    if [ -n "${NGSPICE_TIMEPOINTS:-}" ]; then
+        "$NGSPICE_TIMEPOINTS" -b fmonitor.cir > fmonitor_proto.log 2>&1
+        mv -f fm_log.txt fm_log_proto.txt
+        mv -f fm_out.txt fm_out_proto.txt
+    fi
+
+    "$NG" -b fmonitor.cir > fmonitor.log 2>&1
+
+    if log=$(python3 "../analyze_fmonitor.py" 2>&1); then
+        printf '%-14s PASS\n' "$dir"
+        printf '%s\n' "$log" | sed 's/^/  /'
+    else
+        printf '%-14s FAIL\n' "$dir"
+        printf '%s\n' "$log" | sed 's/^/  /'
+        fail=1
+    fi
+}
+
 run sample_hold   sample_hold   sh_out.txt analyze_sample_hold.py
 run above_init    above_init    ai_out.txt analyze_above_init.py
 run last_crossing last_crossing lc_out.txt analyze_last_crossing.py
@@ -236,6 +271,7 @@ run paramset      paramset      ps_out.txt analyze_paramset.py
 run_absdelay
 run_timepoints
 run_filelog
+run_fmonitor
 run_vecstream
 run_pll
 

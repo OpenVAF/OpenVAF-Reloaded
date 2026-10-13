@@ -369,13 +369,12 @@ All of these produce `function 'x' is currently not supported by OpenVAF`, from
 the `UNSUPPORTED` list at `sourcegen/src/hir_builtins.rs:29`.
 
 Four entries have left this tier since it was written: the Z-transform filters
-(4.5.12), `$table_model` (9.21), and both sides of 9.5. What is left of it is two
-tasks, and there are four odds and ends besides.
+(4.5.12), `$table_model` (9.21), and both sides of 9.5, `$fmonitor` with them.
+What is left of it is one task, and there are four odds and ends besides.
 
 | Feature | Clause | What it blocks |
 | --- | --- | --- |
 | `$ferror` | 9.5.7 | Reporting *which* error. The codes are implementation-defined and this runtime has nothing to tell them apart with; `$feof` covers the case a model can act on. |
-| `$fmonitor` | 9.5.2 | Writing when an argument changes, which needs the change detected per argument. |
 | `$simprobe` | 9.16 | Probing another instance's signals. |
 | `$analog_node_alias`, `$analog_port_alias` | 9.20 | Node aliasing. |
 | `$test$plusargs`, `$value$plusargs` | 9.12 | Command-line configuration of a model. |
@@ -819,6 +818,7 @@ write a PLL in this". So, by part, with the state of each measured in
 | Phase noise | `noise_table` / `flicker_noise` / `white_noise` (4.6) | works, and the table can be an array parameter the model card sets (`sim_regression/noisetab`), or an array literal or a data file built into the model |
 | Delay line, DLL | `absdelay` (4.5.7) | works, both realizations — see Tier 0 |
 | Jitter or period logging | `$fstrobe` / `$fdisplay` to a file (9.5) | works; `sim_regression/filelog` checks a jitter sequence the model wrote itself |
+| A mode or a lock logged when it changes | `$fmonitor` / `$monitor` (9.4.1, 9.5.2) | works; `sim_regression/fmonitor` gets 7 lines where a strobe gets 1508 |
 | Stimulus from a file of vectors | `$fgets` and `$sscanf` (9.5.4) | works, loaded into arrays (`sim_regression/vecsrc`) or streamed a record at a time (`sim_regression/vecstream`), both checked against the file |
 | Sigma-delta state for fractional-N | multi-dimensional arrays | works; `sim_regression/multidim` measures a matrix of them against its own arithmetic |
 | A bare `transition(x)` with a file-wide edge rate | `` `default_transition `` (10.3) | works; `sim_regression/directives` measures the ramp it sets |
@@ -834,15 +834,15 @@ continuously — which is what a real oscillator does anyway.
 So nothing on this page now blocks writing a PLL, measuring one, driving one
 from a file, shaping one from its model card, or shipping it as a library of
 paramsets over one module. Nothing is left in the table above, and Tier 4 is now
-empty. What remains on the page is smaller than any of it: `$fmonitor` and
-`$ferror` of 9.5, the four odds and ends of Tier 3, and an array variable's
-declaration initializer.
+empty. What remains on the page is smaller than any of it: `$ferror` of 9.5,
+the four odds and ends of Tier 3, and an array variable's declaration
+initializer.
 
 ## 9.5 — files
 
-Implemented: `$fopen`, `$fclose`, `$fdisplay`, `$fwrite`, `$fstrobe`, `$fdebug`,
-`$fflush`, `$ftell`, `$fseek`, `$rewind`, `$feof`, `$fgets`, `$swrite`,
-`$sformat`, `$sscanf`, `$fscanf`. The front end already knew all
+Implemented: `$fopen`, `$fclose`, `$fdisplay`, `$fwrite`, `$fstrobe`,
+`$fmonitor`, `$fdebug`, `$fflush`, `$ftell`, `$fseek`, `$rewind`, `$feof`,
+`$fgets`, `$swrite`, `$sformat`, `$sscanf`, `$fscanf`. The front end already knew all
 of them — signatures, format-string checking and diagnostics were in place — so
 what was missing was the lowering, a runtime in `openvaf/osdi/stdlib.c`, and three
 decisions the clause does not make for you.
@@ -879,6 +879,40 @@ goes backwards where the solver did, and the monotone subsequence is the accepte
 run. A line to the simulator's own log (`$strobe` rather than `$fstrobe`) is always
 written that way, because the handle it is written through is only valid during
 the call it came with and a held line has no handle left.
+
+**`$monitor` and `$fmonitor` write once per change**, which is the one thing a
+strobe cannot do. 9.4.1 describes a mechanism rather than a write: "for each
+accepted step, if the variable or an expression in the argument list changes value
+compared with the last accepted step, with the exception of the `$abstime` or
+`$realtime` system functions, the entire argument list is displayed at the end of
+the time step as if reported by the `$strobe` task". So a monitor is the strobe
+above with a condition, and the two halves of the condition were already here: a
+slot that retains a value from one accepted step to the next (4.5.10's retention),
+which is what "compared with the last accepted step" means, and the runtime
+holding the line until the point turns out to be the one the simulator kept.
+
+The line is composed at every evaluation, as a strobe's is, and a flag beside it
+says what to do with it. That is what makes the comparison the clause's: a point
+the solver iterates on hands over a line and a flag per evaluation, and the
+evaluation that converged has the last word, so a change an abandoned iteration
+reported is retracted by the next. On a simulator that confirms nothing the line
+goes out at the first evaluation that has something to report, which for a strobe
+is the first evaluation of the point and for a monitor is not: a state a model
+computes from the solution can turn over on any evaluation of a point, and
+deciding at the first one would lose every change that appears later. Nothing can
+take such a line back there, which is the price of a simulator that does not say.
+
+The exception matters more than it looks. A line that reports `$abstime` carries a
+different number at every timepoint, so comparing that argument too would make
+every monitor a strobe; it is printed and not compared. In
+`sim_regression/fmonitor` a level detector with hysteresis writes **7** lines
+where the strobe beside it writes 1508 and the display beside that 3023, and a
+monitor of nothing but `$abstime` writes **1**. (`$realtime` is the digital half
+of the same exception, as are `$monitoron` and `$monitoroff`: Table 9-1 gives all
+three no analog context, and an analog block has no such task to reach.)
+
+Before this, `$monitor` was lowered identically to `$display` and `$fmonitor` was
+a hard error, which took the whole file with it.
 
 **`$fopen` of a file this library already has open returns the same descriptor.**
 5.10.2 puts `@(initial_step)` in force "during the solution of the first point",
@@ -1081,11 +1115,23 @@ tasks (9.5, see above), and the compiler directives of 10.2 through 10.6.
     overloading (a descriptor is instantiated by name, and elaboration has already
     chosen by then) and 6.4.3's output variables. The parse error was the part
     that mattered: it took the whole file with it, modules included.
-24. **`$fmonitor`** — 9.5.2, and the last of the output tasks. It writes a line
-    when one of its arguments changes, which is the one thing `$fstrobe` does not
-    do: a testbench logging a state machine or a lock detector wants a line per
-    change rather than a line per timepoint. What it needs is a retained value per
-    argument and a comparison at the end of the timepoint, both of which the
-    accept callback and the retained slots of item 19 already provide; what it
-    adds is the per-argument compare and the first-call write the clause asks
-    for.
+24. ~~**`$fmonitor`**~~ — done, with `$monitor`, which was lowered as
+    `$display`. A retained slot per argument and a comparison with what it held
+    at the last accepted step, which is the comparison 9.4.1 asks for; the line
+    is composed at every evaluation and a flag beside it says whether anything it
+    reports has changed, so the evaluation that converged has the last word and a
+    change an abandoned iteration saw is retracted. `$abstime` is printed and not
+    compared, as the clause excepts it, which is what keeps a monitor from being
+    a strobe: in `sim_regression/fmonitor` a level detector with hysteresis
+    writes 7 lines where the strobe beside it writes 1508 and the display 3023,
+    and a monitor of the time alone writes 1. With 9.5's last task in, nothing of
+    9.4 or 9.5 is left but `$ferror`.
+25. **An array variable's declaration initializer** — 3.4.8 and 4.2.2:
+    `real g[0:1] = '{1.0, 2.0};` is rejected as a scalar type mismatch, although
+    the same assignment pattern in the analog block works, nested and all. So the
+    numbers of a filter or a matrix can be written where they are declared only
+    by writing them twice, once in the declaration and once in
+    `@(initial_step)`. What it needs is the declaration to take the pattern the
+    body already takes, and the initializer to be lowered element by element into
+    the places an array variable already has, the way an array parameter's
+    default is.
