@@ -6,7 +6,7 @@ use hir_def::nameres::{DefMap, ScopeDefItem};
 use hir_def::{
     AliasParamId, Branch, BranchId, BranchKind, DisciplineId, ItemLoc, ItemTree,
     LocalDisciplineAttrId, LocalNatureAttrId, Lookup, ModuleId, ModuleLoc, NatureId, NodeId,
-    NodeTypeDecl, Path, ScopeId,
+    NodeTypeDecl, ParamId, Path, ScopeId,
 };
 use syntax::ast::ArgListOwner;
 use syntax::name::Name;
@@ -32,6 +32,8 @@ pub enum TypeValidationDiagnostic {
     MultipleGnds(DuplicateItem<ErasedAstId, NodeId>),
     PortWithoutDirection { decl: ErasedAstId, name: Name },
     NodeWithoutDiscipline { decl: ErasedAstId, name: Name },
+    ArrayParamWithoutType { decl: ErasedAstId, name: Name },
+    UnknownDefaultDiscipline { decl: ErasedAstId, name: Name, discipline: Name },
     ExpectedPort { node: NodeId, src: ErasedAstId },
     IncompatibleBranch { branch: BranchId, node1: NodeId, node2: NodeId },
 }
@@ -78,6 +80,7 @@ impl TypeValidationCtx<'_> {
                 ScopeDefItem::NodeId(node) => self.verify_node(*node, loc),
                 ScopeDefItem::BranchId(branch) => self.verify_branch(*branch),
                 ScopeDefItem::AliasParamId(alias) => self.verify_alias(*alias),
+                ScopeDefItem::ParamId(param) => self.verify_param(*param),
                 _ => (),
             }
         }
@@ -93,19 +96,33 @@ impl TypeValidationCtx<'_> {
         match node {
             Ok(node) => Some(node),
             Err(err) => {
-                let src = SyntaxNodePtr::new(
-                    branch
-                        .source(self.db.upcast())
-                        .arg_list()
-                        .unwrap()
-                        .args()
-                        .next()
-                        .unwrap()
-                        .syntax(),
-                );
+                let arg =
+                    branch.source(self.db.upcast()).arg_list().unwrap().args().next().unwrap();
+                // Point at the node itself, not at the argument wrapper, so the
+                // diagnostic keeps highlighting just the offending node name.
+                let node = match arg.expr() {
+                    Some(expr) => expr.syntax().clone(),
+                    None => arg.syntax().clone(),
+                };
+                let src = SyntaxNodePtr::new(&node);
                 self.report(TypeValidationDiagnostic::PathError { err, src });
                 None
             }
+        }
+    }
+
+    /// VAMS-2023 3.4.1: "the type of a string parameter (see 3.4.6) and any of the
+    /// array parameters (see 3.4.4) is mandatory". A parameter's type is otherwise
+    /// taken from its value, and an assignment pattern says nothing about what its
+    /// elements hold.
+    fn verify_param(&mut self, param: ParamId) {
+        let data = self.db.param_data(param);
+        if data.array_without_ty {
+            let decl = param.lookup(self.db.upcast()).ast_id(self.db.upcast()).erased();
+            self.report(TypeValidationDiagnostic::ArrayParamWithoutType {
+                decl,
+                name: data.name.clone(),
+            });
         }
     }
 
@@ -197,6 +214,34 @@ impl TypeValidationCtx<'_> {
         };
     }
 
+    /// Whether `` `default_discipline `` (VAMS-2023 10.2) supplies the discipline
+    /// a net was declared without, which is the same question
+    /// [`NodeData`](hir_def::NodeData) asks when it resolves one. What the
+    /// directive names still has to be a discipline, and this is where that is
+    /// checked: the directive is read long before any discipline is declared.
+    fn has_default_discipline(&mut self, decl: ErasedAstId, name: &Name) -> bool {
+        let Some(default) =
+            hir_def::directives::default_discipline(self.db.upcast(), self.root_file, decl)
+        else {
+            return false;
+        };
+
+        let discipline = Name::resolve(&default.name);
+        if self
+            .def_map
+            .resolve_local_item_in_scope::<DisciplineId>(self.def_map.root(), &discipline)
+            .is_err()
+        {
+            self.report(TypeValidationDiagnostic::UnknownDefaultDiscipline {
+                decl,
+                name: name.clone(),
+                discipline,
+            })
+        }
+
+        true
+    }
+
     fn verify_node(&mut self, node: NodeId, module: ModuleLoc) {
         let loc = node.lookup(self.db.upcast());
         let node_ = &self.tree[module.id].nodes[loc.id];
@@ -205,10 +250,12 @@ impl TypeValidationCtx<'_> {
                 decl: node_.ast_id,
                 name: node_.name.clone(),
             });
-            self.report(TypeValidationDiagnostic::NodeWithoutDiscipline {
-                decl: node_.ast_id,
-                name: node_.name.clone(),
-            });
+            if !self.has_default_discipline(node_.ast_id, &node_.name) {
+                self.report(TypeValidationDiagnostic::NodeWithoutDiscipline {
+                    decl: node_.ast_id,
+                    name: node_.name.clone(),
+                });
+            }
             return; // Do not print other diagnostics here would just lead to duplications
         }
         let mut directions = node_.decls.iter().filter_map(|decl| {
@@ -262,7 +309,7 @@ impl TypeValidationCtx<'_> {
                     subsequent: duplicates,
                 }))
             }
-        } else {
+        } else if !self.has_default_discipline(node_.ast_id, &node_.name) {
             self.report(TypeValidationDiagnostic::NodeWithoutDiscipline {
                 decl: node_.ast_id,
                 name: node_.name.clone(),

@@ -22,7 +22,7 @@ use base_n::CASE_INSENSITIVE;
 use camino::{Utf8Path, Utf8PathBuf};
 use hir::{CompilationDB, ParamSysFun, Type};
 use hir_def::db::HirDefDB;
-use hir_lower::{CallBackKind, HirInterner, ParamKind};
+use hir_lower::{AbsDelayMode, CallBackKind, HirInterner, ParamKind};
 use lasso::Rodeo;
 use llvm_sys::target::{LLVMABISizeOfType, LLVMDisposeTargetData};
 use llvm_sys::target_machine::LLVMCodeGenOptLevel;
@@ -38,6 +38,7 @@ use crate::compilation_unit::{new_codegen, OsdiCompilationUnit, OsdiModule};
 use crate::metadata::osdi_0_4::OsdiTys;
 use crate::metadata::OsdiLimFunction;
 
+mod accept;
 mod access;
 mod bitfield;
 mod compilation_unit;
@@ -82,6 +83,7 @@ pub fn compile<'a>(
     dump_unopt_mir: bool,
     dump_ir: bool,
     dump_unopt_ir: bool,
+    absdelay: AbsDelayMode,
 ) -> (Vec<Utf8PathBuf>, Vec<CompiledModule<'a>>, Rodeo) {
     initialize_llvm();
     let mut literals = Rodeo::new();
@@ -90,7 +92,8 @@ pub fn compile<'a>(
     let modules: Vec<_> = modules
         .iter()
         .map(|module| {
-            let mir = CompiledModule::new(db, module, &mut literals, dump_unopt_mir, dump_mir);
+            let mir =
+                CompiledModule::new(db, module, &mut literals, dump_unopt_mir, dump_mir, absdelay);
             for cb in mir.intern.callbacks.iter() {
                 if let CallBackKind::BuiltinLimit { name, num_args } = *cb {
                     lim_table.ensure(OsdiLimFunction { name, num_args: num_args - 2 });
@@ -469,6 +472,25 @@ impl OsdiModule<'_> {
 pub struct OsdiLimId(u32);
 impl_idx_from!(OsdiLimId(u32));
 impl_debug_display! {match OsdiLimId{OsdiLimId(id) => "lim{id}";}}
+
+/// The element type of an array parameter's storage.
+fn llelem_ty(arr_ty: &llvm_sys::LLVMType) -> &llvm_sys::LLVMType {
+    unsafe { &*llvm_sys::core::LLVMGetElementType(NonNull::from(arr_ty).as_ptr()) }
+}
+
+/// The indices that address element `elem` of the array held in field `field`.
+///
+/// An array parameter is one field holding the whole array, which is what lets a
+/// simulator set it in one go (VAMS-2023 3.4.4), so reaching an element walks the
+/// struct and then the array.
+fn param_elem_indices<'ll>(
+    cx: &CodegenCx<'_, 'll>,
+    field: u32,
+    elem: u32,
+) -> Box<[&'ll llvm_sys::LLVMValue]> {
+    vec![cx.const_unsigned_int(0), cx.const_unsigned_int(field), cx.const_unsigned_int(elem)]
+        .into_boxed_slice()
+}
 
 fn ty_len(ty: &Type) -> Option<u32> {
     match ty {

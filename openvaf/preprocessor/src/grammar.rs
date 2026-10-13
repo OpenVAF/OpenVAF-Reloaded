@@ -8,8 +8,10 @@
  *  *****************************************************************************************
  */
 
+use std::sync::Arc;
+
 use text_size::TextRange;
-use tokens::KeywordSet;
+use tokens::{literal, KeywordSet};
 // use tracing::{debug, trace, trace_span};
 use typed_index_collections::TiVec;
 
@@ -146,6 +148,115 @@ pub(crate) fn parse_begin_keywords(
         }
     }
 }
+
+/// Parses `` `default_transition <transition_time> `` (VAMS-2023 10.3).
+///
+/// Returns the time together with the span of the whole directive. The clause
+/// writes `transition_time ::= constant_expression`, but a directive is read
+/// before anything is in scope to make an expression out of, so what is accepted
+/// is a numeric literal, with its scale factor character (`1n`) because that is
+/// how a model writer spells a transition time. Anything else is reported rather
+/// than quietly left at the default it was meant to replace.
+pub(crate) fn parse_default_transition(
+    p: &mut Parser<'_, '_>,
+    err: &mut Diagnostics,
+) -> Option<(f64, CtxSpan)> {
+    let start = p.current_range().start();
+    p.bump();
+
+    let span = |p: &Parser<'_, '_>| CtxSpan {
+        ctx: p.ctx(),
+        range: TextRange::new(start, p.previous_range().end()),
+    };
+
+    // A sign is a token of its own, and is read here only so that a negative time
+    // gets the diagnostic it deserves rather than "expected a transition time".
+    let negated = p.on_current_line() && p.current_text() == "-";
+    if negated {
+        p.bump();
+    }
+
+    // The argument is on the same line as the directive, like `` `define ``'s
+    // macro text: without that rule the next line's first token is eaten.
+    let time = if p.on_current_line() {
+        p.current_syntax_kind().and_then(|kind| literal::number_value(kind, p.current_text()))
+    } else {
+        None
+    };
+
+    let Some(time) = time else {
+        // Reported against the directive, not against whatever follows it: what
+        // follows may be the next line, which is nothing to do with it.
+        err.push(PreprocessorDiagnostic::MissingTransitionTime { span: span(p) });
+        return None;
+    };
+    p.bump();
+
+    if negated && time != 0.0 {
+        // 4.5.8: `rise_time` and `fall_time` "shall be non-negative".
+        err.push(PreprocessorDiagnostic::NegativeTransitionTime { span: span(p) });
+        return None;
+    }
+
+    Some((time, span(p)))
+}
+
+/// Parses `` `default_discipline [discipline_identifier [ qualifier ] ] ``
+/// (VAMS-2023 10.2).
+///
+/// `None` means the directive named no discipline, which is the form that removes
+/// the default: "if this directive is used without a discipline name, discipline
+/// resolution will not use a default discipline for nets declared after this
+/// directive". The qualifier it removes is returned with it.
+pub(crate) fn parse_default_discipline(
+    p: &mut Parser<'_, '_>,
+    err: &mut Diagnostics,
+) -> (Option<Arc<str>>, Option<Arc<str>>, CtxSpan) {
+    let start = p.current_range().start();
+    p.bump();
+
+    // Both arguments are optional and the directive is not terminated, so they
+    // are the identifiers that follow it on its own line.
+    let mut name = None;
+    let mut qualifier = None;
+    if p.on_current_line() && p.at(PreprocessorToken::SimpleIdent) {
+        name = Some(Arc::from(p.current_text()));
+        p.bump();
+        if p.on_current_line() && p.at(PreprocessorToken::SimpleIdent) {
+            qualifier = Some((Arc::from(p.current_text()), p.current_span()));
+            p.bump();
+        }
+    }
+
+    let span = CtxSpan { ctx: p.ctx(), range: TextRange::new(start, p.previous_range().end()) };
+
+    let qualifier = qualifier.and_then(|(qualifier, qspan): (Arc<str>, CtxSpan)| {
+        if !NET_TYPE_QUALIFIERS.contains(&&*qualifier) {
+            err.push(PreprocessorDiagnostic::UnknownDisciplineQualifier {
+                qualifier: qualifier.to_string(),
+                span: qspan,
+            });
+            return None;
+        }
+        // Every qualifier but `wire` names a net type Verilog-A has no nets of,
+        // so the directive would be in force and apply to nothing.
+        if &*qualifier != "wire" {
+            err.push(PreprocessorDiagnostic::UnreachableDisciplineQualifier {
+                qualifier: qualifier.to_string(),
+                span: qspan,
+            });
+        }
+        Some(qualifier)
+    });
+
+    (name, qualifier, span)
+}
+
+/// The qualifiers of Syntax 10-1, which are the digital net and variable types.
+const NET_TYPE_QUALIFIERS: &[&str] = &[
+    "integer", "real", "reg", "wreal", "wire", "tri", "wand", "triand", "wor", "trior", "trireg",
+    "tri0", "tri1", "supply0", "supply1",
+];
 
 // const MACRO_ARG_DEF_TERMINATOR_SET: TokenSet =
 //     TokenSet::new(&[RawToken::ParenClose]).union(MACRO_TERMINATOR_SET);

@@ -1,0 +1,57 @@
+error: no type for array parameter 'untyped'
+   --> /arrayparam_err.va:20:15
+   |
+20 |     parameter untyped[0:1] = '{1.0, 2.0};
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^ 'untyped' is an array and has no type
+   |
+   = info: a parameter's type is otherwise taken from its value, and an assignment pattern does not say what its elements hold (VAMS-2023 3.4.1)
+   = help: declare it as 'parameter real untyped[...]' or 'parameter integer untyped[...]'
+
+error: array index out of bounds
+   --> /arrayparam_err.va:39:22
+   |
+39 |         V(a) <+ m[0][3];
+   |                      ^ index 3 is out of bounds
+   |
+   = help: the declared range is [0:2]
+
+error: array index out of bounds
+   --> /arrayparam_err.va:41:21
+   |
+41 |         V(a) <+ off[0];
+   |                     ^ index 0 is out of bounds
+   |
+   = help: the declared range is [2:4]
+
+error: type mismatch: expected real value but found real[0:2] value
+   --> /arrayparam_err.va:44:17
+   |
+44 |         V(a) <+ m[0];
+   |                 ^^^^ expected real value
+
+error: indexing something that is not an array
+   --> /arrayparam_err.va:46:17
+   |
+46 |         V(a) <+ sel[0];
+   |                 ^^^ integer is not an array
+   |
+   = help: declare the range the index is into, as in 'real c[0:2]'
+
+error: invalid $zi_nd: the denominator vector has to be an array of constants. Table 4-20 makes it a constant expression argument, and the filter is compiled into the model, so an array the module computes at run time -- or one a model card sets -- cannot be read here: write it as an array literal
+   --> /arrayparam_err.va:52:17
+   |
+52 |         V(a) <+ zi_nd(V(b), '{1.0}, g, 1u);
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $zi_nd
+
+error: type mismatch: expected real[0:2] value but found real[0:1] value
+   --> /arrayparam_err.va:24:33
+   |
+24 |     parameter real short[0:2] = '{1.0, 2.0};
+   |                                 ^^^^^^^^^^^ expected real[0:2] value
+
+error: type mismatch: expected real[0:1] value but found real literal
+   --> /arrayparam_err.va:25:42
+   |
+25 |     parameter real scalar_default[0:1] = 1.0;
+   |                                          ^^^ expected real[0:1] value
+

@@ -1,0 +1,50 @@
+// VAMS-2023 3.2 and 3.4.8 in ngspice: the crosstalk matrix the LRM uses to
+// introduce multi-dimensional arrays, with the coupling written in a loop rather
+// than given as a parameter array (3.4.4's parameter arrays do not parse yet).
+//
+//   out0..2  the matrix product, accumulated in a double loop whose indices are
+//            both computed, so every timepoint goes through the flat-position
+//            arithmetic rather than through folded constant places.
+//   pick     c[i][j] with the two indices taken from the sign of two inputs: a
+//            four-level staircase whose levels say which element was read.
+//
+// The matrix is asymmetric (c[i][j] is k*(10*i + j) off the diagonal), so a
+// transposed dimension or a wrong stride changes the waveform rather than the
+// arithmetic's shape.
+`include "disciplines.vams"
+
+module xtalk(out0, out1, out2, pick, in0, in1, in2);
+    inout out0, out1, out2, pick;
+    electrical out0, out1, out2, pick;
+    input in0, in1, in2;
+    electrical in0, in1, in2;
+
+    parameter real k = 0.01;
+
+    real c[0:2][0:2];
+    real in_val[0:2];
+    real acc[0:2];
+    integer i, j;
+
+    analog begin
+        for (i = 0; i <= 2; i = i + 1)
+            for (j = 0; j <= 2; j = j + 1)
+                c[i][j] = (i == j) ? 1.0 : k * (10.0 * i + j);
+
+        in_val = '{V(in0), V(in1), V(in2)};
+
+        for (i = 0; i <= 2; i = i + 1) begin
+            acc[i] = 0.0;
+            for (j = 0; j <= 2; j = j + 1)
+                acc[i] = acc[i] + c[i][j] * in_val[j];
+        end
+
+        i = (V(in0) > 0.0) ? 2 : 0;
+        j = (V(in1) > 0.0) ? 1 : 0;
+
+        V(out0) <+ acc[0];
+        V(out1) <+ acc[1];
+        V(out2) <+ acc[2];
+        V(pick) <+ c[i][j];
+    end
+endmodule

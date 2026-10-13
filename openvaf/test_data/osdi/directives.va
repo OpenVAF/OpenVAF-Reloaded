@@ -1,0 +1,32 @@
+// VAMS-2023 10.3 and 10.2: the two directives that supply what a declaration or a
+// transition filter leaves out. Time is in seconds here, not nanoseconds, so one
+// accepted timestep of the mock simulator is one second and the ramp arithmetic in
+// the test reads directly.
+//
+//   bare   `transition(V(in))` with no rise or fall time, which 4.5.8 sends to
+//          `default_transition: the ramp takes 4 s, not the negligible time a
+//          file without the directive gets.
+//   zero   the other half of the same sentence, "or are equal to zero (0.0)":
+//          an explicit zero is a request for the default, not for a step.
+//   named  the same filter with the time written out, which the other two have
+//          to agree with sample for sample.
+//
+// None of the three ports is declared with a discipline. 10.2 gives them the one
+// `default_discipline names, which is what its own example relies on: there the
+// ports are declared `input in1, in2;` and nothing more. `in` is declared the
+// ordinary way, so a model can mix the two.
+`include "disciplines.vams"
+`default_transition 4.0
+`default_discipline electrical
+
+module directives(bare, zero, named, in);
+    inout bare, zero, named;
+    input in;
+    electrical in;
+
+    analog begin
+        V(bare)  <+ transition(V(in));
+        V(zero)  <+ transition(V(in), 0.0, 0.0);
+        V(named) <+ transition(V(in), 0.0, 4.0);
+    end
+endmodule

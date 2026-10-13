@@ -15,7 +15,7 @@ use vfs::VfsPath;
 use crate::diagnostics::PreprocessorDiagnostic;
 use crate::processor::ParsedToken;
 use crate::sourcemap::{CtxSpan, SourceContext};
-use crate::Diagnostics;
+use crate::{Diagnostics, DirectiveIdx};
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub struct FullTokenIdx(u32);
@@ -38,6 +38,9 @@ pub(crate) struct LexerState {
     /// Number of `module` tokens without a matching `endmodule` seen so far.
     /// Used to reject keyword directives inside a design element.
     module_depth: Cell<u32>,
+    /// The state the directives that set a default are in, which every token
+    /// produced from here on refers to.
+    directives: Cell<DirectiveIdx>,
 }
 
 impl LexerState {
@@ -47,6 +50,14 @@ impl LexerState {
 
     pub(crate) fn set_keywords(&self, keywords: KeywordSet) {
         self.keywords.set(keywords)
+    }
+
+    pub(crate) fn directives(&self) -> DirectiveIdx {
+        self.directives.get()
+    }
+
+    pub(crate) fn set_directives(&self, directives: DirectiveIdx) {
+        self.directives.set(directives)
     }
 
     pub(crate) fn in_design_element(&self) -> bool {
@@ -188,6 +199,29 @@ impl<'a, 'd> Parser<'a, 'd> {
         TextRange::at(self.previous_offset, len)
     }
 
+    /// Whether the current token is on the same line as the one before it.
+    ///
+    /// Whitespace is not a token here, so the gap between the two is read out of
+    /// the source text. A directive whose argument is optional (10.2) or may be
+    /// missing (10.3) has an argument only if it is on the directive's own line:
+    /// nothing terminates these directives, so without that rule the first token
+    /// of the next line becomes the argument.
+    pub(crate) fn on_current_line(&self) -> bool {
+        let prev_end = self.previous_range().end();
+        let start = self.current_range().start();
+        if start <= prev_end {
+            return true;
+        }
+        !self.src[TextRange::new(prev_end, start)].contains('\n')
+    }
+
+    /// The syntax kind of the current token, which the preprocessor's own token
+    /// classification does not keep (a number is just [`PreprocessorToken::Other`]).
+    pub(crate) fn current_syntax_kind(&self) -> Option<SyntaxKind> {
+        let token = *self.full_tokens.get(self.full_token_pos)?;
+        token.kind.to_syntax(self.current_text(), self.state.keywords()).0
+    }
+
     pub(crate) fn followed_by_bracket_without_space(&self) -> bool {
         let (token, idx) = self.relevant_tokens[self.pos + 1u32];
         token == PreprocessorToken::OpenParen && idx == (self.full_token_pos + 1u32)
@@ -217,6 +251,7 @@ impl<'a, 'd> Parser<'a, 'd> {
             let state = &*self.state;
             self.dst.extend(self.full_tokens[range].iter().filter_map(|token| {
                 let keywords = state.keywords();
+                let directives = state.directives();
                 let res = Self::convert_lexer_token(
                     *token,
                     self.offset,
@@ -228,7 +263,12 @@ impl<'a, 'd> Parser<'a, 'd> {
                 self.offset += token.len;
                 let (kind, range) = res?;
                 state.track_design_element(kind);
-                Some(crate::Token { span: CtxSpan { range, ctx: self.ctx }, kind, keywords })
+                Some(crate::Token {
+                    span: CtxSpan { range, ctx: self.ctx },
+                    kind,
+                    keywords,
+                    directives,
+                })
             }))
         } else {
             let len: TextSize = self.full_tokens[range].iter().map(|token| token.len).sum();
@@ -366,6 +406,10 @@ impl<'a, 'd> Parser<'a, 'd> {
             "`endif" => CompilerDirective::EndIf,
             "`undef" => CompilerDirective::Undef,
             "`resetall" => CompilerDirective::ResetAll,
+            // VAMS-2023 10.2 / 10.3: set a default for what a declaration or a
+            // transition filter leaves out.
+            "`default_discipline" => CompilerDirective::DefaultDiscipline,
+            "`default_transition" => CompilerDirective::DefaultTransition,
             // VAMS-2023 10.6: select the set of reserved keywords.
             "`begin_keywords" => CompilerDirective::BeginKeywords,
             "`end_keywords" => CompilerDirective::EndKeywords,
@@ -400,6 +444,12 @@ pub enum CompilerDirective {
     EndIf,
     Undef,
     ResetAll,
+    /// `` `default_discipline [discipline [ qualifier ] ] `` — the discipline a
+    /// net declared without one gets.
+    DefaultDiscipline,
+    /// `` `default_transition <time> `` — the default rise and fall time of a
+    /// transition filter.
+    DefaultTransition,
     /// `` `begin_keywords "<version_specifier>" `` — push a keyword set.
     BeginKeywords,
     /// `` `end_keywords `` — pop back to the previous keyword set.

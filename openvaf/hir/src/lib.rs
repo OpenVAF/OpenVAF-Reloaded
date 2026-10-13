@@ -29,7 +29,10 @@ pub use hir_def::{BuiltIn, Case, Literal, ParamSysFun, Path, Type};
 pub use hir_ty::builtin;
 use hir_ty::db::HirTyDB as HirDatabase;
 use hir_ty::inference;
+pub use hir_ty::scan;
+pub use hir_ty::table_model;
 pub use hir_ty::types::Signature;
+pub use hir_ty::zi_filter;
 pub use rec_declarations::RecDeclarations;
 use salsa::InternKey;
 use smol_str::SmolStr;
@@ -157,6 +160,12 @@ impl Module {
 
     pub fn ports(self, db: &CompilationDB) -> Vec<Node> {
         db.module_data(self.id).ports.iter().map(|&id| Node { id }).collect()
+    }
+
+    /// The rise and fall time a transition filter in this module gets when it
+    /// specifies neither, from `` `default_transition `` (VAMS-2023 10.3).
+    pub fn default_transition(self, db: &CompilationDB) -> Option<f64> {
+        db.module_data(self.id).default_transition.map(|time| time.0)
     }
 
     pub fn rec_declarations(self, db: &CompilationDB) -> RecDeclarations<'_> {
@@ -465,9 +474,10 @@ impl Variable {
         db.var_data(self.id).ty.clone()
     }
 
-    /// Lowest declared index of an array variable (`real g[2:5]` -> 2).
-    pub fn array_lo(self, db: &CompilationDB) -> i32 {
-        db.var_data(self.id).array_lo
+    /// Lowest declared index of each dimension of an array variable, outermost
+    /// first (`real g[2:5][0:1]` -> `[2, 0]`). Empty for a scalar.
+    pub fn array_lows(self, db: &CompilationDB) -> Box<[i32]> {
+        db.var_data(self.id).array_lows.clone()
     }
 
     pub fn init(self, db: &CompilationDB) -> Body {
@@ -508,6 +518,12 @@ impl Parameter {
 
     pub fn ty(self, db: &CompilationDB) -> Type {
         db.param_ty(self.id)
+    }
+
+    /// Lowest declared index of each dimension of an array parameter, outermost
+    /// first (`real c[2:5][0:1]` -> `[2, 0]`). Empty for a scalar.
+    pub fn array_lows(self, db: &CompilationDB) -> Box<[i32]> {
+        db.param_data(self.id).array_lows.clone()
     }
 
     pub fn get_attr(&self, db: &CompilationDB, ast: &AstCache, name: &str) -> Option<ast::Attr> {

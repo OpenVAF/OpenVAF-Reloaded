@@ -1,0 +1,54 @@
+// VAMS-2023 3.4.4: what a parameter array rejects. As many accepted forms as
+// rejected ones, so the test fails if one of them starts being reported.
+`include "disciplines.vams"
+
+module arrayparam_err(a, b);
+    inout electrical a, b;
+
+    // Accepted: the declaration 3.4.4 gives, a nested pattern per dimension
+    // (3.4.8), a range sized by a parameter declared before it, and a range that
+    // starts where it likes.
+    parameter integer n = 2;
+    parameter real g[0:2] = '{1.0, 2.0, 3.0} from [0:10];
+    parameter real m[0:1][0:2] = '{'{1.0, 2.0, 3.0}, '{4.0, 5.0, 6.0}};
+    parameter real s[0:n-1] = '{1.0, 2.0};
+    parameter real off[2:4] = '{1.0, 2.0, 3.0};
+    parameter integer sel = 0;
+
+    // 3.4.1: an array parameter's type is mandatory, since a parameter's type is
+    // otherwise taken from its value.
+    parameter untyped[0:1] = '{1.0, 2.0};
+
+    // An array of the declared size, and nothing else: 3.4.4's exact size applies
+    // to the default as much as to an override.
+    parameter real short[0:2] = '{1.0, 2.0};
+    parameter real scalar_default[0:1] = 1.0;
+
+    real v[0:2];
+
+    analog begin
+        // Accepted: every dimension indexed, inside its own declared range,
+        // computed or not, and a whole array copied into a variable of the same
+        // shape.
+        v = g;
+        V(a) <+ g[1] + g[sel] + m[1][2] + s[0] + off[3] + v[0];
+        V(b) <+ laplace_nd(V(a), '{1.0}, s);
+
+        // Each dimension has its own declared range, and it is the one that has to
+        // hold the index: 3 is inside the array but outside the second dimension.
+        V(a) <+ m[0][3];
+        // The declared range is [2:4], so 0 is not in it.
+        V(a) <+ off[0];
+        // A row of a multi-dimensional array is an array, and a contribution takes
+        // a value.
+        V(a) <+ m[0];
+        // A scalar parameter has nothing to index.
+        V(a) <+ sel[0];
+        // An operator whose coefficients are compiled into the model cannot take
+        // an array parameter: a model card sets one, which is after that point.
+        // The ones that read their values at run time can, which is what the
+        // `laplace_nd` above does and what `noise_table` does
+        // (`noisetab_err.va`).
+        V(a) <+ zi_nd(V(b), '{1.0}, g, 1u);
+    end
+endmodule

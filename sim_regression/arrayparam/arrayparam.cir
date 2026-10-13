@@ -1,0 +1,35 @@
+* An array parameter is the numbers a device was fitted with, and the model cards
+* are the only place they appear: the same compiled model, re-shaped per card.
+*
+* Two polynomial resistors, one on its declared default and one on a fit, each in
+* series with a 100 ohm sense resistor so that both the voltage across the device
+* and the current through it are in the waveform.
+.model rdef polyres
+.model rfit polyres c=[1e-6 2e-3 5e-4 1e-4]
+* Two one-pole filters whose poles differ by five: the vector on the card is the
+* only difference between them.
+.model fdef polefilt
+.model ffast polefilt den=[1 2e-7]
+
+vr rp 0 pwl(0 -1 100u 1)
+Na rp rs1 rdef
+Rs1 rs1 0 100
+
+vf fp 0 pwl(0 -1 100u 1)
+Nb fp rs2 rfit
+Rs2 rs2 0 100
+
+vs si 0 pulse(0 1 10u 1n 1n 500u 1m)
+Nc si od fdef
+Nd si of ffast
+Rd od 0 1g
+Rf of 0 1g
+
+.control
+pre_osdi arrayparam.osdi
+tran 10n 60u
+set filetype=ascii
+wrdata ap_out.txt v(rp) v(rs1) v(fp) v(rs2) v(si) v(od) v(of)
+.endc
+
+.end

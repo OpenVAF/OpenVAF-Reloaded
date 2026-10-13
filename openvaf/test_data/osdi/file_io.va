@@ -1,0 +1,39 @@
+`include "disciplines.vams"
+
+// VAMS-2023 9.5: a model writing what it measures to a file of its own.
+//
+// The two output tasks differ in when they write, and that difference is the
+// point of having both. 9.4.1: `$fstrobe` writes "at the end of the current
+// simulation time", which in an analog block means once for a timepoint, where
+// `$fdisplay` writes every time the statement is reached -- once per Newton
+// iteration. A measurement log wants the first; a trace of the solver's work
+// wants the second.
+//
+// The file name is fixed rather than a parameter because the harness can only set
+// real parameters. `$fflush` is here so the test can read the file while the
+// model still has it open; a run that ends normally does not need it.
+//
+// Voltage contributions put each equation on a branch flow unknown, where the
+// residual is the value itself once the output node is held at zero.
+module file_io(in, pos);
+    input in;
+    output pos;
+    electrical in, pos;
+
+    integer fd;
+
+    analog begin
+        @(initial_step) begin
+            fd = $fopen("openvaf_file_io_test.txt", "w");
+            $fdisplay(fd, "# opened");
+        end
+
+        $fstrobe(fd, "strobe %g %g", $abstime, V(in));
+        $fdisplay(fd, "display %g %g", $abstime, V(in));
+        $fflush(fd);
+
+        // Where the file has got to, which is how far everything above has
+        // written: 9.5.5's `$ftell`.
+        V(pos) <+ $ftell(fd);
+    end
+endmodule

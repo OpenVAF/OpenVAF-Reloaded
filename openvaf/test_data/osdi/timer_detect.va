@@ -1,0 +1,29 @@
+`include "disciplines.vams"
+
+// VAMS-2023 5.10.3.3: `timer(start_time, period)` fires at `start_time` and then
+// every `period` after it, with no threshold and no external clock involved. A
+// period of zero or less fires once and never again.
+//
+// Voltage contributions put each equation on a branch flow unknown, where the
+// residual is the value itself once the output node is held at zero.
+module timer_detect(in, held, count);
+    input in;
+    output held, count;
+    electrical in, held, count;
+
+    parameter real start = 2e-6;
+    parameter real period = 2e-6;
+
+    real state;
+    integer n;
+
+    analog begin
+        @(timer(start, period)) begin
+            state = V(in);
+            n = n + 1;
+        end
+
+        V(held) <+ state;
+        V(count) <+ n;
+    end
+endmodule

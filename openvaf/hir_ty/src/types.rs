@@ -207,9 +207,12 @@ impl Ty {
             ) => ty.is_assignable_to(&Type::Bool),
 
             // TODO merge these match arms when there are box/deref patterns (not any time soon)
+            // An array argument may be an array literal, an array variable or an
+            // array parameter (VAMS-2023 4.5.1).
             (
                 Ty::Val(Type::Array { ty: ref ty1, .. })
-                | Ty::Var(Type::Array { ty: ref ty1, .. }, _),
+                | Ty::Var(Type::Array { ty: ref ty1, .. }, _)
+                | Ty::Param(Type::Array { ty: ref ty1, .. }, _),
                 TyRequirement::ArrayAnyLength { ty: ty2 },
             ) => equiv.compare_ty(ty1, ty2),
 

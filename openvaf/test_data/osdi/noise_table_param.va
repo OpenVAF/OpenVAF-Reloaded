@@ -1,0 +1,35 @@
+// A noise spectrum the model card sets (VAMS-2023 4.6.3 by way of 3.4.4): the
+// same table, built into the model and read at run time, plus the two other
+// shapes a run-time table can arrive in.
+`include "disciplines.vams"
+
+module noise_table_param(a, c);
+    inout a, c;
+    electrical a, c;
+
+    // The pairs as one flat vector, which is how 4.6.3 writes them.
+    parameter real tab[0:5] = '{1.0, 1e-20, 1.0e3, 1e-22, 1.0e6, 1e-24};
+    // A bank of spectra, one to a row, so a card can set them together.
+    parameter real bank[0:1][0:5] = '{'{1.0, 2e-20, 1.0e3, 2e-22, 1.0e6, 2e-24},
+                                      '{1.0, 4e-20, 1.0e3, 4e-22, 1.0e6, 4e-24}};
+    // A log table's frequency column is already log10(f).
+    parameter real lg[0:3] = '{0.0, 1e-20, 6.0, 1e-24};
+    // Not a parameter at all: a spectrum the module works out for itself.
+    real dyn[0:3];
+
+    analog begin
+        I(a, c) <+ V(a, c);
+        I(a, c) <+ noise_table(tab, "card");
+        I(a, c) <+ noise_table(bank[1], "row");
+        I(a, c) <+ noise_table_log(lg, "logcard");
+
+        dyn[0] = 1.0;
+        dyn[1] = 1e-18 * V(a, c);
+        dyn[2] = 1.0e6;
+        dyn[3] = 1e-20 * V(a, c);
+        I(a, c) <+ noise_table(dyn, "computed");
+
+        // The reference: the same numbers as `tab`, built into the model.
+        I(a, c) <+ noise_table({1.0, 1e-20, 1.0e3, 1e-22, 1.0e6, 1e-24}, "builtin");
+    end
+endmodule

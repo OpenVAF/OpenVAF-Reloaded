@@ -1,0 +1,26 @@
+// VAMS-2023 4.5.8, driven from a node so the mock simulator can step the input in
+// accepted timesteps. Time is in seconds here, not nanoseconds, so the arithmetic
+// in the test reads directly.
+//
+//   out   delayed by td, so a change of `in` only starts a transition td later.
+//         This is the transport delay: a pulse shorter than td still comes out.
+//   fast  the same filter with no delay, which puts the transition in the same
+//         timestep as the change and makes the interrupted-transition rules
+//         reachable a step at a time.
+`include "disciplines.vams"
+
+module transition_pwl(out, fast, in);
+    inout out, fast;
+    electrical out, fast;
+    input in;
+    electrical in;
+
+    parameter real td = 2.0 from [0.0:inf);
+    parameter real tr = 4.0 from [0.0:inf);
+    parameter real tf = 2.0 from [0.0:inf);
+
+    analog begin
+        V(out)  <+ transition(V(in), td, tr, tf);
+        V(fast) <+ transition(V(in), 0.0, tr, tf);
+    end
+endmodule

@@ -1,0 +1,33 @@
+* A noise spectrum the model card sets: the same compiled model on two cards, one
+* of them the declared default.
+*
+* Each device sits at a node driven through 1 kohm from a grounded ac source, so
+* the impedance its noise current sees is 1 kohm in parallel with the device's own
+* 1 mS: 500 ohm, and the output noise density is sqrt(S(f)) * 500.
+.model mdef spotnoise
+.model mset spotnoise sn=[1 4e-20 1e2 4e-22 1e4 4e-24 1e6 4e-24]
+
+v1 in 0 dc 0 ac 1
+rl in out 1k
+Nx out 0 mdef
+
+v2 in2 0 dc 0 ac 1
+rl2 in2 out2 1k
+Ny out2 0 mset
+
+.control
+pre_osdi noisetab.osdi
+set filetype=ascii
+* The default card: the table read at run time and the one compiled in are the
+* same numbers, so they have to be the same spectrum.
+noise v(out) v1 dec 10 0.1 1e8 1
+setplot noise1
+wrdata nt_def.txt onoise_nx_card onoise_nx_fixed
+* The card's own table: four times the power everywhere, which the compiled-in
+* source cannot follow.
+noise v(out2) v2 dec 10 0.1 1e8 1
+setplot noise3
+wrdata nt_set.txt onoise_ny_card onoise_ny_fixed
+.endc
+
+.end

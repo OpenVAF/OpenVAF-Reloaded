@@ -1,5 +1,6 @@
 use std::io;
 use std::iter::once;
+use std::mem::take;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -17,11 +18,15 @@ use crate::diagnostics::PreprocessorDiagnostic::{
     self, MacroArgumentCountMismatch, MacroNotFound, UnexpectedToken,
 };
 use crate::grammar::{
-    parse_begin_keywords, parse_condition, parse_define, parse_include, parse_macro_call,
+    parse_begin_keywords, parse_condition, parse_default_discipline, parse_default_transition,
+    parse_define, parse_include, parse_macro_call,
 };
 use crate::parser::{CompilerDirective, LexerState, Parser, PreprocessorToken};
 use crate::sourcemap::{CtxSpan, FileSpan, SourceContext, SourceMap};
-use crate::{Diagnostics, FileReadError, ScopedTextArea, SourceProvider, Token};
+use crate::{
+    DefaultDiscipline, DefaultTransition, Diagnostics, DirectiveIdx, Directives, FileReadError,
+    ScopedTextArea, SourceProvider, Token,
+};
 
 pub(crate) struct Processor<'a> {
     pub(crate) source_map: SourceMap,
@@ -38,6 +43,10 @@ pub(crate) struct Processor<'a> {
     keyword_stack: Vec<(KeywordSet, CtxSpan)>,
     /// Monotonic id for virtual expansion files allocated for `` `__FILE__ `` / `` `__LINE__ ``.
     expand_seq: u32,
+    /// Every directive state the token stream refers to, the empty one first. A
+    /// state is pushed when a directive changes it, so a file that uses none of
+    /// them keeps the one entry it started with.
+    directives: Vec<Directives>,
 }
 
 impl<'a> Processor<'a> {
@@ -67,8 +76,30 @@ impl<'a> Processor<'a> {
             lexer_state: Rc::default(),
             keyword_stack: Vec::new(),
             expand_seq: 0,
+            directives: vec![Directives::default()],
         };
         Ok(res)
+    }
+
+    pub fn take_directives(&mut self) -> Vec<Directives> {
+        take(&mut self.directives)
+    }
+
+    /// The directive state the next token will be produced in.
+    fn current_directives(&self) -> &Directives {
+        &self.directives[self.lexer_state.directives().0 as usize]
+    }
+
+    /// Replaces the directive state, which from here on is what the tokens refer
+    /// to. A state equal to the current one is not pushed, so a directive that
+    /// repeats what is already in force costs nothing.
+    fn set_directives(&mut self, directives: Directives) {
+        if *self.current_directives() == directives {
+            return;
+        }
+        self.directives.push(directives);
+        let idx = DirectiveIdx(self.directives.len() as u32 - 1);
+        self.lexer_state.set_directives(idx)
     }
 
     pub fn run(&mut self, file: FileId) -> (Vec<Token>, Diagnostics) {
@@ -187,9 +218,12 @@ impl<'a> Processor<'a> {
             // the token kinds of a macro body are resolved where the `define is
             // parsed, but the expansion site decides which identifiers are
             // reserved names there
-            ParsedTokenKind::ResolvedToken(kind) => {
-                dst.push(Token { kind, span, keywords: self.lexer_state.keywords() })
-            }
+            ParsedTokenKind::ResolvedToken(kind) => dst.push(Token {
+                kind,
+                span,
+                keywords: self.lexer_state.keywords(),
+                directives: self.lexer_state.directives(),
+            }),
             ParsedTokenKind::ArgumentReference(arg) => {
                 dst.extend(&args[arg]);
             }
@@ -244,13 +278,14 @@ impl<'a> Processor<'a> {
                     // macro definition has no arguments, but some were parsed as part of the call
                     // so put the arguments back
                     let keywords = self.lexer_state.keywords();
-                    dst.push(Token { kind: L_PAREN, span, keywords });
+                    let directives = self.lexer_state.directives();
+                    dst.push(Token { kind: L_PAREN, span, keywords, directives });
                     for arg in new_args {
                         for tok in arg {
                             dst.push(tok)
                         }
                     }
-                    dst.push(Token { kind: R_PAREN, span, keywords });
+                    dst.push(Token { kind: R_PAREN, span, keywords, directives });
                 }
             } else {
                 errors.push(MacroArgumentCountMismatch {
@@ -311,6 +346,7 @@ impl<'a> Processor<'a> {
             // a literal is never a keyword, but the token still carries the set in
             // effect at the expansion site so the regions stay contiguous
             keywords: self.lexer_state.keywords(),
+            directives: self.lexer_state.directives(),
         });
     }
 
@@ -403,6 +439,36 @@ impl<'a> Processor<'a> {
                         }
                         self.sync_keywords();
                     }
+                }
+                CompilerDirective::DefaultTransition => {
+                    if let Some((time, span)) = parse_default_transition(p, err) {
+                        // 10.3 says the directive "can be used only outside of
+                        // module definitions" and then, one sentence later, that
+                        // "there are no scope restrictions for this directive".
+                        // The restriction is the sentence that can be honoured
+                        // exactly: outside a module, the default in force is the
+                        // same for every transition filter the module contains.
+                        if self.lexer_state.in_design_element() {
+                            err.push(PreprocessorDiagnostic::TransitionInDesignElement { span })
+                        } else {
+                            let mut directives = self.current_directives().clone();
+                            // A zero default is the same as having none: 4.5.8
+                            // sends a zero rise time to `` `default_transition ``,
+                            // which would send it back.
+                            directives.transition =
+                                (time != 0.0).then_some(DefaultTransition { time, span });
+                            self.set_directives(directives)
+                        }
+                    }
+                }
+                CompilerDirective::DefaultDiscipline => {
+                    let (name, qualifier, span) = parse_default_discipline(p, err);
+                    let mut directives = self.current_directives().clone();
+                    directives.disciplines.retain(|it| it.qualifier != qualifier);
+                    if let Some(name) = name {
+                        directives.disciplines.push(DefaultDiscipline { name, qualifier, span });
+                    }
+                    self.set_directives(directives)
                 }
                 CompilerDirective::File => {
                     let span = p.current_span();

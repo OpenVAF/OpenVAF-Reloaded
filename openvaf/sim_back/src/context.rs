@@ -1,6 +1,6 @@
 use bitset::{BitSet, SparseBitMatrix};
 use hir::CompilationDB;
-use hir_lower::{HirInterner, MirBuilder, PlaceKind};
+use hir_lower::{AbsDelayMode, HirInterner, MirBuilder, PlaceKind};
 use lasso::Rodeo;
 use mir::{Block, ControlFlowGraph, DominatorTree, Function, Inst, InstructionData, Value};
 use mir_opt::{
@@ -32,7 +32,12 @@ pub enum OptimiziationStage {
 }
 
 impl<'a> Context<'a> {
-    pub fn new(db: &'a CompilationDB, literals: &mut Rodeo, module: &'a ModuleInfo) -> Self {
+    pub fn new(
+        db: &'a CompilationDB,
+        literals: &mut Rodeo,
+        module: &'a ModuleInfo,
+        absdelay: AbsDelayMode,
+    ) -> Self {
         let (mut func, mut intern) = MirBuilder::new(
             db,
             module.module,
@@ -41,7 +46,9 @@ impl<'a> Context<'a> {
                 | PlaceKind::ImplicitResidual { .. }
                 | PlaceKind::CollapseImplicitEquation(_)
                 | PlaceKind::IsVoltageSrc(_)
-                | PlaceKind::BoundStep => true,
+                | PlaceKind::BoundStep
+                | PlaceKind::Breakpoint
+                | PlaceKind::Discontinuity => true,
                 PlaceKind::Var(var) => module.op_vars.contains_key(&var),
                 _ => false,
             },
@@ -49,6 +56,7 @@ impl<'a> Context<'a> {
         )
         .with_equations()
         .with_tagged_writes()
+        .with_absdelay(absdelay)
         .build(literals);
         // TODO hidden state
         intern.insert_var_init(db, &mut func, literals);
@@ -116,7 +124,13 @@ impl<'a> Context<'a> {
         } else {
             for (kind, val) in self.intern.outputs.iter() {
                 if matches!(kind, PlaceKind::Var(var) if self.module.op_vars.contains_key(var))
-                    || matches!(kind, PlaceKind::CollapseImplicitEquation(_) | PlaceKind::BoundStep)
+                    || matches!(
+                        kind,
+                        PlaceKind::CollapseImplicitEquation(_)
+                            | PlaceKind::BoundStep
+                            | PlaceKind::Breakpoint
+                            | PlaceKind::Discontinuity
+                    )
                 {
                     // The output value may be `None` if it was never materialized (e.g. a
                     // `$bound_step()` whose value got eliminated). `unwrap_unchecked()` would
@@ -126,6 +140,18 @@ impl<'a> Context<'a> {
                         self.output_values.insert(val);
                     }
                 }
+            }
+        }
+        // An `absdelay` realized through the descriptor protocol has the simulator
+        // read its delay out of the instance data, so those values are outputs even
+        // though no place points at them. Without this a delay that is computed
+        // rather than named -- `absdelay(x, 2 * td)`, or the frozen delay 4.5.7 asks
+        // for when `maxdelay` is absent -- is eliminated as dead and the backend ends
+        // up storing an undefined value.
+        for delay in &self.intern.absdelay {
+            self.output_values.insert(delay.delay);
+            if let Some(max_delay) = delay.max_delay {
+                self.output_values.insert(max_delay);
             }
         }
     }
