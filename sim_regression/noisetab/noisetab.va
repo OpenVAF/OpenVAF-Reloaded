@@ -1,0 +1,29 @@
+// A measured noise spectrum that the model card carries (VAMS-2023 4.6.3 by way
+// of 3.4.4), measured against the same numbers compiled into the model.
+//
+// One device, two noise sources: one whose table is an array parameter, so a
+// card can replace it, and one whose table is the array literal 4.6.3 writes,
+// which only a rebuild can. On the declared default the two have to agree
+// exactly; on a card that sets the array they have to differ by what the card
+// says.
+`include "disciplines.vams"
+
+module spotnoise(p, n);
+    inout p, n;
+    electrical p, n;
+
+    parameter real g = 1e-3 from (0:inf);
+
+    // (frequency, power) pairs in A^2/Hz: a knee at 100 Hz and another at 10 kHz
+    // down to a floor, which is the shape a measured noise sheet has. Between
+    // two pairs the power is linear in log10(frequency), and outside the table
+    // it is the nearest endpoint's.
+    parameter real sn[0:7] = '{1.0, 1e-20, 1.0e2, 1e-22, 1.0e4, 1e-24, 1.0e6, 1e-24};
+
+    analog begin
+        I(p, n) <+ g * V(p, n);
+        I(p, n) <+ noise_table(sn, "card");
+        I(p, n) <+ noise_table({1.0, 1e-20, 1.0e2, 1e-22, 1.0e4, 1e-24, 1.0e6, 1e-24},
+                               "fixed");
+    end
+endmodule

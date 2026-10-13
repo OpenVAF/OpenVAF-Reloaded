@@ -448,6 +448,7 @@ compile.
 | `` `default_transition `` | 10.3 | Implemented. The default rise and fall time of every transition filter that specifies neither, which is exactly how system-level models get written. |
 | Multi-dimensional arrays | 3.2, 3.3 | Implemented, for as many dimensions as a declaration gives. One row of one is readable but not assignable. |
 | Array parameters | 3.4.4 | Implemented, of one dimension or several: one parameter of as many elements as it was declared with, which a model card sets in one go. The size is fixed when the model is compiled. |
+| `noise_table` from a model card | 4.6.3 | Implemented. A table whose values are not constants is read at run time, so a measured spectrum is a model card rather than a rebuild. A table of constants still folds into the model. |
 | `paramset` | 6.x | Parse error: `expected 'discipline', 'nature' or 'module'`. Matters more for device libraries than for system-level work. |
 
 ### The directives that supply a default
@@ -576,10 +577,11 @@ array variable)", so a filter's coefficients can come from the model card:
 `laplace_nd(V(in), num, den)` with `den` a parameter array is what
 `sim_regression/arrayparam` measures, and the pole lands where the card says.
 The operators that build their table or their coefficients at *compile* time
-cannot take one, and now say so: `$table_model`, the `zi_*` filters and
-`noise_table` each reject an array parameter with a diagnostic, where
-`noise_table` would otherwise have accepted it (a parameter is a constant
-expression, which is what its check asked for) and compiled an empty spectrum.
+cannot take one, and now say so: `$table_model` and the `zi_*` filters reject an
+array parameter with a diagnostic. `noise_table` would otherwise have accepted
+one (a parameter is a constant expression, which is all its check asked for) and
+compiled an empty spectrum, so it was made to reject one too, which is where the
+next section starts.
 
 **Indexing something that is not an array crashed the compiler**, and had nothing
 to do with parameters: `x[0]` on a scalar typed as `Err`, and the cast inserted
@@ -592,6 +594,58 @@ by a parameter, and the clause lets an override of that parameter change the arr
 size. The size here is fixed when the model is compiled, because the simulator's
 slot has one. `parameter real s[0:n-1]` works and is sized by `n`'s default; a
 model card that sets `n` does not resize `s`.
+
+### A noise table at run time
+
+4.6.3's `noise_table` takes a vector of frequency-power pairs, and until now
+those pairs had to be known while the model was being compiled: an array of
+constants, or a two-column data file read at compile time. The interpolation was
+emitted as a chain of selects with every segment's slope folded in, which is as
+cheap as a table of constants deserves. What it is not is something a netlist can
+set, and a measured noise spectrum is the clearest case on this page of a number
+that belongs to the part rather than to the source: one compiled model, one card
+per part number.
+
+So a table whose values are not constants is read at run time instead. The pairs
+travel as the arguments of the noise callback, two to a pair, and arrive as
+`NoiseSourceKind::NoiseTableDyn` with a MIR value each. Each value gets an eval
+output, which for an array parameter's element is not a slot at all but a read of
+the model data where the simulator wrote it, and `load_noise` interpolates over
+those values rather than over constants: a division per segment instead of a
+folded slope, and a `log10` per frequency for a linear table, since
+`noise_table_log`'s own column is already in log10.
+
+Which table is which is decided by what the values are, not by where they came
+from. An array of literal constants and a data file still build the table into the
+model, unchanged; anything else (an array parameter, an array the module filled
+in, an assignment pattern with an expression in it) is read at run time.
+`sim_regression/noisetab` puts both forms of the same numbers in one model and
+requires them to agree, which they do exactly, at all 91 frequencies of a sweep.
+
+Three things come with it.
+
+**Sorting cannot happen at run time.** A table of constants is sorted and
+deduplicated while it is built, so its pairs may be written in any order. A
+run-time table is interpolated in the order the array declares them, so its
+frequencies have to ascend. A repeated frequency is harmless, because the segment
+it spans is empty and the infinity its slope divides to is never the one
+selected, but a table out of order is a table read out of order.
+
+**An empty table used to compile.** `noise_table({})` contributed nothing and
+said nothing about it; nor did a table with an odd number of values, minus the
+last one. A pair is two numbers, so both are diagnostics now: "the table is a
+vector of (frequency, power) pairs, and 3 values is not a whole number of them".
+
+**A bank of them is a matrix.** One row of a two-dimensional array is an array in
+its own right, so `noise_table(bank[1], "...")` is the second of as many spectra
+as the card declares, read with the row machinery 3.2's arrays already use.
+
+What this does not extend to is the two other operators that build their data in.
+`$table_model` reduces its samples to a piecewise polynomial so that the existing
+autodiff can differentiate the lookup, and 9.21.1 captures the data source on the
+first call in any case; the `zi_*` filters fold their coefficients into the
+recurrence. Both still reject an array parameter, and both say so in terms of a
+model card.
 
 ## A PLL, part by part
 
@@ -611,7 +665,7 @@ write a PLL in this". So, by part, with the state of each measured in
 | Oscillator, phase-domain | `idtmod(freq, 0, 1, 0)` and a threshold | works, but nothing steers the timestep onto the wrap, so the edge lands where the solver stepped |
 | Divider | `@(cross)` counting, `transition` on the output | works; exactly one output edge per `ndiv` input edges |
 | Multi-modulus divider | an analog operator per `case` arm | works — it crashed the compiler until the `default`-arm fix above |
-| Phase noise | `noise_table` / `flicker_noise` / `white_noise` (4.6) | works; the table has to be an array literal or a file, since it is built into the model; an array parameter is rejected rather than read as empty |
+| Phase noise | `noise_table` / `flicker_noise` / `white_noise` (4.6) | works, and the table can be an array parameter the model card sets (`sim_regression/noisetab`), or an array literal or a data file built into the model |
 | Delay line, DLL | `absdelay` (4.5.7) | works, both realizations — see Tier 0 |
 | Jitter or period logging | `$fstrobe` / `$fdisplay` to a file (9.5) | works; `sim_regression/filelog` checks a jitter sequence the model wrote itself |
 | Stimulus from a file of vectors | `$fgets` and `$sscanf` (9.5.4) | works, loaded into arrays (`sim_regression/vecsrc`) or streamed a record at a time (`sim_regression/vecstream`), both checked against the file |
@@ -841,12 +895,22 @@ tasks (9.5, see above), and the compiler directives of 10.2 through 10.6.
     `sim_regression/arrayparam` measures a fitted polynomial and a pole against
     the numbers in the netlist, and against the same two devices written with one
     parameter per element: 6019 of 6019 rows identical.
-21. **A noise table from a model card** — 4.6.3's `noise_table` builds its
-    spectrum into the model at compile time, so the table has to be an array
-    literal or a data file; an array parameter is rejected (item 20 made that
-    rejection explicit rather than an empty spectrum). A phase-noise table is
-    exactly the thing a netlist wants to set per model card, and the same is true
-    of `$table_model`'s data and the `zi_*` coefficients. What it needs is a
-    runtime table: the pairs read from the parameter slots at setup rather than
-    folded into the lowering, which for `noise_table` is an interpolation over
-    values rather than over constants.
+21. ~~**A noise table from a model card**~~ — done. A table whose values are
+    not constants is read at run time, so a measured spectrum is a card rather
+    than a rebuild; one of constants still folds into the model, unchanged.
+    `sim_regression/noisetab` has both forms of the same numbers in one model and
+    they agree exactly at all 91 frequencies of a sweep, while a second card moves
+    the one and leaves the other where it was. What came with it: an empty or
+    odd-length table is a diagnostic instead of a spectrum of nothing, one row of
+    a two-dimensional array is a table (so a bank of them is a matrix), and a
+    run-time table has to ascend in frequency, because nothing can sort it there.
+22. **`$table_model` and the `zi_*` filters from a model card** — the two
+    operators whose data is still built in. `$table_model` reduces its samples to
+    a piecewise polynomial, which is what lets the existing autodiff
+    differentiate the lookup, so a run-time table has to emit that same
+    arithmetic over values: the comparisons stay selects, whose derivative is a
+    select, so it should carry its Jacobian the way the compiled-in form does.
+    The `zi_*` coefficients are the same shape of problem one step further in,
+    since they multiply a retained recurrence. A measured I(V) curve or a
+    measured Kvco per part number is the thing this buys, the way a measured
+    spectrum was for item 21.

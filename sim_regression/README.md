@@ -32,6 +32,7 @@ global_events  PASS
 directives     PASS
 multidim       PASS
 arrayparam     PASS
+noisetab       PASS
 absdelay       PASS
 timepoints     PASS
 filelog        PASS
@@ -535,6 +536,51 @@ vector rather than one name per element.
 
 The previous compiler does not reach a waveform here at all: `parameter real
 c[0:3] = '{...}` is a parse error on the subscript.
+
+## noisetab — passing
+
+VAMS-2023 4.6.3's noise table, read at run time so that a model card can carry
+it. The thing a netlist wants to set per part is exactly a measured spectrum, and
+until now the pairs had to be an array literal or a data file, which means a
+rebuild per part.
+
+`noisetab.va` contributes two noise sources from the same numbers:
+
+* `card`, whose table is `parameter real sn[0:7]`, so `noisetab.cir` can set it;
+* `fixed`, whose table is the array literal 4.6.3 writes, compiled into the model.
+
+Each device sits at a node driven through 1 kohm from a grounded ac source, so the
+impedance its noise current sees is that in parallel with the device's own 1 mS,
+and the output density is `sqrt(S(f)) * 500` with nothing in it for the simulator
+to integrate. The analyzer reads the card's vector out of the netlist and
+recomputes the interpolation knee by knee (power linear in log10(frequency)
+between two pairs, the nearest endpoint's power outside them), so a pair that
+arrived in the wrong position is a different spectrum rather than a scaled one.
+
+```
+a noise table from the model card, 4 pairs over 91 frequencies: worst error
+1.915e-09 relative
+the same table compiled in: worst error 1.915e-09 relative, and 91 of 91
+frequencies identical to the one read at run time (worst difference 0.000e+00)
+the card's own table: 2x the density of the compiled-in source (worst error
+5.024e-09), which the card leaves where it was (0.000e+00)
+```
+
+The 1.9e-09 is `wrdata`'s nine significant digits, not an interpolation error:
+both sources are compared against the same arithmetic, and against each other they
+agree exactly. That identity is what the case is for. A new path for an old
+operator has to produce the old numbers, and on the declared default the table
+read out of the parameter slots and the table folded into the lowering are the
+same spectrum at all 91 frequencies, to the last digit the file carries.
+
+What the second card then shows is the point of the exercise: `sn=[...]` with four
+times the power everywhere moves the run-time source by exactly the factor of two
+a density picks up, and does not move the compiled-in one at all. Before this,
+the second spectrum was a second build of the model.
+
+Neither earlier compiler reaches a spectrum here at all: `parameter real
+sn[0:7] = '{...}` is a parse error before array parameters, and `noise_table` of
+an array parameter is an invalid-operator error after them.
 
 ## timepoints — passing
 

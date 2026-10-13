@@ -230,6 +230,7 @@ run global_events global_events ge_out.txt analyze_global_events.py
 run directives    directives    dir_out.txt analyze_directives.py
 run multidim      xtalk         xt_out.txt analyze_multidim.py
 run arrayparam    arrayparam    ap_out.txt analyze_arrayparam.py
+run noisetab      noisetab      nt_def.txt analyze_noisetab.py
 run_absdelay
 run_timepoints
 run_filelog
