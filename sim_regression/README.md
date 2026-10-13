@@ -34,6 +34,7 @@ multidim       PASS
 arrayparam     PASS
 noisetab       PASS
 carddata       PASS
+paramset       PASS
 absdelay       PASS
 timepoints     PASS
 filelog        PASS
@@ -631,6 +632,59 @@ a measured curve in a netlist should expect to tighten the solve at the knees.
 The previous compiler does not reach a waveform here at all: a data column or a
 coefficient vector that was not an array of constants was an invalid-operator
 error.
+
+## paramset — passing
+
+VAMS-2023 6.4: a paramset is a model card the library carries. A module is written
+with every parameter it needs, the process's included; a paramset fixes those and
+leaves the netlist the few that belong to it. That is what a SPICE model card does,
+and it is why 6.4 compares the two.
+
+`paramset.va` has one module, `polyres`, and two paramsets over it. `rpoly` fixes
+the sheet resistance, the etch bias and the voltage coefficient and takes a shape;
+`rprec` fixes the shape and takes a resistance. The module stays a module, so the
+netlist instantiates all three names.
+
+What the netlist does with that: five devices of one compiled module, each in
+series with a 1k sense resistor, ramped to +/-10 V so the quadratic voltage
+coefficient is worth measuring. The first is the module itself, carded with
+everything `rpoly` would have set; the second is `rpoly` with the same shape.
+
+The analyzer reads all three sources rather than restating them: the paramset
+blocks out of `paramset.va`, both their statements and the declared defaults of
+their own parameters; the `.model` cards out of `paramset.cir`; and the module's
+own parameter defaults for everything no paramset sets.
+
+```
+a paramset is a model card: the module and the paramset over it agree on 1008 of
+1008 rows exactly
+  mfull    r0 =  808.081 Ohm, vc1 = 0.0015 /V^2, nf = 2: worst current error 2.021e-09 A
+  mpoly    r0 =  808.081 Ohm, vc1 = 0.0015 /V^2, nf = 2: worst current error 2.021e-09 A
+  mnarrow  r0 = 1306.122 Ohm, vc1 = 0.0015 /V^2, nf = 1: worst current error 2.456e-09 A
+  mprec    r0 = 2000.000 Ohm, vc1 = 0.0005 /V^2, nf = 1: worst current error 8.721e-10 A
+  mdef     r0 = 1000.000 Ohm, vc1 = 0.0005 /V^2, nf = 1: worst current error 7.553e-10 A
+```
+
+The first line is the claim and it is checked as equality, not as closeness: the
+same compiled module with the same parameters is the same arithmetic, so the
+module and the paramset over it have to write the same voltage. The residuals are
+the file's own precision, a 10 mA current recomputed from a difference of two
+nine-digit voltages.
+
+Three things in there are worth naming:
+
+* `mnarrow` and `mprec` prove the statements reach the module, since the
+  resistance of each is recomputed from the paramset's statements and the shape on
+  its own card.
+* `nf = 1` on `mprec` and `mdef` is the module's declared default, which `rprec`
+  is silent about. A paramset sets what it sets and nothing else.
+* `r0` is set by neither paramset, and its own default reads every parameter
+  declared before it. So the substitution has to run in declaration order, and a
+  wrong order would give a wrong resistance rather than an error.
+
+The previous compiler does not reach any of this: `paramset` is a parse error, and
+because it is a *parse* error the file fails whole, so a library that defines one
+paramset beside its modules compiles none of them.
 
 ## timepoints — passing
 

@@ -450,7 +450,7 @@ compile.
 | Array parameters | 3.4.4 | Implemented, of one dimension or several: one parameter of as many elements as it was declared with, which a model card sets in one go. The size is fixed when the model is compiled. |
 | `noise_table` from a model card | 4.6.3 | Implemented. A table whose values are not constants is read at run time, so a measured spectrum is a model card rather than a rebuild. A table of constants still folds into the model. |
 | A `$table_model` or `zi_*` vector from a model card | 9.21, 4.5.12 | Implemented for the shapes that can be emitted over values: a table of one dimension interpolated linearly or by closest point, and a vector of coefficients. A spline's weights are a solve over every ordinate and a root vector has to be paired, so both still have to be constants. |
-| `paramset` | 6.x | Parse error: `expected 'discipline', 'nature' or 'module'`. Matters more for device libraries than for system-level work. |
+| `paramset` | 6.4 | Implemented, one paramset over a module: a descriptor per paramset, named for it, with the paramset's own parameters as the only ones an instance may set. A chain of paramsets and 6.4.2's overloading are reported rather than built. |
 
 ### The directives that supply a default
 
@@ -723,6 +723,81 @@ last evaluated at, and the current is then the neighbouring segment's. One row i
 that step; a tighter solve leaves 1.3e-10 A, which is the precision the waveform
 file is written with.
 
+### A paramset is a model card
+
+6.4 says what a paramset is for in as many words: "The shared storage of paramsets
+makes them similar to the SPICE model card." A module is written with every
+parameter its equations need, the process's constants included; a paramset fixes
+those and leaves an instance the few that belong to it. 6.4's own example converts
+`.model nch nmos3 (level=3 kp=5e-5 tox=3e-8 ...)` into exactly that.
+
+It was a parse error, and that is the part that mattered most. A parse error takes
+the whole file with it, so a vendor library that defined one paramset beside its
+modules compiled none of them, modules included.
+
+**A paramset is the module it names, with its statements where the model card
+would be.** That is the whole implementation, and it follows from the clause: "the
+paramset itself contains no behavioural code; all of the behaviour is determined by
+the associated module". So a paramset is parsed into the same declaration a module
+is, which makes its parameters declared, resolved and lowered exactly as a
+module's; and where the lowered body reads a parameter of the target module, it
+reads the paramset's statement for that parameter instead, or that parameter's own
+declared default where the paramset is silent.
+
+Three things fall out of doing it that way rather than by storage.
+
+* **Nothing of the module's parameters is left for a card to reach**, which is
+  what the clause asks for: "an instance of the paramset that attempts to override
+  any of the other parameters of the underlying module `nmos3` would generate an
+  error". What the descriptor carries is the paramset's own parameters, with the
+  `given` flag and the range checks any parameter gets. 6.4.2 says this is the
+  right place for the ranges too: a simulator "shall consider only the ranges of
+  the paramset's own parameters".
+* **`$param_given` of a module parameter is a constant.** A paramset assignment is
+  the override and nothing else can reach past it, so the flag is known when the
+  model is compiled. `paramset.snap` shows what that is worth: the paramset that
+  is silent about `gmin` folds `$param_given(gmin)` to false, and the unknown
+  behind the output that reports it is gone from the descriptor.
+* **A dependent default still works.** 6.3.4's `gate_cap = gate_length *
+  gate_width * COX` reads parameters declared before it, so the substitution runs
+  in declaration order and each parameter is replaced before anything that could
+  read it is lowered. The regression case has one: `r0` is set by neither
+  paramset, and its default reads every parameter either of them does set.
+
+What is reported rather than built, and why:
+
+**A chain of paramsets.** 6.4 allows the second identifier to name another
+paramset, with the last in the chain naming a module. Each paramset in a chain sets
+the *next one's* parameters, not the module's, so the statements of the outer one
+resolve against a parameter list that is itself computed. One paramset over a
+module is what a model card is; a chain is a second mechanism, and the diagnostic
+says which was found.
+
+**6.4.2's overloading.** Paramsets may share a name, and a simulator chooses
+between them during elaboration by which one's parameter ranges admit the values an
+instance supplied. OSDI has no part in elaboration: a descriptor is instantiated by
+name, so by the time one is reached the choice has already been made. Two paramsets
+of one name are reported as a redeclaration, with a note saying what the clause
+asks for and that it cannot be answered here.
+
+**6.4.3's output variables.** A paramset variable declared with a description is an
+output variable of the instances that use the paramset, computed from the module's
+output variables through `.name`. A paramset holds no variables here, so the
+module's output variables are what an instance reports, unchanged. A variable in a
+paramset is reported.
+
+One check the clause asks for and this does not make: "If a paramset assigns a
+value to a module parameter and this value is outside the range specified for that
+module parameter, it shall be an error." A module parameter under a paramset has no
+model-card slot, and OSDI reports an invalid parameter by its index in the
+descriptor, so there is no index to report one against. The paramset's own ranges
+are checked, which is where 6.4.2 points the simulator's attention anyway.
+
+`sim_regression/paramset` measures it the way the clause invites: the same module
+twice in one netlist, once carded with everything a paramset would set and once
+through the paramset, required to write the same voltage on all 1008 rows rather
+than merely a close one.
+
 ## A PLL, part by part
 
 The page is organized by clause, which is the wrong shape for answering "can I
@@ -757,12 +832,11 @@ of that, at the cost of sampling the control voltage once per edge rather than
 continuously — which is what a real oscillator does anyway.
 
 So nothing on this page now blocks writing a PLL, measuring one, driving one
-from a file, or shaping one from its model card, and nothing is left in the table
-above: what remains in Tier 4 is `paramset`, and the two 9.5 tasks a testbench
-does not reach for. The feature itself matters for device libraries rather than
-for system-level work, but it is a *parse* error, which takes the whole file with
-it: a vendor library that defines one paramset beside its modules compiles none
-of them. That is why item 23 queues it anyway.
+from a file, shaping one from its model card, or shipping it as a library of
+paramsets over one module. Nothing is left in the table above, and Tier 4 is now
+empty. What remains on the page is smaller than any of it: `$fmonitor` and
+`$ferror` of 9.5, the four odds and ends of Tier 3, and an array variable's
+declaration initializer.
 
 ## 9.5 — files
 
@@ -994,11 +1068,24 @@ tasks (9.5, see above), and the compiler directives of 10.2 through 10.6.
     numbers). A card's vector has to be a parameter rather than any array,
     because 4.5.14 and 9.21.1 both say the numbers cannot move once the
     simulation is running.
-23. **`paramset`** — 6.x, and the last row of the Tier 4 table. Today it is a
-    parse error (`expected 'discipline', 'nature' or 'module'`), and because it is
-    a parse error the whole file fails: a vendor library that defines one paramset
-    beside its modules does not compile at all, modules included, which is a
-    bigger problem than the feature itself. OSDI has no notion of a paramset, so
-    the shape of the work is a descriptor per paramset: the same compiled module,
-    with the set's overrides applied where a model card's would be, and the set's
-    own name for the simulator to instantiate by.
+23. ~~**`paramset`**~~ — done, one paramset over a module, which is what a model
+    card is. A descriptor per paramset, named for it, carrying the paramset's own
+    parameters and none of the module's: where the lowered body reads a parameter
+    of the module it reads the paramset's statement for it instead, or that
+    parameter's declared default where the paramset is silent. So the derivatives,
+    the split into setup and evaluation and the descriptor see a module whose
+    parameters are the paramset's, and `$param_given` of a module parameter is a
+    constant. `sim_regression/paramset` puts the module and a paramset over it in
+    one netlist, carded to be the same device, and they agree on 1008 of 1008 rows
+    exactly. What is reported rather than built: a chain of paramsets, 6.4.2's
+    overloading (a descriptor is instantiated by name, and elaboration has already
+    chosen by then) and 6.4.3's output variables. The parse error was the part
+    that mattered: it took the whole file with it, modules included.
+24. **`$fmonitor`** — 9.5.2, and the last of the output tasks. It writes a line
+    when one of its arguments changes, which is the one thing `$fstrobe` does not
+    do: a testbench logging a state machine or a lock detector wants a line per
+    change rather than a line per timepoint. What it needs is a retained value per
+    argument and a comparison at the end of the timepoint, both of which the
+    accept callback and the retained slots of item 19 already provide; what it
+    adds is the per-argument compare and the first-call write the clause asks
+    for.

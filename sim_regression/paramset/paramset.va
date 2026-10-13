@@ -1,0 +1,62 @@
+// VAMS-2023 6.4: a paramset is a model card the library carries.
+//
+// One module, and two paramsets over it. The module is written the way a process
+// model is: every parameter it needs, including the ones the process fixes and an
+// instance has no business setting. Each paramset fixes those and leaves the
+// netlist the few that belong to it, which is what a SPICE model card does and
+// what 6.4 says a paramset is for.
+//
+// The module stays a module, so the netlist below instantiates all three.
+`include "disciplines.vams"
+
+module polyres(p, n);
+    inout p, n;
+    electrical p, n;
+
+    // The process's: sheet resistance, the width bias of the etch, and the
+    // quadratic voltage coefficient of the body.
+    parameter real rsh = 100.0 from (0:inf);
+    parameter real dw = 0.0 from [0:1u);
+    parameter real vc1 = 0.0 from [0:1];
+    // The shape, which is what a layout picks.
+    parameter real l = 1u from (0:inf);
+    parameter real w = 1u from (0:inf);
+    parameter integer nf = 1 from [1:64];
+    // A default that reads every parameter declared before it (6.3.4): the
+    // zero-bias resistance of `nf` fingers of the drawn shape.
+    parameter real r0 = rsh * l / ((w - dw) * nf);
+
+    (* desc="zero-bias resistance", units="Ohm" *) real rzero;
+
+    analog begin
+        rzero = r0;
+        I(p, n) <+ V(p, n) / (r0 * (1.0 + vc1 * V(p, n) * V(p, n)));
+    end
+endmodule
+
+// The process's poly resistor. The netlist picks a shape; the sheet resistance,
+// the etch bias and the voltage coefficient are the process's and are not
+// parameters of this paramset, so an instance cannot reach them.
+paramset rpoly polyres;
+    parameter real l = 1u from [0.2u:inf);
+    parameter real w = 1u from [0.2u:inf);
+    parameter integer nf = 1 from [1:16];
+    .rsh = 320.0;
+    .dw = 0.02u;
+    .vc1 = 1.5e-3;
+    .l = l;
+    .w = w;
+    .nf = nf;
+endparamset
+
+// A precision resistor of the same process: the shape is fixed, so what the
+// netlist picks is a resistance. `nf` and the etch bias are left alone, which
+// means the module's own defaults, and `r0` is the module's default read over
+// what this paramset set.
+paramset rprec polyres;
+    parameter real r = 1k from (0:inf);
+    .rsh = r;
+    .l = 1u;
+    .w = 1u;
+    .vc1 = 5.0e-4;
+endparamset

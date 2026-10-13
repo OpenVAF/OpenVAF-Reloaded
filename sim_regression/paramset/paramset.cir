@@ -1,0 +1,37 @@
+* A paramset is a model card the library carries (VAMS-2023 6.4).
+*
+* Five devices of one compiled module. The first is the module itself, carded with
+* everything the paramset would have set; the second is the paramset with the same
+* shape, so the two have to agree exactly. The rest are other shapes and the second
+* paramset, so each one's own statements and the module's own defaults are measured.
+*
+* Each device is in series with a 1k sense resistor, so the waveform carries both
+* the voltage across the device and the current through it, and the ramp runs to
+* +/-10 V so the quadratic voltage coefficient is worth measuring.
+.model mfull polyres rsh=320 dw=0.02u vc1=1.5e-3 l=10u w=2u nf=2
+.model mpoly rpoly l=10u w=2u nf=2
+.model mnarrow rpoly l=4u w=1u nf=1
+.model mprec rprec r=2k
+.model mdef rprec
+
+vsrc s 0 pwl(0 -10 200u 10)
+
+Na s a mfull
+Ra a 0 1k
+Nb s b mpoly
+Rb b 0 1k
+Nc s c mnarrow
+Rc c 0 1k
+Nd s d mprec
+Rd d 0 1k
+Ne s e mdef
+Re e 0 1k
+
+.control
+pre_osdi paramset.osdi
+tran 200n 200u
+set filetype=ascii
+wrdata ps_out.txt v(s) v(a) v(b) v(c) v(d) v(e)
+.endc
+
+.end
