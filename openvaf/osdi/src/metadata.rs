@@ -402,7 +402,8 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                     .map(|(src, _eval_outputs)| match src.kind {
                         NoiseSourceKind::WhiteNoise { .. } => NOISE_TYPE_WHITE,
                         NoiseSourceKind::FlickerNoise { .. } => NOISE_TYPE_FLICKER,
-                        NoiseSourceKind::NoiseTable { .. } => NOISE_TYPE_TABLE,
+                        NoiseSourceKind::NoiseTable { .. }
+                        | NoiseSourceKind::NoiseTableDyn { .. } => NOISE_TYPE_TABLE,
                     })
                     .collect();
 

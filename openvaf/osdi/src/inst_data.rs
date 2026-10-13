@@ -177,6 +177,9 @@ pub struct NoiseSource {
     pub factor: EvalOutput,
     /// content of values depend on kind of noise source
     pub args: [EvalOutput; 2],
+    /// The `(frequency, power)` pairs of a table read at run time, in the order
+    /// the array declares them; empty for every other kind of source.
+    pub table: Box<[(EvalOutput, EvalOutput)]>,
 }
 
 impl NoiseSource {
@@ -193,13 +196,28 @@ impl NoiseSource {
         let args = match source.kind {
             dae::NoiseSourceKind::WhiteNoise { pwr } => [get_output(pwr), EvalOutput::NONE],
             dae::NoiseSourceKind::FlickerNoise { pwr, exp } => [get_output(pwr), get_output(exp)],
-            dae::NoiseSourceKind::NoiseTable { .. } => [EvalOutput::NONE; 2],
+            dae::NoiseSourceKind::NoiseTable { .. }
+            | dae::NoiseSourceKind::NoiseTableDyn { .. } => [EvalOutput::NONE; 2],
         };
-        NoiseSource { args, factor: get_output(source.factor) }
+        // A table read at run time has an output per value instead of one per
+        // argument. An array parameter's element is a parameter like any other, so
+        // these usually need no slot of their own: the load reads them out of the
+        // model data where the simulator wrote them.
+        let table: Box<[_]> = match source.kind {
+            dae::NoiseSourceKind::NoiseTableDyn { ref pairs, .. } => {
+                pairs.iter().map(|&(freq, pwr)| (get_output(freq), get_output(pwr))).collect()
+            }
+            _ => Box::new([]),
+        };
+        NoiseSource { args, table, factor: get_output(source.factor) }
     }
 
-    pub fn eval_outputs(&self) -> [EvalOutput; 3] {
+    /// Everything the evaluation has to store for this source. A table read at
+    /// run time has as many values as it has pairs, so there is no fixed number.
+    pub fn eval_outputs(&self) -> impl Iterator<Item = EvalOutput> + '_ {
         [self.factor, self.args[0], self.args[1]]
+            .into_iter()
+            .chain(self.table.iter().flat_map(|&(freq, pwr)| [freq, pwr]))
     }
 }
 

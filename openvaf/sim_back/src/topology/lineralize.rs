@@ -42,8 +42,9 @@ impl<'a> super::Builder<'a> {
     ) {
         let mut ssa_builder = mir_build::SSAVariableBuilder::new(self.cfg);
         for (operator_inst, evaluation) in analog_operators {
-            // `noise_table`/`noise_table_log` carry their data in the callback
-            // and take no MIR value args, so guard against an empty arg list.
+            // A `noise_table`/`noise_table_log` of constants carries its data in
+            // the callback and takes no MIR value args, so guard against an empty
+            // arg list (one read at run time takes two per pair).
             // `arg0` is only consumed by the non-noise (ddt) branch below,
             // which always has an argument.
             let arg0 = self.func.dfg.instr_args(operator_inst).first().copied().unwrap_or(F_ZERO);

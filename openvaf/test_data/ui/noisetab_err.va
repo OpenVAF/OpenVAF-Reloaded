@@ -1,0 +1,38 @@
+// VAMS-2023 4.6.3: what a noise table rejects, now that its pairs may be read at
+// run time. As many accepted forms as rejected ones, so the test fails if one of
+// the accepted ones starts being reported.
+`include "disciplines.vams"
+
+module noisetab_err(a, b);
+    inout electrical a, b;
+
+    parameter real tab[0:3] = '{1.0, 1e-20, 1.0e6, 1e-24};
+    parameter real odd[0:2] = '{1.0, 1e-20, 1.0e6};
+    parameter real bank[0:1][0:3] = '{'{1.0, 1e-20, 1.0e6, 1e-24},
+                                      '{1.0, 2e-20, 1.0e6, 2e-24}};
+    parameter real scale = 2.0;
+    real computed[0:3];
+
+    analog begin
+        // Accepted: a table a model card sets, one row of a bank of them, a table
+        // the module works out for itself, an assignment pattern that is not all
+        // constants, and the array of constants 4.6.3 writes.
+        computed[0] = 1.0;
+        computed[1] = 1e-20 * scale;
+        computed[2] = 1.0e6;
+        computed[3] = 1e-24 * scale;
+        I(a, b) <+ noise_table(tab, "card");
+        I(a, b) <+ noise_table(bank[0], "row");
+        I(a, b) <+ noise_table(computed, "computed");
+        I(a, b) <+ noise_table({1.0, 1e-20 * scale, 1.0e6, 1e-24}, "mixed");
+        I(a, b) <+ noise_table_log({0.0, 1e-20, 6.0, 1e-24}, "log");
+
+        // A pair is two numbers, so an odd number of them is not a table.
+        I(a, b) <+ noise_table(odd, "odd");
+        // Nor is no number at all: an empty table used to compile and contribute
+        // nothing.
+        I(a, b) <+ noise_table({}, "empty");
+        // A bank of tables is not a table. One of its rows is.
+        I(a, b) <+ noise_table(bank, "bank");
+    end
+endmodule

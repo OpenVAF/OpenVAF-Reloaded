@@ -613,8 +613,8 @@ impl BodyLoweringCtx<'_, '_, '_> {
     }
 
     /// Evaluate a compile-time-constant real expression (literal, possibly
-    /// with a leading unary `+`/`-`). Used to read the `noise_table` inline
-    /// data array, whose elements must all be constants per the LRM.
+    /// with a leading unary `+`/`-`). Used to decide whether a `noise_table`
+    /// data array can be built into the model, and to read it when it can.
     fn eval_const_real(&self, expr: ExprId) -> Option<f64> {
         if let Some(lit) = self.body.as_literal(expr) {
             return match lit {
@@ -663,23 +663,28 @@ impl BodyLoweringCtx<'_, '_, '_> {
 
     /// Gather the `(frequency, power)` pairs backing a `noise_table` /
     /// `noise_table_log` call, either from an inline real array
-    /// `{f0, p0, f1, p1, ...}` or from a two-column data file.
-    fn noise_table_data(&self, signature: hir::Signature, args: &[ExprId]) -> Vec<(f64, f64)> {
+    /// `{f0, p0, f1, p1, ...}` of constants or from a two-column data file.
+    ///
+    /// `None` when the pairs are not knowable here, which is the case that reads
+    /// them at run time: an array parameter, so the spectrum can come from the
+    /// model card, or an array the module computed.
+    fn noise_table_data(
+        &self,
+        signature: hir::Signature,
+        args: &[ExprId],
+    ) -> Option<Vec<(f64, f64)>> {
         match signature {
             NOISE_TABLE_INLINE | NOISE_TABLE_INLINE_NAME => {
-                let elems = match self.body.get_expr(args[0]) {
-                    Expr::Array(vals) => vals,
-                    _ => return Vec::new(),
-                };
+                let Expr::Array(elems) = self.body.get_expr(args[0]) else { return None };
                 let nums: Vec<f64> =
-                    elems.iter().map(|&e| self.eval_const_real(e).unwrap_or(0.0)).collect();
-                nums.chunks_exact(2).map(|c| (c[0], c[1])).collect()
+                    elems.iter().map(|&e| self.eval_const_real(e)).collect::<Option<_>>()?;
+                Some(nums.chunks_exact(2).map(|c| (c[0], c[1])).collect())
             }
             NOISE_TABLE_FILE | NOISE_TABLE_FILE_NAME => {
                 let fname = self.body.as_literal(args[0]).unwrap().unwrap_str();
-                self.read_noise_table_file(fname)
+                Some(self.read_noise_table_file(fname))
             }
-            _ => Vec::new(),
+            _ => Some(Vec::new()),
         }
     }
 
@@ -1311,9 +1316,26 @@ impl BodyLoweringCtx<'_, '_, '_> {
                     self.ctx.func.interner.get_or_intern(name)
                 };
                 let log = builtin == BuiltIn::noise_table_log;
-                let table_vals = self.noise_table_data(signature, args);
-                let noise_table = NoiseTable::new(table_vals, log, name, idx);
-                self.ctx.call1(CallBackKind::NoiseTable(Box::new(noise_table)), &[])
+                match self.noise_table_data(signature, args) {
+                    Some(table_vals) => {
+                        let noise_table = NoiseTable::new(table_vals, log, name, idx);
+                        self.ctx.call1(CallBackKind::NoiseTable(Box::new(noise_table)), &[])
+                    }
+                    // A table the model card sets (4.6.3 by way of 3.4.4) travels
+                    // as the call's arguments instead, a frequency and a power at
+                    // a time, and is interpolated over those values at run time.
+                    // `array_coeffs` flattens whatever array it was given, so the
+                    // pairs may also be the rows of a two-dimensional one.
+                    None => {
+                        let mut vals = self.array_coeffs(args[0]);
+                        // An odd trailing value is no pair, which the table of
+                        // constants drops as well (`chunks_exact`).
+                        vals.truncate(vals.len() & !1);
+                        let pairs = vals.len() as u32 / 2;
+                        let noise_table = NoiseTable::dynamic(pairs, log, name, idx);
+                        self.ctx.call1(CallBackKind::NoiseTable(Box::new(noise_table)), &vals)
+                    }
+                }
             }
 
             BuiltIn::abstime => self.ctx.use_param(ParamKind::Abstime),

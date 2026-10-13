@@ -97,7 +97,7 @@ impl DaeSystem {
                 NoiseSourceKind::WhiteNoise { pwr } | NoiseSourceKind::FlickerNoise { pwr, .. } => {
                     pwr != F_ZERO
                 }
-                NoiseSourceKind::NoiseTable { .. } => true,
+                NoiseSourceKind::NoiseTable { .. } | NoiseSourceKind::NoiseTableDyn { .. } => true,
             }
         });
 

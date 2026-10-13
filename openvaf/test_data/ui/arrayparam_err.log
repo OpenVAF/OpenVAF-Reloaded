@@ -37,11 +37,11 @@ error: indexing something that is not an array
    |
    = help: declare the range the index is into, as in 'real c[0:2]'
 
-error: invalid noise_table: the table has to be an array of constants. 4.6.3 builds the spectrum into the model, so a table a model card sets -- an array parameter -- cannot be read here: write the pairs as an array literal, or name a data file
-   --> /arrayparam_err.va:51:17
+error: invalid $zi_nd: the denominator vector has to be an array of constants. Table 4-20 makes it a constant expression argument, and the filter is compiled into the model, so an array the module computes at run time -- or one a model card sets -- cannot be read here: write it as an array literal
+   --> /arrayparam_err.va:52:17
    |
-51 |         I(a) <+ noise_table(g, "pn");
-   |                 ^^^^^^^^^^^^^^^^^^^^ invalid noise_table
+52 |         V(a) <+ zi_nd(V(b), '{1.0}, g, 1u);
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $zi_nd
 
 error: type mismatch: expected real[0:2] value but found real[0:1] value
    --> /arrayparam_err.va:24:33

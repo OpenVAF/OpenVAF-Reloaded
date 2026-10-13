@@ -268,6 +268,91 @@ fn test_noise() -> Result<()> {
     Ok(())
 }
 
+/// Piecewise-linear in power over `log10(frequency)`, clamped at both ends:
+/// what a `noise_table` interpolation is, however the table arrived.
+fn noise_table_interp(x: &[f64], y: &[f64], lx: f64) -> f64 {
+    if lx <= x[0] {
+        return y[0];
+    }
+    for i in 0..x.len() - 1 {
+        if lx < x[i + 1] {
+            return y[i] + (y[i + 1] - y[i]) / (x[i + 1] - x[i]) * (lx - x[i]);
+        }
+    }
+    y[y.len() - 1]
+}
+
+/// 4.6.3's table read at run time instead of built into the model, which is
+/// what lets an array parameter (3.4.4) be a spectrum the model card sets.
+/// See `noise_table_param.va`: five sources, the last of them the same numbers
+/// compiled in, so the two can be compared against each other.
+fn test_noise_table_param() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+
+    const V_AC: f64 = 2.0;
+    // The declared tables, as the frequency column the lookup uses (log10 of it)
+    // and the power column.
+    const X: [f64; 3] = [0.0, 3.0, 6.0];
+    const Y: [f64; 3] = [1e-20, 1e-22, 1e-24];
+    const X_LOG: [f64; 2] = [0.0, 6.0];
+
+    let desc = test_descriptor(&openvaf_test_data("osdi").join("noise_table_param.va"))?;
+    // Three pairs is six values in one parameter.
+    let (tab, tab_len) = desc.param("tab");
+    assert_eq!(tab_len, 6);
+    assert_eq!(desc.param("lg").1, 4);
+    // A bank of two of them is one parameter of twelve, a row to a table.
+    assert_eq!(desc.param("bank").1, 12);
+
+    // What the declarations say, with nothing set.
+    let model = desc.new_model();
+    model.process_params()?;
+    let mut instance = model.new_instance();
+    let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+    sim.set_voltage("a", V_AC);
+    instance.eval(&model, &mut sim, EvalFlags::empty());
+    for freq in [0.1, 1.0, 7.0, 100.0, 999.0, 1e4, 1e6, 1e8] {
+        instance.load_noise(&model, &mut sim, freq);
+        let lx = freq.log10();
+        assert_approx_eq!(sim.read_noise(0), noise_table_interp(&X, &Y, lx));
+        // The table read at run time and the one built into the model are the
+        // same numbers, so they are the same spectrum.
+        assert_eq!(sim.read_noise(0), sim.read_noise(4));
+        // One row of a bank of spectra is a table like any other.
+        assert_approx_eq!(sim.read_noise(1), 4.0 * noise_table_interp(&X, &Y, lx));
+        // A log table's frequency column is already log10(f).
+        assert_approx_eq!(sim.read_noise(2), noise_table_interp(&X_LOG, &[1e-20, 1e-24], lx));
+        // And a table the module worked out from the voltage it was evaluated at.
+        assert_approx_eq!(
+            sim.read_noise(3),
+            noise_table_interp(&X_LOG, &[1e-18 * V_AC, 1e-20 * V_AC], lx)
+        );
+    }
+
+    // What a model card says instead: a hundred times the power, and the corner
+    // a decade down.
+    let model = desc.new_model();
+    model.set_real_param_vec(tab, &[1.0, 1e-18, 100.0, 1e-20, 1e6, 1e-22]);
+    model.process_params()?;
+    let mut instance = model.new_instance();
+    let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+    sim.set_voltage("a", V_AC);
+    instance.eval(&model, &mut sim, EvalFlags::empty());
+    for freq in [0.1, 1.0, 7.0, 100.0, 999.0, 1e4, 1e6, 1e8] {
+        instance.load_noise(&model, &mut sim, freq);
+        let lx = freq.log10();
+        assert_approx_eq!(
+            sim.read_noise(0),
+            noise_table_interp(&[0.0, 2.0, 6.0], &[1e-18, 1e-20, 1e-22], lx)
+        );
+        // The compiled-in table is not something a card can reach.
+        assert_approx_eq!(sim.read_noise(4), noise_table_interp(&X, &Y, lx));
+    }
+    Ok(())
+}
+
 /// Fixed-size arrays: declaration, constant- and runtime-index read/write all
 /// feed a single conductance. See `arrays.va`; with the default `sel=1` the
 /// assembled conductance is G = 21, so the loaded DAE residual/Jacobian must
@@ -2564,5 +2649,5 @@ harness! {
     Test::from_dir_filtered("vacask_spice", &vacask_spice_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice")),
     // VACASK simplified SPICE models
     Test::from_dir_filtered("vacask_spice_sn", &vacask_spice_sn_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice/sn")),
-    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros),Test::new("laplace_roots", &test_laplace_roots),Test::new("slew", &test_slew),Test::new("cross_detect", &test_cross_detect),Test::new("above_detect", &test_above_detect),Test::new("last_crossing", &test_last_crossing),Test::new("var_persistence", &test_var_persistence),Test::new("timer_detect", &test_timer_detect),Test::new("rng_stream", &test_rng_stream),Test::new("transition_pwl", &test_transition_pwl),Test::new("table_model", &test_table_model),Test::new("zi_filter", &test_zi_filter),Test::new("absdelay", &test_absdelay),Test::new("absdelay_in_model", &test_absdelay_in_model),Test::new("timer_resched", &test_timer_resched),Test::new("case_default", &test_case_default),Test::new("file_io", &test_file_io),Test::new("file_scan", &test_file_scan),Test::new("global_events", &test_global_events),Test::new("scan_target", &test_scan_target),Test::new("directives", &test_directives),Test::new("multidim", &test_multidim),Test::new("timepoints", &test_timepoints),Test::new("accept", &test_accept),Test::new("read_point", &test_read_point),Test::new("array_param", &test_array_param)]
+    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros),Test::new("laplace_roots", &test_laplace_roots),Test::new("slew", &test_slew),Test::new("cross_detect", &test_cross_detect),Test::new("above_detect", &test_above_detect),Test::new("last_crossing", &test_last_crossing),Test::new("var_persistence", &test_var_persistence),Test::new("timer_detect", &test_timer_detect),Test::new("rng_stream", &test_rng_stream),Test::new("transition_pwl", &test_transition_pwl),Test::new("table_model", &test_table_model),Test::new("zi_filter", &test_zi_filter),Test::new("absdelay", &test_absdelay),Test::new("absdelay_in_model", &test_absdelay_in_model),Test::new("timer_resched", &test_timer_resched),Test::new("case_default", &test_case_default),Test::new("file_io", &test_file_io),Test::new("file_scan", &test_file_scan),Test::new("global_events", &test_global_events),Test::new("scan_target", &test_scan_target),Test::new("directives", &test_directives),Test::new("multidim", &test_multidim),Test::new("timepoints", &test_timepoints),Test::new("accept", &test_accept),Test::new("read_point", &test_read_point),Test::new("array_param", &test_array_param),Test::new("noise_table_param", &test_noise_table_param)]
 }

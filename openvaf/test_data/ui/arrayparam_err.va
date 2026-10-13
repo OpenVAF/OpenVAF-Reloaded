@@ -44,10 +44,11 @@ module arrayparam_err(a, b);
         V(a) <+ m[0];
         // A scalar parameter has nothing to index.
         V(a) <+ sel[0];
-        // An operator whose table or coefficients are compiled into the model
-        // cannot take an array parameter: a model card sets one, which is after
-        // that point. The ones that take their values at run time can, which is
-        // what the `laplace_nd` above does.
-        I(a) <+ noise_table(g, "pn");
+        // An operator whose coefficients are compiled into the model cannot take
+        // an array parameter: a model card sets one, which is after that point.
+        // The ones that read their values at run time can, which is what the
+        // `laplace_nd` above does and what `noise_table` does
+        // (`noisetab_err.va`).
+        V(a) <+ zi_nd(V(b), '{1.0}, g, 1u);
     end
 endmodule

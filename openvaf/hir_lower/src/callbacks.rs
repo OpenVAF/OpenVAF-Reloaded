@@ -332,6 +332,20 @@ impl CallBackKind {
                 returns: 1,
                 has_sideeffects: false,
             },
+            CallBackKind::NoiseTable(table) if table.dyn_pairs != 0 => FunctionSignature {
+                // A table read at run time carries its pairs as the call's
+                // arguments, so the signature says how many there are rather than
+                // what they are.
+                name: format!(
+                    "table_noise{}({:?}, {} pairs)",
+                    if table.log { "lob" } else { "" },
+                    table.name,
+                    table.dyn_pairs
+                ),
+                params: 2 * table.dyn_pairs as u16,
+                returns: 1,
+                has_sideeffects: false,
+            },
             CallBackKind::NoiseTable(table) => FunctionSignature {
                 name: format!(
                     "table_noise{}({:?}, {:?})",
@@ -401,11 +415,28 @@ impl CallBackKind {
 pub struct NoiseTable {
     pub name: Spur,
     pub log: bool,
+    /// The pairs of a table that is built into the model, sorted by frequency.
+    /// Empty when the table is read at run time.
     pub vals: Box<[(Ieee64, Ieee64)]>,
+    /// How many `(frequency, power)` pairs the call's arguments carry, for a
+    /// table whose values are only known at run time; 0 for a table of
+    /// constants. The count is known here either way, because an array's length
+    /// is part of its declaration.
+    pub dyn_pairs: u32,
     idx: u32,
 }
 
 impl NoiseTable {
+    /// A table whose pairs are read at run time: `pairs` of them, as the first
+    /// `2 * pairs` arguments of the call, a frequency and a power at a time.
+    ///
+    /// Nothing can be sorted here, so the pairs are used in the order the array
+    /// declares them, which is why 4.6.3's ascending frequency is a requirement
+    /// on a run-time table rather than something the compiler arranges.
+    pub fn dynamic(pairs: u32, log: bool, name: Spur, idx: u32) -> Self {
+        Self { name, log, vals: Box::new([]), dyn_pairs: pairs, idx }
+    }
+
     // TODO: read from disk
     pub fn new(
         vals: impl IntoIterator<Item = (f64, f64)>,
@@ -420,6 +451,6 @@ impl NoiseTable {
         };
         vals.sort_unstable_by(|(f1, _), (f2, _)| f1.partial_cmp(f2).unwrap());
         vals.dedup_by_key(|(f, _)| *f);
-        Self { name, log, vals: vals.into_boxed_slice(), idx }
+        Self { name, log, vals: vals.into_boxed_slice(), dyn_pairs: 0, idx }
     }
 }

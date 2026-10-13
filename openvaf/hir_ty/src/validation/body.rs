@@ -881,6 +881,25 @@ impl ExprValidator<'_, '_> {
         elems.iter().map(|&e| self.const_real(e)).collect()
     }
 
+    /// How many values a `noise_table` data array carries.
+    ///
+    /// By the operator's own signature the argument is a one-dimensional array of
+    /// reals, so this is either what an assignment pattern writes out or the
+    /// length an array declaration gives. One row of a multi-dimensional array is
+    /// such an array, which is what makes a bank of spectra on one model card a
+    /// matrix with a row per table.
+    fn table_value_count(&self, arg: ExprId) -> u32 {
+        if let Expr::Array(ref elems) = self.parent.body.exprs[arg] {
+            return elems.len() as u32;
+        }
+        let Some(ty) = self.parent.infer.expr_types[arg].to_value() else { return 0 };
+        let dims = ty.dim();
+        if dims.is_empty() {
+            return 0;
+        }
+        dims.iter().product()
+    }
+
     /// A table data file, resolved beside the compilation's root source file, the
     /// way a `noise_table` data file is.
     fn read_data_file(&self, name: &str) -> Option<String> {
@@ -1270,25 +1289,27 @@ impl ExprValidator<'_, '_> {
                 BuiltIn::noise_table | BuiltIn::noise_table_log,
                 Some(NOISE_TABLE_INLINE | NOISE_TABLE_INLINE_NAME),
             ) => {
-                self.validate_const_expr(args[0]);
-                // The table is built into the model, so its pairs have to be
-                // knowable here. Being a constant expression is not enough: an
-                // array parameter is one, and what a model card sets it to arrives
-                // long after the model was compiled.
-                if self.const_real_column(args[0]).is_none() {
-                    let name = if matches!(call, BuiltIn::noise_table_log) {
-                        "noise_table_log"
-                    } else {
-                        "noise_table"
-                    };
+                let name = if matches!(call, BuiltIn::noise_table_log) {
+                    "noise_table_log"
+                } else {
+                    "noise_table"
+                };
+                // 4.6.3's table is a vector of (frequency, power) pairs, so what
+                // the argument has to carry is an even number of values, however
+                // many dimensions it spreads them over. A table of constants is
+                // built into the model; one whose values are not all constant is
+                // read at run time instead, which is what lets an array parameter
+                // (3.4.4) be a spectrum a model card sets.
+                let len = self.table_value_count(args[0]);
+                if len == 0 || len % 2 != 0 {
                     self.operator_err(
                         expr,
                         name,
-                        "the table has to be an array of constants. 4.6.3 builds the spectrum \
-                         into the model, so a table a model card sets -- an array parameter -- \
-                         cannot be read here: write the pairs as an array literal, or name a data \
-                         file"
-                            .to_owned(),
+                        format!(
+                            "the table is a vector of (frequency, power) pairs, and {len} \
+                             value{} is not a whole number of them",
+                            if len == 1 { "" } else { "s" }
+                        ),
                     );
                 }
             }
