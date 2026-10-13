@@ -1,0 +1,45 @@
+error: a scanned value has nowhere to go
+   --> /scan_target_err.va:19:34
+   |
+19 |         n = $sscanf("3.5", "%e", p);
+   |                                  ^ cannot be assigned to
+   |
+   = VAMS-2023 9.5.4 writes each conversion into the argument that follows the format, so an argument that is not a variable, or one element of an array, has nothing to receive it
+   = help: scan into a variable, and read the variable where this stands
+
+error: a scanned value has nowhere to go
+   --> /scan_target_err.va:21:34
+   |
+21 |         n = $sscanf("4.5", "%e", 7);
+   |                                  ^ cannot be assigned to
+   |
+   = VAMS-2023 9.5.4 writes each conversion into the argument that follows the format, so an argument that is not a variable, or one element of an array, has nothing to receive it
+   = help: scan into a variable, and read the variable where this stands
+
+error: a scanned value has nowhere to go
+   --> /scan_target_err.va:22:34
+   |
+22 |         n = $sscanf("6.5", "%e", i + 1);
+   |                                  ^^^^^ cannot be assigned to
+   |
+   = VAMS-2023 9.5.4 writes each conversion into the argument that follows the format, so an argument that is not a variable, or one element of an array, has nothing to receive it
+   = help: scan into a variable, and read the variable where this stands
+
+error: '%s' produces a string, which a real variable cannot hold
+   --> /scan_target_err.va:26:36
+   |
+26 |         n = $sscanf("alpha", "%s", r);
+   |                                    ^ this is a real
+   |
+   = VAMS-2023 9.5.4 settles what each conversion produces, and there is no conversion between a string and a number
+   = help: give this argument a string variable, or change the conversion to one that produces a real
+
+error: '%e' produces a real, which a string variable cannot hold
+   --> /scan_target_err.va:27:34
+   |
+27 |         n = $sscanf("7.5", "%e", s);
+   |                                  ^ this is a string
+   |
+   = VAMS-2023 9.5.4 settles what each conversion produces, and there is no conversion between a string and a number
+   = help: give this argument a real variable, or change the conversion to one that produces a string
+

@@ -1,5 +1,6 @@
 use core::ptr::NonNull;
 
+use hir::{CompilationDB, Parameter};
 use hir_lower::{CallBackKind, ParamInfoKind, ParamKind, PlaceKind};
 use llvm_sys::core::{
     LLVMAppendBasicBlockInContext, LLVMBuildBr, LLVMBuildCondBr, LLVMBuildRetVoid,
@@ -19,6 +20,37 @@ use crate::compilation_unit::{general_callbacks, OsdiCompilationUnit};
 use crate::inst_data::OsdiInstanceParam;
 
 use std::collections::HashMap;
+
+/// The elements of an array parameter, or the single slot of a scalar one.
+///
+/// VAMS-2023 3.4.4: a parameter array is stored, and overridden, as a whole, so it
+/// is one slot in the data structures and one `given` flag; what the model reads
+/// is one element at a time, so each element has an input and an initialization
+/// output of its own.
+fn param_slots(db: &CompilationDB, param: Parameter) -> Vec<Option<u32>> {
+    let dims = param.ty(db).dim();
+    if dims.is_empty() {
+        vec![None]
+    } else {
+        (0..dims.iter().product::<u32>()).map(Some).collect()
+    }
+}
+
+/// The input one slot of a parameter is read from.
+fn param_input(param: Parameter, slot: Option<u32>) -> ParamKind {
+    match slot {
+        Some(elem) => ParamKind::ParamElement(param, elem),
+        None => ParamKind::Param(param),
+    }
+}
+
+/// The initialization output one slot of a parameter is written by.
+fn param_place(param: Parameter, slot: Option<u32>) -> PlaceKind {
+    match slot {
+        Some(elem) => PlaceKind::ParamElement(param, elem),
+        None => PlaceKind::Param(param),
+    }
+}
 
 struct VoidAbortCallback;
 
@@ -157,9 +189,16 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
         for (i, param) in model_data.params.keys().copied().enumerate() {
             let i = i as u32;
 
-            let dst = intern.params.unwrap_index(&ParamKind::Param(param));
-            let loc = unsafe { model_data.nth_param_loc(cx, i, &*model) };
-            builder.params[dst] = BuilderVal::Load(Box::new(loc));
+            for slot in param_slots(self.db, param) {
+                let dst = intern.params.unwrap_index(&param_input(param, slot));
+                let loc = unsafe {
+                    match slot {
+                        Some(elem) => model_data.nth_param_elem_loc(cx, i, elem, &*model),
+                        None => model_data.nth_param_loc(cx, i, &*model),
+                    }
+                };
+                builder.params[dst] = BuilderVal::Load(Box::new(loc));
+            }
 
             let dst = intern.params.unwrap_index(&ParamKind::ParamGiven { param });
             // A `localparam` is never externally overridable (Verilog-AMS LRM):
@@ -183,11 +222,11 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
             let is_given =
                 unsafe { model_data.is_nth_inst_param_given(cx, i, &*model, builder.llbuilder) };
 
-            let val =
-                unsafe { model_data.read_nth_inst_param(inst_data, i, &*model, builder.llbuilder) };
-
             match *param {
                 OsdiInstanceParam::Builtin(builtin) => {
+                    let val = unsafe {
+                        model_data.read_nth_inst_param(inst_data, i, &*model, builder.llbuilder)
+                    };
                     let default_val = builtin.default_value();
                     let default_val = cx.const_real(default_val);
                     let val = unsafe { builder.select(is_given, val, default_val) };
@@ -202,10 +241,28 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                     }
                 }
                 OsdiInstanceParam::User(param) => {
-                    // Debug: Processing OsdiInstanceParam::User
-                    let dst = intern.params.unwrap_index(&ParamKind::Param(param));
-                    // Debug: Destination index for user param: dst
-                    builder.params[dst] = BuilderVal::Eager(val);
+                    for slot in param_slots(self.db, param) {
+                        let val = unsafe {
+                            match slot {
+                                Some(elem) => model_data.read_nth_inst_param_elem(
+                                    inst_data,
+                                    cx,
+                                    i,
+                                    elem,
+                                    &*model,
+                                    builder.llbuilder,
+                                ),
+                                None => model_data.read_nth_inst_param(
+                                    inst_data,
+                                    i,
+                                    &*model,
+                                    builder.llbuilder,
+                                ),
+                            }
+                        };
+                        let dst = intern.params.unwrap_index(&param_input(param, slot));
+                        builder.params[dst] = BuilderVal::Eager(val);
+                    }
                     let dst = intern.params.unwrap_index(&ParamKind::ParamGiven { param });
                     // localparams are never externally overridable (see above)
                     let is_given =
@@ -241,10 +298,15 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
         let ret_flags = builder.ret_allocated.unwrap();
         unsafe { builder.store(ret_flags, cx.const_int(0)) };
 
-        builder.callbacks =
-            general_callbacks(intern, &mut builder, ret_flags, unsafe { &*handle }, unsafe {
-                &*simparam
-            });
+        builder.callbacks = general_callbacks(
+            intern,
+            &mut builder,
+            ret_flags,
+            unsafe { &*handle },
+            unsafe { &*simparam },
+            // A model's own setup belongs to no instance and to no timepoint.
+            cx.const_null_ptr(),
+        );
         for (call_id, call) in intern.callbacks.iter_enumerated() {
             if let CallBackKind::ParamInfo(ParamInfoKind::Invalid, param) = call {
                 if !self.module.info.params[param].is_instance {
@@ -278,14 +340,28 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
             .unwrap();
 
         // store model parameters to reflect defaulted values
-        for (i, param) in model_data.params.keys().enumerate() {
-            let val = intern.outputs[&PlaceKind::Param(*param)].unwrap_unchecked();
-            let inst = func.dfg.value_def(val).unwrap_inst();
-            let bb = func.layout.inst_block(inst).unwrap();
-            builder.select_bb_before_terminator(bb);
-            unsafe {
-                let val = builder.values[val].get(&builder);
-                model_data.store_nth_param(i as u32, &*model, val, builder.llbuilder);
+        for (i, param) in model_data.params.keys().copied().enumerate() {
+            for slot in param_slots(self.db, param) {
+                let val = intern.outputs[&param_place(param, slot)].unwrap_unchecked();
+                let inst = func.dfg.value_def(val).unwrap_inst();
+                let bb = func.layout.inst_block(inst).unwrap();
+                builder.select_bb_before_terminator(bb);
+                unsafe {
+                    let val = builder.values[val].get(&builder);
+                    match slot {
+                        Some(elem) => model_data.store_nth_param_elem(
+                            cx,
+                            i as u32,
+                            elem,
+                            &*model,
+                            val,
+                            builder.llbuilder,
+                        ),
+                        None => {
+                            model_data.store_nth_param(i as u32, &*model, val, builder.llbuilder)
+                        }
+                    }
+                }
             }
         }
 
@@ -314,19 +390,32 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                     }
                 }
                 OsdiInstanceParam::User(param) => {
-                    let val = intern.outputs[&PlaceKind::Param(*param)].unwrap_unchecked();
-                    let inst = func.dfg.value_def(val).unwrap_inst();
-                    let bb = func.layout.inst_block(inst).unwrap();
-                    builder.select_bb_before_terminator(bb);
-                    unsafe {
-                        let val = builder.values[val].get(&builder);
-                        model_data.store_nth_inst_param(
-                            inst_data,
-                            i as u32,
-                            &*model,
-                            val,
-                            builder.llbuilder,
-                        );
+                    for slot in param_slots(self.db, *param) {
+                        let val = intern.outputs[&param_place(*param, slot)].unwrap_unchecked();
+                        let inst = func.dfg.value_def(val).unwrap_inst();
+                        let bb = func.layout.inst_block(inst).unwrap();
+                        builder.select_bb_before_terminator(bb);
+                        unsafe {
+                            let val = builder.values[val].get(&builder);
+                            match slot {
+                                Some(elem) => model_data.store_nth_inst_param_elem(
+                                    inst_data,
+                                    cx,
+                                    i as u32,
+                                    elem,
+                                    &*model,
+                                    val,
+                                    builder.llbuilder,
+                                ),
+                                None => model_data.store_nth_inst_param(
+                                    inst_data,
+                                    i as u32,
+                                    &*model,
+                                    val,
+                                    builder.llbuilder,
+                                ),
+                            }
+                        }
                     }
                 }
             }
@@ -407,16 +496,14 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
             };
             // Debug: is_given for param {}: is_given
 
-            let inst_val = unsafe { inst_data.read_nth_param(i, instance, builder.llbuilder) };
-            // Debug: inst_val for param {}: inst_val
-            let model_val =
-                unsafe { model_data.read_nth_inst_param(inst_data, i, model, builder.llbuilder) };
-            // Debug: model_val for param {}: model_val
-            let val = unsafe { builder.select(is_inst_given, inst_val, model_val) };
-            // Debug: Selected val for param {}: val
-
             match *param {
                 OsdiInstanceParam::Builtin(builtin) => {
+                    let inst_val =
+                        unsafe { inst_data.read_nth_param(i, instance, builder.llbuilder) };
+                    let model_val = unsafe {
+                        model_data.read_nth_inst_param(inst_data, i, model, builder.llbuilder)
+                    };
+                    let val = unsafe { builder.select(is_inst_given, inst_val, model_val) };
                     let default_val = builtin.default_value();
                     let default_val = cx.const_real(default_val);
                     // Debug: Processing OsdiInstanceParam::Builtin
@@ -430,11 +517,59 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                     }
                 }
                 OsdiInstanceParam::User(param) => {
-                    let dst = intern.params.unwrap_index(&ParamKind::Param(param));
-                    builder.params[dst] = BuilderVal::Eager(val);
-                    // Store in instance structure to reflect defaulted value
-                    unsafe {
-                        inst_data.store_nth_param(i, instance, val, builder.llbuilder);
+                    // An instance parameter is read from the instance when it was
+                    // given there and from the model otherwise, element by element
+                    // for an array (VAMS-2023 3.4.4).
+                    for slot in param_slots(self.db, param) {
+                        let (inst_val, model_val) = unsafe {
+                            match slot {
+                                Some(elem) => (
+                                    inst_data.read_nth_param_elem(
+                                        cx,
+                                        i,
+                                        elem,
+                                        instance,
+                                        builder.llbuilder,
+                                    ),
+                                    model_data.read_nth_inst_param_elem(
+                                        inst_data,
+                                        cx,
+                                        i,
+                                        elem,
+                                        model,
+                                        builder.llbuilder,
+                                    ),
+                                ),
+                                None => (
+                                    inst_data.read_nth_param(i, instance, builder.llbuilder),
+                                    model_data.read_nth_inst_param(
+                                        inst_data,
+                                        i,
+                                        model,
+                                        builder.llbuilder,
+                                    ),
+                                ),
+                            }
+                        };
+                        let val = unsafe { builder.select(is_inst_given, inst_val, model_val) };
+                        let dst = intern.params.unwrap_index(&param_input(param, slot));
+                        builder.params[dst] = BuilderVal::Eager(val);
+                        // Store in instance structure to reflect defaulted value
+                        unsafe {
+                            match slot {
+                                Some(elem) => inst_data.store_nth_param_elem(
+                                    cx,
+                                    i,
+                                    elem,
+                                    instance,
+                                    val,
+                                    builder.llbuilder,
+                                ),
+                                None => {
+                                    inst_data.store_nth_param(i, instance, val, builder.llbuilder);
+                                }
+                            }
+                        }
                     }
                     let dst = intern.params.unwrap_index(&ParamKind::ParamGiven { param });
                     // localparams are never externally overridable
@@ -448,9 +583,14 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
         for (i, param) in model_data.params.keys().copied().enumerate() {
             let i = i as u32;
 
-            if let Some(dst) = intern.params.index(&ParamKind::Param(param)) {
-                let loc = model_data.nth_param_loc(cx, i, model);
-                builder.params[dst] = BuilderVal::Load(Box::new(loc));
+            for slot in param_slots(self.db, param) {
+                if let Some(dst) = intern.params.index(&param_input(param, slot)) {
+                    let loc = match slot {
+                        Some(elem) => model_data.nth_param_elem_loc(cx, i, elem, model),
+                        None => model_data.nth_param_loc(cx, i, model),
+                    };
+                    builder.params[dst] = BuilderVal::Load(Box::new(loc));
+                }
             }
 
             if let Some(dst) = intern.params.index(&ParamKind::ParamGiven { param }) {
@@ -488,6 +628,7 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
         // store for use in eval() function
         unsafe { inst_data.store_temperature(&mut builder, instance, &*temperature) };
         unsafe { inst_data.store_connected_ports(&mut builder, instance, &*connected_terminals) };
+        unsafe { inst_data.init_retained(&builder, instance) };
 
         // Debug: Setting up trivial callbacks
         let trivial_cb = cx.trivial_callbacks(&[]);
@@ -512,10 +653,14 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
         }
 
         let invalid_param_err = Self::invalid_param_err(cx);
-        builder.callbacks =
-            general_callbacks(intern, &mut builder, ret_flags, unsafe { &*handle }, unsafe {
-                &*simparam
-            });
+        builder.callbacks = general_callbacks(
+            intern,
+            &mut builder,
+            ret_flags,
+            unsafe { &*handle },
+            unsafe { &*simparam },
+            instance,
+        );
         for (call_id, call) in intern.callbacks.iter_enumerated() {
             let cb = match call {
                 CallBackKind::ParamInfo(ParamInfoKind::Invalid, param) => {
@@ -572,20 +717,33 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
 
         // store parameters
         for (i, param) in inst_data.params.keys().enumerate() {
-            let val = match param {
+            let param = match param {
                 OsdiInstanceParam::Builtin(_) => continue,
-                OsdiInstanceParam::User(param) => {
-                    intern.outputs[&PlaceKind::Param(*param)].unwrap_unchecked()
-                }
+                OsdiInstanceParam::User(param) => *param,
             };
 
-            let inst = func.dfg.value_def(val).unwrap_inst();
-            let bb = func.layout.inst_block(inst).unwrap();
-            builder.select_bb_before_terminator(bb);
+            for slot in param_slots(self.db, param) {
+                let val = intern.outputs[&param_place(param, slot)].unwrap_unchecked();
+                let inst = func.dfg.value_def(val).unwrap_inst();
+                let bb = func.layout.inst_block(inst).unwrap();
+                builder.select_bb_before_terminator(bb);
 
-            unsafe {
-                let val = builder.values[val].get(&builder);
-                inst_data.store_nth_param(i as u32, instance, val, builder.llbuilder);
+                unsafe {
+                    let val = builder.values[val].get(&builder);
+                    match slot {
+                        Some(elem) => inst_data.store_nth_param_elem(
+                            cx,
+                            i as u32,
+                            elem,
+                            instance,
+                            val,
+                            builder.llbuilder,
+                        ),
+                        None => {
+                            inst_data.store_nth_param(i as u32, instance, val, builder.llbuilder);
+                        }
+                    }
+                }
             }
         }
 

@@ -1,0 +1,43 @@
+`include "disciplines.vams"
+
+// VAMS-2023 9.13. One draw per evaluation, with the seed carried across them:
+// 9.13.1 requires that "$random shall always return the same stream of values
+// given the same initial random_seed", so the stream itself is the thing under
+// test, not just its distribution.
+//
+// `kind` picks the function, so one model covers the family. A voltage
+// contribution puts each equation on a branch flow unknown, where the residual is
+// the value itself once the output node is held at zero.
+module rng_stream(in, val, seed_out);
+    input in;
+    output val, seed_out;
+    electrical in, val, seed_out;
+
+    // Real so the test harness, which sets parameters as doubles, can reach them;
+    // `seed` itself is the integer the LRM asks for.
+    parameter real seed0 = 1.0;
+    parameter real kind = 0.0;
+
+    integer seed;
+    real draw;
+
+    analog begin
+        @(initial_step)
+            seed = seed0;
+
+        // An if-chain rather than a case: two analog operators in different arms of
+        // a `case` crash the compiler, which `transition()` trips as readily as
+        // these do and which predates them. See docs/lrm-system-level-gaps.md.
+        if (kind == 0)      draw = $random(seed);
+        else if (kind == 1) draw = $dist_uniform(seed, 0, 100);
+        else if (kind == 2) draw = $dist_normal(seed, 50, 10);
+        else if (kind == 3) draw = $dist_exponential(seed, 5);
+        else if (kind == 4) draw = $dist_poisson(seed, 4);
+        else if (kind == 5) draw = $dist_chi_square(seed, 3);
+        else if (kind == 6) draw = $dist_t(seed, 3);
+        else                draw = $dist_erlang(seed, 2, 6);
+
+        V(val) <+ draw;
+        V(seed_out) <+ seed;
+    end
+endmodule

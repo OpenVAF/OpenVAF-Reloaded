@@ -1,0 +1,42 @@
+`include "disciplines.vams"
+
+// VAMS-2023 4.5.11.1-4.5.11.3: `laplace_zp`, `laplace_zd` and `laplace_np` take
+// their zeros and/or poles as (real, imaginary) pairs. A.6.4 spells the vectors as
+// `constant_assignment_pattern_or_null`, which is the `'{...}` form used here.
+//
+// Each root form below is paired with a `laplace_nd` call whose coefficients are
+// the same transfer function written out, so expanding the roots must reproduce
+// them exactly.
+module laplace_roots(in, o1, o2, o3, o4, o5, o6, o7, o8);
+    input in;
+    output o1, o2, o3, o4, o5, o6, o7, o8;
+    electrical in, o1, o2, o3, o4, o5, o6, o7, o8;
+
+    parameter real tau = 1e-6;      // real pole at -1/tau
+    parameter real tz = 4e-7;       // real zero at -1/tz
+    parameter real a = 1e6;         // conjugate pole pair -a +- j*b
+    parameter real b = 2e6;
+
+    analog begin
+        // a real pole as a root vs the same denominator as coefficients
+        V(o1) <+ laplace_np(V(in), '{1.0}, '{-1.0 / tau, 0.0});
+        V(o2) <+ laplace_nd(V(in), '{1.0}, '{1.0, tau});
+
+        // a zero *at* zero, whose factor is a bare s rather than 1 - s/r
+        V(o3) <+ laplace_zp(V(in), '{0.0, 0.0}, '{-1.0 / tau, 0.0});
+        V(o4) <+ laplace_nd(V(in), '{0.0, 1.0}, '{1.0, tau});
+
+        // a real zero over a conjugate pole pair:
+        //   1 + 2a/(a^2+b^2) s + 1/(a^2+b^2) s^2
+        V(o5) <+ laplace_zd(V(in), '{-1.0 / tz, 0.0},
+                            '{1.0, 2.0 * a / (a * a + b * b), 1.0 / (a * a + b * b)});
+        V(o6) <+ laplace_nd(V(in), '{1.0, tz},
+                            '{1.0, 2.0 * a / (a * a + b * b), 1.0 / (a * a + b * b)});
+
+        // the conjugate pair itself given as roots: the expansion carries imaginary
+        // parts that have to cancel, leaving the same real coefficients as o6's
+        V(o7) <+ laplace_np(V(in), '{1.0}, '{-a, b, -a, -b});
+        V(o8) <+ laplace_nd(V(in), '{1.0},
+                            '{1.0, 2.0 * a / (a * a + b * b), 1.0 / (a * a + b * b)});
+    end
+endmodule

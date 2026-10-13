@@ -1,0 +1,26 @@
+param "$mfactor"
+units = "", desc = "Multiplier (Verilog-A $mfactor)", flags = ParameterFlags(PARA_KIND_INST)
+param "tab"
+elements = 6
+units = "", desc = "", flags = ParameterFlags(0x0)
+param "bank"
+elements = 12
+units = "", desc = "", flags = ParameterFlags(0x0)
+param "lg"
+elements = 4
+units = "", desc = "", flags = ParameterFlags(0x0)
+
+2 terminals
+node "a" units = "V", runits = "A"
+node "c" units = "V", runits = "A"
+jacobian (a, a) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (a, c) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (c, a) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (c, c) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+noise "card" (a, c)
+noise "row" (a, c)
+noise "logcard" (a, c)
+noise "computed" (a, c)
+noise "builtin" (a, c)
+0 states
+has bound_step false

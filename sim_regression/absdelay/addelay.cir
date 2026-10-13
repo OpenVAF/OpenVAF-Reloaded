@@ -1,0 +1,19 @@
+* absdelay through the descriptor protocol, VAMS-2023 4.5.7
+* Needs a simulator that implements OsdiAbsDelayInfo; see
+* patches/ngspice-absdelay-history.patch.
+
+Nad fixed vary raw din admod
+.model admod addelay(td=1u maxd=5u)
+
+Vin din 0 pwl(0 0 6u 6)
+Rf fixed 0 1e12
+Rv vary  0 1e12
+Rr raw   0 1e12
+
+.control
+pre_osdi addelay.osdi
+tran 20n 6u
+wrdata ad_proto_out.txt v(fixed) v(vary) v(raw)
+.endc
+
+.end

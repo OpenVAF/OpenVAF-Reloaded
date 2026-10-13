@@ -1,0 +1,52 @@
+error: 'nowhere' is not a discipline, and is the default discipline here
+   --> /default_discipline_err.va:19:12
+   |
+19 | module bad(a, b);
+   |            ^ 'a' takes its discipline from the directive
+   |
+   = info: '`default_discipline' (10.2) names the discipline a net declared without one gets
+   = help: declare 'discipline nowhere', or name one that is declared
+
+error: 'nowhere' is not a discipline, and is the default discipline here
+   --> /default_discipline_err.va:19:15
+   |
+19 | module bad(a, b);
+   |               ^ 'b' takes its discipline from the directive
+   |
+   = info: '`default_discipline' (10.2) names the discipline a net declared without one gets
+   = help: declare 'discipline nowhere', or name one that is declared
+
+error: no discipline for net 'a'
+   --> /default_discipline_err.va:27:13
+   |
+27 | module gone(a, b);
+   |             ^ 'a' is missing a discipline
+   |
+   = info: disciplineless nets are digital and therefore not supported in Verilog-A
+   = help: add a discipline with 'electrical a'
+
+error: no discipline for net 'b'
+   --> /default_discipline_err.va:27:16
+   |
+27 | module gone(a, b);
+   |                ^ 'b' is missing a discipline
+   |
+   = info: disciplineless nets are digital and therefore not supported in Verilog-A
+   = help: add a discipline with 'electrical b'
+
+error: invalid destination for branch contribution
+   --> /default_discipline_err.va:21:12
+   |
+21 |     analog V(a) <+ V(b);
+   |            ^^^^ invalid destination
+   |
+   = help: expected nature access such as V(foo) or I(foo)
+
+error: invalid destination for branch contribution
+   --> /default_discipline_err.va:29:12
+   |
+29 |     analog V(a) <+ V(b);
+   |            ^^^^ invalid destination
+   |
+   = help: expected nature access such as V(foo) or I(foo)
+

@@ -29,6 +29,7 @@ pub(crate) fn validate(
                 ast::Name(name) => validate_name(name,keywords,errors),
                 ast::ModuleDecl(module) => validate_module(module,errors),
                 ast::ParamDecl(param) => validate_param(param, errors),
+                ast::Call(call) => validate_call(call, errors),
                 _ => validate_net_type_token(node,errors)
             }
         }
@@ -319,33 +320,101 @@ fn validate_name(name: Name, keywords: &KeywordRegions, errors: &mut Vec<SyntaxE
     }
 }
 
+/// The range an argument occupies, or a zero-width range where a null argument
+/// (`analog_expression_or_null`) was omitted.
+fn arg_range(arg: &ast::Arg) -> TextRange {
+    arg.expr().map_or_else(|| arg.syntax().text_range(), |expr| expr.syntax().text_range())
+}
+
+/// VAMS-2023 A.6.5: a null argument is only allowed in the analog event
+/// functions, and only in the positions the LRM spells as
+/// `analog_expression_or_null`.
+fn validate_call(call: ast::Call, errors: &mut Vec<SyntaxError>) {
+    let arg_list = match call.arg_list() {
+        Some(arg_list) => arg_list,
+        None => return,
+    };
+
+    let args: Vec<_> = arg_list.args().collect();
+    if args.iter().all(|arg| arg.expr().is_some()) {
+        return;
+    }
+
+    let fun = call.function_ref().and_then(|fun| match fun {
+        ast::FunctionRef::Path(path) => path.as_raw_ident(),
+        // `$...` system functions never take a null argument
+        ast::FunctionRef::SysFun(_) => None,
+    });
+    let fun = fun.as_ref().map(|fun| fun.text());
+
+    // 5.10.3.1: cross     ( expr [ , dir    [ , time_tol [ , expr_tol [ , enable ] ] ] ] )
+    // 5.10.3.2: above     ( expr [ , time_tol [ , expr_tol [ , enable ] ] ] )
+    // 5.10.3.3: timer     ( start [ , period [ , time_tol [ , enable ] ] ] )
+    // 5.10.3.4: absdelta  ( expr , delta [ , time_tol [ , expr_tol [ , enable ] ] ] )
+    //
+    // The Laplace and Z-transform filters take their two coefficient/root vectors as
+    // `[ analog_filter_function_arg ]`, which A.6.4 spells out as optional and
+    // `constant_assignment_pattern_or_null`. 4.5.11 says so in prose as well: "The
+    // zeros argument may be represented as a null argument. The null argument is
+    // characterized by two adjacent commas".
+    let nullable: &[usize] = match fun {
+        Some(kw::raw::cross) => &[2, 3, 4],
+        Some(kw::raw::above) | Some(kw::raw::timer) => &[2, 3],
+        Some(kw::raw::absdelta) => &[3, 4],
+        Some(
+            kw::raw::laplace_zp
+            | kw::raw::laplace_zd
+            | kw::raw::laplace_np
+            | kw::raw::laplace_nd
+            | kw::raw::zi_zp
+            | kw::raw::zi_zd
+            | kw::raw::zi_np
+            | kw::raw::zi_nd,
+        ) => &[2, 3],
+        _ => &[],
+    };
+
+    for (i, arg) in args.iter().enumerate() {
+        let pos = i + 1;
+        if arg.expr().is_none() && !nullable.contains(&pos) {
+            errors.push(SyntaxError::IllegalNullArgument {
+                range: arg_range(arg),
+                arg_list: arg_list.syntax().text_range(),
+                fun: fun.map(ToOwned::to_owned),
+                pos,
+            })
+        }
+    }
+}
+
 fn validate_branch_decl(decl: ast::BranchDecl, errors: &mut Vec<SyntaxError>) {
     if let Some(arg_list) = decl.arg_list() {
-        match arg_list.args().count() {
+        let args: Vec<_> = arg_list.args().collect();
+        match args.len() {
             1 => {
-                let arg = arg_list.args().next().unwrap();
-                match arg {
-                    ast::Expr::PortFlow(_) => (),
-                    ast::Expr::PathExpr(path)
+                let arg = &args[0];
+                match arg.expr() {
+                    Some(ast::Expr::PortFlow(_)) => (),
+                    Some(ast::Expr::PathExpr(path))
                         if path.path().map_or(true, |path| path.qualifier().is_none()) => {}
                     _ => errors.push(SyntaxError::IllegalBranchNodeExpr {
                         single: true,
-                        illegal_nodes: vec![arg.syntax().text_range()],
+                        illegal_nodes: vec![arg_range(arg)],
                     }),
                 }
             }
             2 => {
-                let arg1 = arg_list.args().next().unwrap();
-                let arg2 = arg_list.args().nth(1).unwrap();
+                let arg1 = &args[0];
+                let arg2 = &args[1];
 
                 let mut illegal_nodes = Vec::new();
 
-                if arg1.as_path().is_none() {
-                    illegal_nodes.push(arg1.syntax().text_range())
+                if arg1.expr().and_then(|arg| arg.as_path()).is_none() {
+                    illegal_nodes.push(arg_range(arg1))
                 }
 
-                if arg2.as_path().is_none() {
-                    illegal_nodes.push(arg2.syntax().text_range())
+                if arg2.expr().and_then(|arg| arg.as_path()).is_none() {
+                    illegal_nodes.push(arg_range(arg2))
                 }
 
                 if !illegal_nodes.is_empty() {

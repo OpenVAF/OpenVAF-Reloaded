@@ -20,6 +20,7 @@ pub use basedb::lints::{builtin as builtin_lints, LintLevel};
 use basedb::BaseDB;
 use camino::Utf8PathBuf;
 use hir::CompilationDB;
+pub use hir_lower::AbsDelayMode;
 use linker::link;
 pub use llvm_sys::target_machine::LLVMCodeGenOptLevel;
 use mir_llvm::LLVMBackend;
@@ -61,6 +62,8 @@ pub struct Opts {
     pub dump_unopt_mir: bool,
     pub dump_ir: bool,
     pub dump_unopt_ir: bool,
+    /// How `absdelay` is realized (VAMS-2023 4.5.7). See [`AbsDelayMode`].
+    pub absdelay: AbsDelayMode,
 }
 // pub fn dump_json(opts: &Opts) -> Result<CompilationTermination> {
 //     let input =
@@ -213,6 +216,7 @@ pub fn compile(opts: &Opts) -> Result<CompilationTermination> {
         opts.dump_unopt_mir,
         opts.dump_ir,
         opts.dump_unopt_ir,
+        opts.absdelay,
     );
 
     // Dump natures, disciplines, and their attributes

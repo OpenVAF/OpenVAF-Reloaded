@@ -136,6 +136,87 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
         &*result
     }
 
+    /// The same power spectral density, for a table whose `(frequency, power)`
+    /// pairs are only known at run time, as `pairs` of already-loaded values.
+    ///
+    /// Everything the constant form folds at build time happens here instead:
+    /// each segment's slope is a division, and a linear table's frequencies are
+    /// logged where they are read (a `_log` table's already are). What cannot
+    /// happen here is sorting, so the pairs are taken in the order the array
+    /// declares them, which is why ascending frequency is a requirement on a
+    /// run-time table rather than something the compiler arranges. A repeated
+    /// frequency is harmless: the segment it spans is empty, so the infinity its
+    /// slope divides to is never the selected one.
+    unsafe fn build_noise_table_interp_dyn(
+        &self,
+        llbuilder: llvm_sys::prelude::LLVMBuilderRef,
+        freq: llvm_sys::prelude::LLVMValueRef,
+        log: bool,
+        pairs: &[(&'ll llvm_sys::LLVMValue, &'ll llvm_sys::LLVMValue)],
+    ) -> &'ll llvm_sys::LLVMValue {
+        let cx = self.cx;
+        let n = pairs.len();
+        if n == 0 {
+            return cx.const_real(0.0);
+        }
+        let (log_ty, log_fn) = self
+            .cx
+            .intrinsic("llvm.log10.f64")
+            .unwrap_or_else(|| unreachable!("intrinsic llvm.log10.f64 not found"));
+        let mut log10 = |arg: llvm_sys::prelude::LLVMValueRef| {
+            let mut args: [llvm_sys::prelude::LLVMValueRef; 1] = [arg];
+            LLVMBuildCall2(
+                llbuilder,
+                NonNull::from(log_ty).as_ptr(),
+                NonNull::from(log_fn).as_ptr(),
+                args.as_mut_ptr(),
+                1,
+                UNNAMED,
+            )
+        };
+
+        let y: Vec<_> = pairs.iter().map(|&(_, pwr)| NonNull::from(pwr).as_ptr()).collect();
+        // The table's frequencies in the space the lookup key is in.
+        let x: Vec<_> = pairs
+            .iter()
+            .map(|&(f, _)| {
+                let f = NonNull::from(f).as_ptr();
+                if log {
+                    f
+                } else {
+                    log10(f)
+                }
+            })
+            .collect();
+        if n == 1 {
+            return &*y[0];
+        }
+        let lx = log10(freq);
+
+        // Default (lx >= x[n-1]): clamp to the last point, then walk the segments
+        // from the top down, exactly as the constant form does.
+        let mut result = y[n - 1];
+        for i in (0..n - 1).rev() {
+            // seg = y[i] + (y[i+1] - y[i]) / (x[i+1] - x[i]) * (lx - x[i])
+            let dy = LLVMBuildFSub(llbuilder, y[i + 1], y[i], UNNAMED);
+            let dx = LLVMBuildFSub(llbuilder, x[i + 1], x[i], UNNAMED);
+            let slope = LLVMBuildFDiv(llbuilder, dy, dx, UNNAMED);
+            let off = LLVMBuildFSub(llbuilder, lx, x[i], UNNAMED);
+            let seg = LLVMBuildFMul(llbuilder, slope, off, UNNAMED);
+            let seg = LLVMBuildFAdd(llbuilder, y[i], seg, UNNAMED);
+            let cond =
+                LLVMBuildFCmp(llbuilder, LLVMRealPredicate::LLVMRealOLT, lx, x[i + 1], UNNAMED);
+            result = LLVMBuildSelect(llbuilder, cond, seg, result, UNNAMED);
+        }
+
+        // Clamp below x[0] to the first point (otherwise segment 0 would
+        // extrapolate below the table).
+        let cond0 = LLVMBuildFCmp(llbuilder, LLVMRealPredicate::LLVMRealOLT, lx, x[0], UNNAMED);
+        result = LLVMBuildSelect(llbuilder, cond0, y[0], result, UNNAMED);
+
+        &*result
+    }
+
     pub fn load_noise(&self) -> &'ll llvm_sys::LLVMValue {
         let OsdiCompilationUnit { cx, module, .. } = self;
         let void_ptr = cx.ty_ptr();
@@ -218,6 +299,20 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                         let freq_ptr = freq as *const llvm_sys::LLVMValue as *mut _;
                         self.build_noise_table_interp(llbuilder, freq_ptr, vals)
                     }
+                    NoiseSourceKind::NoiseTableDyn { log, .. } => {
+                        let pairs: Vec<_> = eval_outputs
+                            .table
+                            .iter()
+                            .map(|&(f, pwr)| {
+                                (
+                                    self.load_eval_output(f, &*inst, &*model, &*llbuilder),
+                                    self.load_eval_output(pwr, &*inst, &*model, &*llbuilder),
+                                )
+                            })
+                            .collect();
+                        let freq_ptr = freq as *const llvm_sys::LLVMValue as *mut _;
+                        self.build_noise_table_interp_dyn(llbuilder, freq_ptr, log, &pairs)
+                    }
                 };
 
                 // Multiply with squared factor because factor is in terms of signal, but
@@ -297,7 +392,9 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                     // A frequency-dependent table has no single scalar power; the
                     // per-frequency `load_noise` entry point is the real evaluator
                     // (this ABI slot is unused by ngspice's OSDI noise path).
-                    NoiseSourceKind::NoiseTable { .. } => cx.const_real(0.0),
+                    NoiseSourceKind::NoiseTable { .. } | NoiseSourceKind::NoiseTableDyn { .. } => {
+                        cx.const_real(0.0)
+                    }
                 };
 
                 // Multiply with squared factor because factor is in terms of signal, but
@@ -324,7 +421,9 @@ impl<'ll> OsdiCompilationUnit<'_, '_, 'll> {
                     NoiseSourceKind::FlickerNoise { .. } => {
                         self.load_eval_output(eval_outputs.args[1], &*inst, &*model, &*llbuilder)
                     }
-                    NoiseSourceKind::NoiseTable { .. } => cx.const_real(0.0),
+                    NoiseSourceKind::NoiseTable { .. } | NoiseSourceKind::NoiseTableDyn { .. } => {
+                        cx.const_real(0.0)
+                    }
                 };
 
                 // Store power

@@ -1,0 +1,13 @@
+* A jittered clock logging its own periods. Nothing is read back from the
+* waveform: the model writes periods.txt, evals.txt, both_a.txt and both_b.txt,
+* and the analyzer checks those.
+Nj clk jclk
+.model jclk filelog(period=1u jitter=20n tr=1n)
+Rc clk 0 1e12
+
+.control
+pre_osdi filelog.osdi
+tran 20n 100u
+.endc
+
+.end

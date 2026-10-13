@@ -136,6 +136,21 @@ impl Noise {
                     name,
                 )
             }
+            // A table read at run time: its pairs are the call's arguments, and
+            // each has to be readable at the end of the evaluation, the way a
+            // white-noise power is.
+            CallBackKind::NoiseTable(ref table) if table.dyn_pairs != 0 => {
+                let args: Vec<Value> = func.dfg.instr_args(inst).to_vec();
+                let pairs = args
+                    .chunks_exact(2)
+                    .map(|pair| {
+                        let freq = ssa_builder.define_at_exit(func, F_ZERO, pair[0], inst);
+                        let pwr = ssa_builder.define_at_exit(func, F_ZERO, pair[1], inst);
+                        (freq, pwr)
+                    })
+                    .collect();
+                (NoiseSourceKind::NoiseTableDyn { log: table.log, pairs }, table.name)
+            }
             CallBackKind::NoiseTable(ref table) => (
                 NoiseSourceKind::NoiseTable { log: table.log, vals: table.vals.clone() },
                 table.name,

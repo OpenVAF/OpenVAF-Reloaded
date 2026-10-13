@@ -1,0 +1,31 @@
+// VAMS-2023 9.21's data source and 4.5.12's coefficients as numbers a model card
+// sets: read at run time instead of built into the model. Time is in seconds here
+// so the mock simulator can step the filter's sample grid directly.
+//
+//   lin    a measured curve, linearly interpolated and extrapolated
+//   hold   the same samples with constant extrapolation, so the ends hold
+//   disc   the same samples by closest point, which never extrapolates
+//   iir    a single pole whose coefficients are an array parameter
+//   fixed  the same pole written as literals, to measure the other against
+`include "disciplines.vams"
+
+module card_data(lin, hold, disc, iir, fixed, x);
+    inout lin, hold, disc, iir, fixed;
+    electrical lin, hold, disc, iir, fixed;
+    input x;
+    electrical x;
+
+    // The ordinates a part was measured at, and what was measured there.
+    parameter real vs[0:4] = '{0.0, 1.0, 2.0, 3.0, 4.0};
+    parameter real ys[0:4] = '{0.0, 1.0, 4.0, 9.0, 16.0};
+    parameter real num[0:0] = '{1.0};
+    parameter real den[0:1] = '{1.0, -0.5};
+
+    analog begin
+        V(lin) <+ $table_model(V(x), vs, ys, "1LL");
+        V(hold) <+ $table_model(V(x), vs, ys, "1CC");
+        V(disc) <+ $table_model(V(x), vs, ys, "D");
+        V(iir) <+ zi_nd(V(x), num, den, 1.0);
+        V(fixed) <+ zi_nd(V(x), {1.0}, {1.0, -0.5}, 1.0);
+    end
+endmodule

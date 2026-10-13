@@ -1,0 +1,57 @@
+`include "disciplines.vams"
+
+// VAMS-2023 9.5.4, read the way the clause reads: a vector source that streams.
+//
+// One pass through the file, a record at a time, no arrays and no rewinding. The
+// model holds the value it last took and takes the next record once `$abstime`
+// has reached its stamp, which is the shape every table-driven source wants and
+// the one a file of a million records needs. `sim_regression/vecsrc` does the same
+// job the other way, loading the whole file into arrays inside `@(initial_step)`,
+// because a read used to advance the file once per Newton iteration rather than
+// once per timepoint: a stream like this one consumed the file two to three times
+// too fast and could not be written at all.
+//
+// `ntaken` carries how many records have been taken, so the waveform says how
+// much of the file was consumed. With a simulator that confirms its timepoints
+// that is exactly the number of records; without one it is more, because the
+// points the solver went back on consumed records too.
+module vecstream(out, ntaken);
+    output out, ntaken;
+    electrical out, ntaken;
+
+    parameter string fname = "vectors.txt";
+    parameter real tr = 1n from (0:inf);
+    // Past any time the run reaches, where the source parks once the records run
+    // out.
+    parameter real never = 1.0;
+
+    integer fd, nread, taken;
+    real t_next, v_next, v_held;
+
+    analog begin
+        @(initial_step) begin
+            fd = $fopen(fname, "r");
+            taken = 0;
+            v_held = 0.0;
+            // The record in hand, which says when the first value applies.
+            nread = $fscanf(fd, "%e %e", t_next, v_next);
+            if (nread != 2) t_next = never;
+        end
+
+        // Time has reached the record in hand: take it, and ask for the next.
+        // A point that is not due takes nothing, and every evaluation of one
+        // point takes the same records.
+        while ($abstime >= t_next && t_next < never) begin
+            v_held = v_next;
+            taken = taken + 1;
+            nread = $fscanf(fd, "%e %e", t_next, v_next);
+            if (nread != 2) t_next = never;
+        end
+
+        // Land a timepoint on the next record rather than stepping over it.
+        if (t_next < never) $bound_step(t_next - $abstime);
+
+        V(out) <+ transition(v_held, 0, tr, tr);
+        V(ntaken) <+ taken;
+    end
+endmodule

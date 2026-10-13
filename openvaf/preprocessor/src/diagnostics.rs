@@ -23,6 +23,12 @@ pub enum PreprocessorDiagnostic {
     UnmatchedEndKeywords { span: CtxSpan },
     UnterminatedKeywords { span: CtxSpan },
     KeywordsInDesignElement { name: &'static str, span: CtxSpan },
+    // `default_transition (VAMS-2023 10.3) / `default_discipline (10.2)
+    MissingTransitionTime { span: CtxSpan },
+    NegativeTransitionTime { span: CtxSpan },
+    TransitionInDesignElement { span: CtxSpan },
+    UnknownDisciplineQualifier { qualifier: String, span: CtxSpan },
+    UnreachableDisciplineQualifier { qualifier: String, span: CtxSpan },
 }
 
 use PreprocessorDiagnostic::*;
@@ -43,5 +49,10 @@ impl_display! {
         UnmatchedEndKeywords { .. } => "'`end_keywords' without a matching '`begin_keywords'";
         UnterminatedKeywords { .. } => "'`begin_keywords' without a matching '`end_keywords'";
         KeywordsInDesignElement { name, .. } => "'`{}' is not allowed inside a design element", name;
+        MissingTransitionTime { .. } => "'`default_transition' requires a transition time";
+        NegativeTransitionTime { .. } => "a transition time cannot be negative";
+        TransitionInDesignElement { .. } => "'`default_transition' is not allowed inside a module";
+        UnknownDisciplineQualifier { qualifier, .. } => "'{}' is not a net type", qualifier;
+        UnreachableDisciplineQualifier { qualifier, .. } => "a default discipline for '{}' nets can never apply", qualifier;
     }
 }

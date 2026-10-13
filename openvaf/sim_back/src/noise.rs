@@ -6,9 +6,27 @@ use crate::dae::SimUnknown;
 
 #[derive(Debug, Clone)]
 pub enum NoiseSourceKind {
-    WhiteNoise { pwr: Value },
-    FlickerNoise { pwr: Value, exp: Value },
-    NoiseTable { log: bool, vals: Box<[(Ieee64, Ieee64)]> },
+    WhiteNoise {
+        pwr: Value,
+    },
+    FlickerNoise {
+        pwr: Value,
+        exp: Value,
+    },
+    NoiseTable {
+        log: bool,
+        vals: Box<[(Ieee64, Ieee64)]>,
+    },
+    /// The same table, with its `(frequency, power)` pairs read at run time
+    /// instead of built into the model: a spectrum a model card can set.
+    ///
+    /// `log` means what it does for [`NoiseSourceKind::NoiseTable`], except that
+    /// nothing has been pre-computed: a linear table's frequencies are logged
+    /// where they are read. The pairs keep the order the array declares them in.
+    NoiseTableDyn {
+        log: bool,
+        pairs: Box<[(Value, Value)]>,
+    },
 }
 
 #[derive(Debug)]
@@ -30,6 +48,12 @@ impl NoiseSource {
                 *exp = f(*exp);
             }
             NoiseSourceKind::NoiseTable { .. } => (),
+            NoiseSourceKind::NoiseTableDyn { pairs, .. } => {
+                for (freq, pwr) in pairs.iter_mut() {
+                    *freq = f(*freq);
+                    *pwr = f(*pwr);
+                }
+            }
         }
     }
 }
