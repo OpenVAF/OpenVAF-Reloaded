@@ -896,6 +896,31 @@ fn test_rng_stream() -> Result<()> {
         ),
     ];
 
+    // One kind's stream of (draw, seed after it), for the comparisons below.
+    let stream = |kind: f64, seed0: f64, draws: usize| -> Result<Vec<(f64, f64)>> {
+        let desc = test_descriptor(&openvaf_test_data("osdi").join("rng_stream.va"))?;
+        let model = desc.new_model();
+        model.set_real_param(1, seed0);
+        model.set_real_param(2, kind);
+        model.process_params()?;
+        let mut instance = model.new_instance();
+        let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+        let mut out = Vec::with_capacity(draws);
+        for step in 0..draws {
+            if step != 0 {
+                sim.next_iter();
+                sim.advance_time(1e-6);
+            }
+            sim.set_voltage("in", 0.0);
+            sim.set_voltage("val", 0.0);
+            sim.set_voltage("seed_out", 0.0);
+            instance.eval(&model, &mut sim, EvalFlags::empty());
+            instance.load_dae(&model, &mut sim);
+            out.push((sim.read_residual("flow(val)").0, sim.read_residual("flow(seed_out)").0));
+        }
+        Ok(out)
+    };
+
     for &(kind, seed0, expected) in cases {
         let desc = test_descriptor(&openvaf_test_data("osdi").join("rng_stream.va"))?;
         let model = desc.new_model();
@@ -930,6 +955,40 @@ fn test_rng_stream() -> Result<()> {
                 "kind {kind} draw {step}: seed {got_seed}, want {want_seed}"
             );
         }
+    }
+
+    // The `$rdist_*` forms declare their arguments real, so an integer literal is
+    // coerced by type inference and lowering must not cast it again. Nothing above
+    // reaches that path: every case there is a `$dist_*` form, taking integers. The
+    // two spellings are the same function and have to compile to the same program,
+    // which is a stronger claim than any reference stream.
+    for (with_ints, with_reals, name) in
+        [(8.0, 9.0, "$rdist_normal"), (10.0, 11.0, "$rdist_uniform")]
+    {
+        assert_eq!(
+            stream(with_ints, 12345.0, 4)?,
+            stream(with_reals, 12345.0, 4)?,
+            "{name}: integer literal arguments must give the same stream as real ones"
+        );
+    }
+
+    // And tie the unrounded form to the reference data above: kind 8 is kind 2's
+    // draw before `$dist_normal` rounds it, so the mean and deviation have to have
+    // survived the conversion, not just the compile.
+    let &(_, seed0, want) = cases.iter().find(|&&(kind, ..)| kind == 2.0).unwrap();
+    for (step, (&(want_val, want_seed), &(got_val, got_seed))) in
+        want.iter().zip(stream(8.0, seed0, want.len())?.iter()).enumerate()
+    {
+        // Half away from zero, which is what the integer forms do.
+        let rounded = if got_val < 0.0 { got_val - 0.5 } else { got_val + 0.5 }.trunc();
+        assert!(
+            (rounded - want_val).abs() < 1e-6,
+            "$rdist_normal draw {step}: {got_val} rounds to {rounded}, want {want_val}"
+        );
+        assert!(
+            (got_seed - want_seed).abs() < 1e-6,
+            "$rdist_normal draw {step}: seed {got_seed}, want {want_seed}"
+        );
     }
 
     Ok(())

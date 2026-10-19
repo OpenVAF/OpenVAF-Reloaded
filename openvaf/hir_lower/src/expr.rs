@@ -1976,7 +1976,13 @@ impl BodyLoweringCtx<'_, '_, '_> {
     fn lower_rng_args(&mut self, dist: RngDist, args: &[ExprId], round: bool) -> Value {
         let real = |this: &mut Self, i: usize| match args.get(i) {
             Some(&arg) if !this.body.is_missing(arg) => {
-                let ty = this.body.expr_type(arg);
+                // The type the value has AFTER any coercion inference recorded,
+                // because `lower_expr` applies that cast itself. These arguments are
+                // declared real, so an integer literal arrives here already a float,
+                // and casting it again off its pre-cast type emits `ifcast` on a
+                // float: IR that const folding is right to call unreachable. The
+                // `$dist_*` forms take integers, which is why nothing showed it.
+                let ty = this.resolved_ty(arg);
                 let val = this.lower_expr(arg);
                 match ty {
                     Type::Real => val,
@@ -2043,7 +2049,8 @@ impl BodyLoweringCtx<'_, '_, '_> {
                 // an arbitrary starting point when the seed was left out entirely.
                 let initial = match args.first() {
                     Some(&arg) if !self.body.is_missing(arg) => {
-                        let ty = self.body.expr_type(arg);
+                        // After any recorded coercion, as above.
+                        let ty = self.resolved_ty(arg);
                         let val = self.lower_expr(arg);
                         match ty {
                             Type::Real => val,
