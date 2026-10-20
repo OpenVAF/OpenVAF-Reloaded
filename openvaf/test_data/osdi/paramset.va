@@ -1,0 +1,47 @@
+// VAMS-2023 6.4: a paramset collects parameter values for a module, the way a
+// SPICE model card does, and declares parameters of its own. What a netlist may
+// set is the paramset's parameters; the module's are the paramset's business.
+//
+// One module and two paramsets over it, so the file carries three descriptors.
+// Each output carries one reading, so a test can tell what each descriptor made of
+// the same module: the dependent default, the array, and `$param_given`.
+`include "disciplines.vams"
+
+module probe(gsum, flag, arr, p, n);
+    output gsum, flag, arr;
+    inout p, n;
+    electrical gsum, flag, arr, p, n;
+
+    parameter real g = 1.0 from (0:inf);
+    parameter real gmin = 1e-12 from [0:1];
+    parameter integer fingers = 1 from [1:16];
+    parameter real c[0:2] = '{1.0, 2.0, 3.0};
+    // A default that reads parameters declared before it (6.3.4), so a paramset
+    // has to substitute them in that order.
+    parameter real gtot = fingers * g + gmin;
+
+    analog begin
+        V(gsum) <+ gtot;
+        V(flag) <+ $param_given(gmin);
+        V(arr) <+ c[0] + 10.0 * c[1] + 100.0 * c[2];
+        I(p, n) <+ gtot * V(p, n);
+    end
+endmodule
+
+// What a netlist of this process sets: a width and a finger count. The sheet
+// conductance and the fitted array are the process's.
+paramset wide probe;
+    parameter real w = 1.0 from (0:10];
+    parameter integer nf = 1 from [1:4];
+    localparam real gsheet = 2.5;
+    .g = gsheet * w;
+    .fingers = nf;
+    .c = '{0.5, 1.5, 2.5};
+endparamset
+
+// A second paramset over the same module, which sets one other parameter and
+// leaves the rest at the module's declared defaults.
+paramset leaky probe;
+    parameter real leak = 1e-9 from [0:1];
+    .gmin = leak;
+endparamset

@@ -1,0 +1,50 @@
+// VAMS-2023 3.4.4: a parameter array, and what one is for -- the numbers that
+// belong to a particular device rather than to the model of it.
+//
+// Two devices, both of which a netlist re-shapes without this file changing:
+//
+//   polyres   a resistor whose I(V) curve is a fitted polynomial. The fit is an
+//             array parameter, read element by element, so one compiled model
+//             serves every device that was ever fitted.
+//   polefilt  a one-pole filter whose coefficients are handed to `laplace_nd` as
+//             an array parameter, which is what 4.5.1 allows an array argument
+//             to be.
+`include "disciplines.vams"
+
+module polyres(p, n);
+    inout p, n;
+    electrical p, n;
+
+    // Amps per volt^k for k = 0..3: a leakage, a conductance and two curvature
+    // terms. The default is an ordinary 1 mS resistor.
+    parameter real c[0:3] = '{0.0, 1.0e-3, 0.0, 0.0};
+
+    real v, pw, i;
+    integer k;
+
+    analog begin
+        v = V(p, n);
+        i = 0.0;
+        pw = 1.0;
+        for (k = 0; k <= 3; k = k + 1) begin
+            i = i + c[k] * pw;
+            pw = pw * v;
+        end
+        I(p, n) <+ i;
+    end
+endmodule
+
+module polefilt(in, out);
+    input in;
+    output out;
+    electrical in, out;
+
+    // 1 / (1 + s*tau): the pole is the second denominator coefficient, so the
+    // model card places it.
+    parameter real num[0:0] = '{1.0};
+    parameter real den[0:1] = '{1.0, 1.0e-6};
+
+    analog begin
+        V(out) <+ laplace_nd(V(in), num, den);
+    end
+endmodule

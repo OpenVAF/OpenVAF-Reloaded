@@ -109,6 +109,20 @@ impl Body {
                     ModuleBodyKind::Analog => {
                         ast.analog_behaviour().map(|stmt| ctx.collect_stmt(stmt)).collect()
                     }
+                    // VAMS-2023 6.4: one entry statement per `.name = expr;`, in
+                    // source order, so that the item tree's list of targets lines
+                    // up with them by index.
+                    ModuleBodyKind::Paramset => ast
+                        .module_items()
+                        .filter_map(|item| match item {
+                            ast::ModuleItem::ParamsetAssign(assign) => Some(assign),
+                            _ => None,
+                        })
+                        .map(|assign| {
+                            let val = ctx.collect_opt_expr(assign.val());
+                            ctx.alloc_stmt_desugared(Stmt::Expr(val))
+                        })
+                        .collect(),
                     // Procedural runner lane: all `initial` blocks (source order) then
                     // all `final` blocks, as one imperative sequence.
                     ModuleBodyKind::Procedural => ast
@@ -170,11 +184,14 @@ impl Body {
                 let expr = if let Some(expr) = ast.default() {
                     ctx.collect_expr(expr)
                 } else {
-                    let default_val = match db.var_data(var).ty {
+                    // An array has no scalar default -- its elements are managed one
+                    // by one during lowering -- so the placeholder is one of its
+                    // base type, which is also the type it is checked against. A
+                    // `string` array used to get a real placeholder and crash the
+                    // compiler trying to report the mismatch.
+                    let default_val = match db.var_data(var).ty.base_type() {
                         Type::Integer => Literal::Int(0),
-                        // Arrays have no scalar default (their elements are managed
-                        // per-element during lowering); use 0.0 as a placeholder.
-                        Type::Real | Type::Array { .. } => Literal::Float(Ieee64::with_float(0.0)),
+                        Type::Real => Literal::Float(Ieee64::with_float(0.0)),
                         Type::String => Literal::String(Box::from("")),
                         _ => unreachable!("invalid var type"),
                     };

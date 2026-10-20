@@ -1,0 +1,25 @@
+* The global events, VAMS-2023 5.10.2, and an OR'd event expression, 5.10.1
+* in    : a ramp from 0 V to 5 V over 10 us, so it crosses the 2.5 V threshold at
+*         5 us -- a time no sampling clock edge is anywhere near
+* smpl  : triangles that cross 2.5 V upwards at exactly 2 us and 8 us
+* out   : the sampled bit. V(in) is 1 V at the first edge and 4 V at the second,
+*         so out is 0 until 8 us and 1 after it. An edge at 5 us instead means
+*         the body ran unconditionally and tracked the input.
+* ptran : set from @(initial_step("tran")), which this analysis is
+* pac   : set from @(initial_step("ac")) or @(final_step("ac")), which it is not
+* pstatic: counts @(initial_step("static")), reported rather than asserted -- see
+*         the comment in the model
+
+Vin   in   0 PWL(0 0 10u 5)
+Vsmpl smpl 0 PWL(0 0 1.5u 0 2.5u 5 3.5u 0 7.5u 0 8.5u 5 10u 5)
+
+Nge   in smpl out ptran pac pstatic gemod
+.model gemod global_events()
+
+.control
+pre_osdi global_events.osdi
+tran 10n 10u
+wrdata ge_out.txt v(in) v(out) v(smpl) v(ptran) v(pac) v(pstatic)
+.endc
+
+.end

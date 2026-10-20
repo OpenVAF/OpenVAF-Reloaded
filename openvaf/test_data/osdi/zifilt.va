@@ -1,0 +1,25 @@
+// VAMS-2023 4.5.12, the four forms of the Z-transform filter over one sample
+// grid. Time is in seconds here so the mock simulator can step the grid directly.
+//
+//   hold   unity, which 4.5.12 says "acts like a simple sample-and-hold which
+//          samples every T seconds and exhibits no delay".
+//   delay  z^-1, one sample behind.
+//   iir    a single pole at 0.5 written as coefficients.
+//   zp     the same pole written as a root, with a null zeros argument.
+//   fir    a three-tap numerator, so the history runs deeper than the output.
+`include "disciplines.vams"
+
+module zifilt(hold, delay, iir, zp, fir, din);
+    inout hold, delay, iir, zp, fir;
+    electrical hold, delay, iir, zp, fir;
+    input din;
+    electrical din;
+
+    analog begin
+        V(hold)  <+ zi_nd(V(din), {1.0}, {1.0}, 1.0);
+        V(delay) <+ zi_nd(V(din), {0.0, 1.0}, {1.0}, 1.0);
+        V(iir)   <+ zi_nd(V(din), {1.0}, {1.0, -0.5}, 1.0);
+        V(zp)    <+ zi_zp(V(din), , {0.5, 0.0}, 1.0);
+        V(fir)   <+ zi_nd(V(din), {0.25, 0.5, 0.25}, {1.0}, 1.0);
+    end
+endmodule

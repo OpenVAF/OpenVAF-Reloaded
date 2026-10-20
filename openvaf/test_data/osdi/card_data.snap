@@ -1,0 +1,44 @@
+param "$mfactor"
+units = "", desc = "Multiplier (Verilog-A $mfactor)", flags = ParameterFlags(PARA_KIND_INST)
+param "vs"
+elements = 5
+units = "", desc = "", flags = ParameterFlags(0x0)
+param "ys"
+elements = 5
+units = "", desc = "", flags = ParameterFlags(0x0)
+param "num"
+elements = 1
+units = "", desc = "", flags = ParameterFlags(0x0)
+param "den"
+elements = 2
+units = "", desc = "", flags = ParameterFlags(0x0)
+
+6 terminals
+node "lin" units = "V", runits = "A"
+node "hold" units = "V", runits = "A"
+node "disc" units = "V", runits = "A"
+node "iir" units = "V", runits = "A"
+node "fixed" units = "V", runits = "A"
+node "x" units = "V", runits = "A"
+node(flow) "flow(lin)" units = "A", runits = "V"
+node(flow) "flow(hold)" units = "A", runits = "V"
+node(flow) "flow(disc)" units = "A", runits = "V"
+node(flow) "flow(iir)" units = "A", runits = "V"
+node(flow) "flow(fixed)" units = "A", runits = "V"
+jacobian (lin, flow(lin)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (hold, flow(hold)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (disc, flow(disc)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (iir, flow(iir)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (fixed, flow(fixed)) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(lin), lin) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(lin), x) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(hold), hold) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(hold), x) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(disc), disc) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(iir), iir) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(iir), x) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(fixed), fixed) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_RESIST_CONST | JACOBIAN_ENTRY_REACT_CONST)
+jacobian (flow(fixed), x) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+0 states
+has bound_step true
+asks for timepoints

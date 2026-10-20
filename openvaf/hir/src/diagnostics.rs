@@ -71,6 +71,18 @@ pub(crate) fn collect(db: &CompilationDB, root_file: FileId, sink: &mut impl Dia
                 &sm,
                 root_file,
                 &ast_id_map,
+            );
+            // A paramset's statements (VAMS-2023 6.4.1) are validated as constant
+            // expressions, which is what that clause asks for: no access
+            // functions, no contributions, no events.
+            collect_body_diagnostcs(
+                db,
+                sink,
+                DefWithBodyId::ModuleId { kind: ModuleBodyKind::Paramset, module },
+                &parse,
+                &sm,
+                root_file,
+                &ast_id_map,
             )
         }
 

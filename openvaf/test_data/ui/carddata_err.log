@@ -1,0 +1,30 @@
+error: invalid $table_model: data column 1 is not an array of constants, and a spline's weights are the solution of a system over every ordinate in the table, which cannot be built where the ordinates are not known. Interpolate linearly ('1') or by closest point ('D'), or write the samples as array literals
+   --> /carddata_err.va:33:21
+   |
+33 |         acc = acc + $table_model(V(a, b), xs, ys, "3L");
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $table_model
+
+error: invalid $table_model: data column 1 is not an array of constants, and only a table of one dimension can be read at run time: which rows of a table of 2 dimensions share an ordinate is the data itself, so the shape of the table is not known here. Write the samples as array literals, or put them in a data file
+   --> /carddata_err.va:36:21
+   |
+36 |         acc = acc + $table_model(V(a, b), V(b), xs, xs, ys, "1L,1L");
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $table_model
+
+error: invalid $table_model: the table has 3 ordinate(s) and 2 value(s); a sample is one of each
+   --> /carddata_err.va:38:21
+   |
+38 |         acc = acc + $table_model(V(a, b), xs, short, "1L");
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $table_model
+
+error: invalid $table_model: data column 2 has to be an array of constants, or an array parameter a model card sets. 9.21.1 captures the data source on the first call and ignores later changes, which an array the module fills in at run time would need: a column read from a parameter is read at every evaluation and never changes, which is the same thing. Write the samples as an array literal, or put them in a data file
+   --> /carddata_err.va:41:21
+   |
+41 |         acc = acc + $table_model(V(a, b), xs, var_col, "1L");
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $table_model
+
+error: invalid $zi_zp: the poles vector has to be an array of constants. 4.5.12 requires the conjugate of every complex root to be present, and that is a property of the numbers themselves: a root whose conjugate is missing leaves an imaginary coefficient behind, which cannot be caught where the numbers are not known. Write the roots as an array literal, or give the same filter as coefficients of z^-k, which a model card may set
+   --> /carddata_err.va:44:21
+   |
+44 |         acc = acc + zi_zp(V(a, b), , roots, 1u);
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $zi_zp
+

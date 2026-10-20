@@ -1,0 +1,45 @@
+// VAMS-2023 9.4.1/9.5.2: `$fmonitor` writes the argument list for an accepted
+// timepoint only when one of the arguments is not what it was at the last accepted
+// one. `$fstrobe` writes one line per accepted point whatever it says, so the two
+// side by side in one model say what the difference is worth.
+//
+// What the state machine here is for: a testbench logging a mode, a lock detector
+// or a state changes a handful of times over a run of many timepoints, and a line
+// per timepoint buries the changes in the repetitions. The input voltage is the
+// test's dial, and it moves it from one evaluation of a timepoint to the next, so
+// the lines say which evaluation they came from and whether a change an abandoned
+// iteration reported is taken back.
+//
+// The third statement is the clause's exception: "with the exception of the
+// $abstime or $realtime system functions". `$abstime` is a different number at
+// every timepoint, so comparing it would make a monitor into a strobe; it is
+// printed and not compared, and this one writes exactly one line in a whole run.
+`include "disciplines.vams"
+
+module fmonitor(a, b);
+    inout electrical a, b;
+
+    integer fd;
+    integer state;
+
+    analog begin
+        @(initial_step) fd = $fopen("openvaf_fmonitor_test.txt", "w");
+
+        if (V(a) > 15.0)
+            state = 2;
+        else if (V(a) > 5.0)
+            state = 1;
+        else
+            state = 0;
+
+        $fmonitor(fd, "monitor %g %d", $abstime, state);
+        $fstrobe(fd, "strobe %g %d", $abstime, state);
+        $fmonitor(fd, "clock %g", $abstime);
+        // So that the test can read the file while the simulation is still going.
+        // A line the runtime is holding is not affected by this: it is not in a
+        // buffer, it is not written yet.
+        $fflush(fd);
+
+        V(b) <+ V(a);
+    end
+endmodule

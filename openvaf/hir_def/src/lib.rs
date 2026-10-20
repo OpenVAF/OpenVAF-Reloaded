@@ -2,6 +2,7 @@ pub mod body;
 mod builtin;
 mod data;
 pub mod db;
+pub mod directives;
 pub mod expr;
 pub mod item_tree;
 pub mod nameres;
@@ -412,6 +413,10 @@ impl_intern!(NatureAttrId, NatureAttrLoc, intern_nature_attr, lookup_intern_natu
 /// Which behavioural body of a module is being lowered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModuleBodyKind {
+    /// The right-hand sides of a paramset's statements (VAMS-2023 6.4), one entry
+    /// statement per statement in source order. A paramset has no behaviour, so
+    /// this is the only body it has.
+    Paramset,
     /// `analog` block (the DAE device behaviour).
     Analog,
     /// `analog initial` block.

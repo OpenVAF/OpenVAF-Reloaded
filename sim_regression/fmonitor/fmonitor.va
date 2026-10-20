@@ -1,0 +1,59 @@
+`include "disciplines.vams"
+
+// VAMS-2023 9.4.1/9.5.2: the four display tasks over one state machine, which is
+// where the differences between them are worth their keep.
+//
+// A level detector with hysteresis: the state is the model's own memory, so what
+// it reports cannot be read off the voltage of a single timepoint, and it changes a
+// handful of times over a run of hundreds of them. That is the shape of what a
+// system-level testbench logs -- a mode, a lock, a fault flag -- and the reason
+// 9.4.1 has a task that writes when something changes:
+//
+//   $fdisplay   one line per evaluation of the block, Newton iterations included
+//   $fstrobe    one line per accepted timepoint
+//   $fmonitor   one line per accepted timepoint at which something changed
+//
+// The fourth statement is the clause's own exception: "with the exception of the
+// $abstime or $realtime system functions". `$abstime` carries a different number
+// at every timepoint, so comparing it would make a monitor into a strobe; it is
+// printed and not compared, and that statement writes one line in a whole run.
+//
+// The state is contributed to a node as well, so that the file can be checked
+// against the waveform rather than against itself: everything the monitor wrote
+// has to follow from the voltage ngspice recorded.
+module levelmon(in, st);
+    input in;
+    output st;
+    electrical in, st;
+
+    parameter real vlo = 0.4 from (0:inf);
+    parameter real vhi = 0.6 from (0:inf);
+
+    integer state;
+    integer fd;
+
+    analog begin
+        @(initial_step) begin
+            state = 0;
+            fd = $fopen("fm_log.txt", "w");
+        end
+
+        // Schmitt-trigger thresholds: the state is read before it is written, so it
+        // is retained from one accepted timepoint to the next (4.5.10).
+        if (state == 0 && V(in) > vhi)
+            state = 1;
+        else if (state == 1 && V(in) < vlo)
+            state = 0;
+
+        $fmonitor(fd, "monitor %.12e %d", $abstime, state);
+        $fstrobe(fd, "strobe %.12e %d", $abstime, state);
+        $fdisplay(fd, "display %.12e %d", $abstime, state);
+        $fmonitor(fd, "clock %.12e", $abstime);
+        // So that a run the harness cuts short still leaves a readable file. A line
+        // the runtime is holding for an unaccepted point is not affected: it is not
+        // in a buffer, it is not written yet.
+        $fflush(fd);
+
+        V(st) <+ state;
+    end
+endmodule

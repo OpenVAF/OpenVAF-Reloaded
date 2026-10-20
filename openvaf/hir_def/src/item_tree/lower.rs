@@ -12,7 +12,7 @@ use typed_index_collections::TiVec;
 use super::{
     Block, Branch, BranchKind, Discipline, DisciplineAttr, DisciplineAttrKind, Domain, Event,
     Function, FunctionArg, FunctionItem, ItemTree, ItemTreeId, Module, ModuleItem, Nature,
-    NatureAttr, NatureRef, NatureRefKind, Net, Node, Param, Port, RootItem, Var,
+    NatureAttr, NatureRef, NatureRefKind, Net, Node, Param, ParamsetStmt, Port, RootItem, Var,
 };
 // use tracing::trace;
 use crate::db::HirDefDB;
@@ -264,7 +264,21 @@ impl Ctx {
         let num_ports = nodes.len() as u32;
         self.lower_module_items(decl.module_items(), &mut nodes, &mut items);
 
-        let res = Module { name, nodes, items, ast_id, num_ports };
+        // A paramset names the module it collects values for where a module names
+        // its ports (VAMS-2023 6.4).
+        let paramset = decl.target().map(|target| target.as_name());
+        let paramset_stmts = decl
+            .module_items()
+            .filter_map(|item| match item {
+                ast::ModuleItem::ParamsetAssign(assign) => Some(ParamsetStmt {
+                    param: assign.param()?.as_name(),
+                    ast_id: self.source_ast_id_map.ast_id(&assign),
+                }),
+                _ => None,
+            })
+            .collect();
+
+        let res = Module { name, nodes, items, ast_id, num_ports, paramset, paramset_stmts };
         Some(self.tree.data.modules.push_and_get_key(res))
     }
 
@@ -309,6 +323,9 @@ impl Ctx {
                 // entity. The genvar `for` loop is unrolled during body lowering, so
                 // there is nothing to lower here.
                 ast::ModuleItem::GenvarDecl(_) => {}
+                // A paramset statement declares nothing; its expression is lowered
+                // with the paramset's body and its target is resolved by `hir_ty`.
+                ast::ModuleItem::ParamsetAssign(_) => {}
                 ast::ModuleItem::EventDecl(decl) => self.lower_event_decl(decl, dst),
             };
         }
@@ -708,30 +725,18 @@ impl Ctx {
         let module = decl.syntax().ancestors().find_map(ast::ModuleDecl::cast);
         for var in decl.vars() {
             if let Some(name) = var.name() {
-                // `real den[msb:lsb];` -> a fixed-size array. The bounds are
-                // compile-time integer constants (literals, arithmetic, or parameter
-                // references resolved against the enclosing module).
-                let (ty, array_lo) = match (var.dimension(), module.as_ref()) {
-                    (Some(dim), Some(module)) => {
-                        let bounds = dim
-                            .msb()
-                            .and_then(|m| eval_const_int(&m, module))
-                            .zip(dim.lsb().and_then(|l| eval_const_int(&l, module)));
-                        let len = bounds
-                            .map(|(msb, lsb)| (msb - lsb).unsigned_abs() as u32 + 1)
-                            .unwrap_or(0);
-                        // The declared range may run either way (`[2:5]` or `[5:2]`);
-                        // element positions are offset by the lower bound.
-                        let lo = bounds.map(|(msb, lsb)| msb.min(lsb) as i32).unwrap_or(0);
-                        (Type::Array { ty: Box::new(base_ty.clone()), len }, lo)
-                    }
-                    _ => (base_ty.clone(), 0),
-                };
+                // `real den[msb:lsb];` -> a fixed-size array, and one dimension per
+                // range: VAMS-2023 3.2's own example is `integer
+                // flag_array[0:8][0:3];`. The bounds are compile-time integer
+                // constants (literals, arithmetic, or parameter references resolved
+                // against the enclosing module).
+                let (lens, lows) = array_dims(var.dimensions(), module.as_ref());
+                let ty = base_ty.clone().to_dim(&lens);
                 let var = Var {
                     name: name.as_name(),
                     ast_id: self.source_ast_id_map.ast_id(&var),
                     ty,
-                    array_lo,
+                    array_lows: lows.into_boxed_slice(),
                 };
                 let id = self.tree.data.variables.push_and_get_key(var);
                 dst.push(id.into())
@@ -741,13 +746,29 @@ impl Ctx {
 
     fn lower_param<T: From<ItemTreeId<Param>>>(&mut self, decl: ast::ParamDecl, dst: &mut Vec<T>) {
         let ty = decl.ty().map(|ty| ty.as_type());
+        let module = decl.syntax().ancestors().find_map(ast::ModuleDecl::cast);
         for param in decl.paras() {
             if let Some(name) = param.name() {
                 let ast_id = self.source_ast_id_map.ast_id(&param);
+                // `parameter real c[0:2] = '{...};` (VAMS-2023 3.4.4): the range
+                // belongs to this parameter, not to the declaration, so each
+                // parameter of a list is sized on its own.
+                let (lens, lows) = array_dims(param.dimensions(), module.as_ref());
+                let is_array = !lens.is_empty();
                 let param = Param {
                     name: name.as_name(),
                     is_local: decl.localparam_token().is_some(),
-                    ty: ty.clone(),
+                    ty: if is_array {
+                        // A parameter array without a type is an error (3.4.1),
+                        // reported by type validation; the element type is taken as
+                        // real here so that the rest of the declaration still makes
+                        // sense.
+                        Some(ty.clone().unwrap_or(Type::Real).to_dim(&lens))
+                    } else {
+                        ty.clone()
+                    },
+                    array_lows: lows.into_boxed_slice(),
+                    array_without_ty: is_array && ty.is_none(),
                     ast_id,
                 };
                 let id = self.tree.data.parameters.push_and_get_key(param);
@@ -778,6 +799,33 @@ impl Ctx {
             dst.push(param.into())
         }
     }
+}
+
+/// The element count and lowest declared index of each dimension of a declaration,
+/// outermost first.
+///
+/// VAMS-2023 3.2 allows more than one range (`integer flag_array[0:8][0:3];` is its
+/// own example) and 3.4.4 allows a parameter array's range to be sized by a
+/// parameter declared before it, so each bound is a constant expression resolved
+/// against the enclosing module.
+fn array_dims(
+    dims: impl Iterator<Item = ast::Dimension>,
+    module: Option<&ast::ModuleDecl>,
+) -> (Vec<u32>, Vec<i32>) {
+    let mut lens = Vec::new();
+    let mut lows = Vec::new();
+    for dim in dims {
+        let bounds = module.and_then(|module| {
+            dim.msb()
+                .and_then(|m| eval_const_int(&m, module))
+                .zip(dim.lsb().and_then(|l| eval_const_int(&l, module)))
+        });
+        lens.push(bounds.map_or(0, |(msb, lsb)| (msb - lsb).unsigned_abs() as u32 + 1));
+        // The declared range may run either way (`[2:5]` or `[5:2]`); element
+        // positions are offset by the lower bound.
+        lows.push(bounds.map_or(0, |(msb, lsb)| msb.min(lsb) as i32));
+    }
+    (lens, lows)
 }
 
 /// Best-effort compile-time evaluation of an integer constant expression, resolving

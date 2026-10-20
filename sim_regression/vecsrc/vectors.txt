@@ -1,0 +1,4 @@
+1e-6    0.5     rise
+2e-6    1.5     hold
+3e-6    -0.25   fall
+4e-6    2.0     last

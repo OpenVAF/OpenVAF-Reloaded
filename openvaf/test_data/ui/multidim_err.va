@@ -1,0 +1,30 @@
+// VAMS-2023 3.2: what a multi-dimensional array rejects. As many accepted forms
+// as rejected ones, so the test fails if one of them starts being reported.
+`include "disciplines.vams"
+
+module multidim_err(a, b);
+    inout electrical a, b;
+    real m[0:1][0:2];
+    real row[0:2];
+    real ok;
+    integer i;
+
+    analog begin
+        // Accepted: every dimension indexed and inside its own declared range,
+        // computed or not, and a row read as the array it is.
+        m[1][2] = 1.0;
+        m[i][0] = 2.0;
+        row = m[1];
+        ok = m[0][1] + row[0];
+
+        // Each dimension has its own declared range, and it is the one that has to
+        // hold the index: 3 is inside the array but outside the second dimension.
+        m[0][3] = 1.0;
+        m[2][0] = 1.0;
+
+        // A row is not a place: it has no element to assign to.
+        m[0] = row;
+
+        V(b) <+ ok * V(a);
+    end
+endmodule

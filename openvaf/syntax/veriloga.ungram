@@ -91,8 +91,13 @@ Case =
 
 
 
+// VAMS-2023 5.10.1: `or` (and `,`) OR event expressions together, so an event
+// control holds a list of them: `@(initial_step or cross(V(smpl) - 2.5, +1))`.
 EventStmt =
-  AttrList* '@' '(' ('initial_step' | 'final_step') ('(' sim_phases: ('str_lit' (',' 'str_lit')*) ')')? event:Expr? ')' Stmt
+  AttrList* '@' '(' events: (EventExpr (('or' | ',') EventExpr)*) ')' Stmt
+
+EventExpr =
+  ('initial_step' | 'final_step')? ('(' sim_phases: ('str_lit' (',' 'str_lit')*) ')')? event:Expr?
 
 EventTriggerStmt =
   AttrList* '->' Expr ';'
@@ -163,8 +168,14 @@ BinExpr =
 ParenExpr =
   '(' Expr ')'
 
+// An argument is wrapped in its own node so that a *null* argument
+// (`analog_expression_or_null`, A.6.5) keeps its position in the list:
+// `cross(V(d), dir, , , en)` has five arguments, the third and fourth empty.
 ArgList =
-  '(' args: (Expr (',' Expr)*)? ')'
+  '(' args: (Arg (',' Arg)*)? ')'
+
+Arg =
+  Expr
 
 Call =
   FunctionRef ArgList?
@@ -201,10 +212,15 @@ NatureDecl =
 NatureAttr =
   Name '=' val: Expr ';'
 
+// A paramset (VAMS-2023 6.4) is a module-shaped declaration: a name, the module
+// it collects values for, and a list of items. It shares this node so that
+// everything downstream -- the item tree, name resolution, bodies -- resolves a
+// paramset's parameters exactly as it resolves a module's. `paramset_token` and
+// `target` are what tell the two apart.
 ModuleDecl =
-  AttrList* 'module' Name ModulePorts? ';'
+  AttrList* ('module' | 'paramset') Name (ModulePorts | target:NameRef)? ';'
    ModuleItem*
-  'endmodule'
+  ('endmodule' | 'endparamset')
 
 ModuleItem =
   BodyPortDecl
@@ -216,6 +232,7 @@ ModuleItem =
 | VarDecl
 | ParamDecl
 | AliasParam
+| ParamsetAssign
 | GenvarDecl
 | EventDecl
 
@@ -242,7 +259,7 @@ VarDecl =
   AttrList* Type (Var (',' Var)*) ';'
 
 Var =
-  Name Dimension? ('=' default:Expr)?
+  Name Dimension* ('=' default:Expr)?
 
 Dimension =
   '[' Expr ':' Expr ']'
@@ -255,10 +272,14 @@ ParamDecl =
 AliasParam =
   AttrList* 'aliasparam' name: Name '=' src: ParamRef ';'
 
+// VAMS-2023 6.4: `.module_parameter_identifier = paramset_constant_expression ;`
+ParamsetAssign =
+  AttrList* '.' param: NameRef '=' val: Expr ';'
+
 ParamRef =
   Path | SysFun
 
-Param = Name '=' default:Expr Constraint*
+Param = Name Dimension* '=' default:Expr Constraint*
 
 Constraint =
     ('from' | 'exclude') (Expr | Range)

@@ -88,6 +88,10 @@ pub(crate) const KINDS_SRC: KindsSrc = KindsSrc {
         "integer",
         "module",
         "nature",
+        // VAMS-2023 6.4: a paramset collects parameter values for a module, the
+        // way a SPICE model card does.
+        "paramset",
+        "endparamset",
         "output",
         "parameter",
         "localparam",
@@ -102,6 +106,9 @@ pub(crate) const KINDS_SRC: KindsSrc = KindsSrc {
         "final",
         "aliasparam",
         "event",
+        // VAMS-2023 5.10.1: the event OR operator. Reserved since Verilog-1995
+        // (Annex B), so making it a keyword costs no legal identifier.
+        "or",
     ],
     literals: &["INT_NUMBER", "STD_REAL_NUMBER", "SI_REAL_NUMBER", "STR_LIT"],
     tokens: &["ERROR", "IDENT", "SYSFUN", "NET_TYPE", "WHITESPACE", "COMMENT"],
@@ -132,6 +139,7 @@ pub(crate) const KINDS_SRC: KindsSrc = KindsSrc {
         "DISCIPLINE_DECL",
         "DISCIPLINE_ATTR",
         "EVENT_STMT",
+        "EVENT_EXPR",
         "EVENT_TRIGGER_STMT",
         "FOR_STMT",
         "FUNCTION",
@@ -155,6 +163,7 @@ pub(crate) const KINDS_SRC: KindsSrc = KindsSrc {
         "PARAM",
         "ALIAS_PARAM",
         "PARAM_DECL",
+        "PARAMSET_ASSIGN",
         "PAREN_EXPR",
         "PATH",
         "PATH_EXPR",

@@ -3,6 +3,7 @@ mod tree_builder;
 use ::preprocessor::{Preprocess, SourceProvider};
 use vfs::FileId;
 
+pub use tree_builder::DirectiveMap;
 pub(crate) use tree_builder::{Built, KeywordRegions};
 
 use crate::parsing::tree_builder::SyntaxTreeBuilder;
@@ -10,7 +11,7 @@ use crate::parsing::tree_builder::SyntaxTreeBuilder;
 pub(crate) fn parse_text(
     sources: &dyn SourceProvider,
     root_file: FileId,
-    Preprocess { ts, sm, .. }: &Preprocess,
+    Preprocess { ts, sm, directives, .. }: &Preprocess,
 ) -> Built {
     // tokens without whitespaces/comments
     let parser_tokens: Vec<_> = ts
@@ -22,7 +23,7 @@ pub(crate) fn parse_text(
             Some(token.kind)
         })
         .collect();
-    let mut builder = SyntaxTreeBuilder::new(sources, root_file, ts, sm);
+    let mut builder = SyntaxTreeBuilder::new(sources, root_file, ts, sm, directives.clone());
     for step in parser::parse(&parser_tokens).iter() {
         match step {
             parser::Step::Token { kind } => builder.token(kind),

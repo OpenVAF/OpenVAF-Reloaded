@@ -29,7 +29,10 @@ pub use hir_def::{BuiltIn, Case, Literal, ParamSysFun, Path, Type};
 pub use hir_ty::builtin;
 use hir_ty::db::HirTyDB as HirDatabase;
 use hir_ty::inference;
+pub use hir_ty::scan;
+pub use hir_ty::table_model;
 pub use hir_ty::types::Signature;
+pub use hir_ty::zi_filter;
 pub use rec_declarations::RecDeclarations;
 use salsa::InternKey;
 use smol_str::SmolStr;
@@ -159,8 +162,34 @@ impl Module {
         db.module_data(self.id).ports.iter().map(|&id| Node { id }).collect()
     }
 
+    /// The rise and fall time a transition filter in this module gets when it
+    /// specifies neither, from `` `default_transition `` (VAMS-2023 10.3).
+    pub fn default_transition(self, db: &CompilationDB) -> Option<f64> {
+        db.module_data(self.id).default_transition.map(|time| time.0)
+    }
+
     pub fn rec_declarations(self, db: &CompilationDB) -> RecDeclarations<'_> {
         RecDeclarations::new(Scope::Module(self), db)
+    }
+
+    /// The module this declaration collects parameter values for, by name, when it
+    /// is a paramset (VAMS-2023 6.4) rather than a module. `None` for a module.
+    pub fn paramset_target(self, db: &CompilationDB) -> Option<String> {
+        let loc = self.lookup(db);
+        loc.item_tree(db)[loc.id].paramset.as_ref().map(ToString::to_string)
+    }
+
+    /// The parameter of the target module that each of a paramset's statements
+    /// sets, in the order of the entry statements of [`Self::paramset_block`].
+    pub fn paramset_stmts(self, db: &CompilationDB) -> Vec<String> {
+        let loc = self.lookup(db);
+        loc.item_tree(db)[loc.id].paramset_stmts.iter().map(|stmt| stmt.param.to_string()).collect()
+    }
+
+    /// The right-hand sides of a paramset's statements, one entry statement each.
+    /// A paramset has no behaviour, so this is the only body it has.
+    pub fn paramset_block(&self, db: &CompilationDB) -> Body {
+        Body::new(DefWithBodyId::ModuleId { kind: ModuleBodyKind::Paramset, module: self.id }, db)
     }
 
     pub fn analog_initial_block(&self, db: &CompilationDB) -> Body {
@@ -465,9 +494,10 @@ impl Variable {
         db.var_data(self.id).ty.clone()
     }
 
-    /// Lowest declared index of an array variable (`real g[2:5]` -> 2).
-    pub fn array_lo(self, db: &CompilationDB) -> i32 {
-        db.var_data(self.id).array_lo
+    /// Lowest declared index of each dimension of an array variable, outermost
+    /// first (`real g[2:5][0:1]` -> `[2, 0]`). Empty for a scalar.
+    pub fn array_lows(self, db: &CompilationDB) -> Box<[i32]> {
+        db.var_data(self.id).array_lows.clone()
     }
 
     pub fn init(self, db: &CompilationDB) -> Body {
@@ -508,6 +538,12 @@ impl Parameter {
 
     pub fn ty(self, db: &CompilationDB) -> Type {
         db.param_ty(self.id)
+    }
+
+    /// Lowest declared index of each dimension of an array parameter, outermost
+    /// first (`real c[2:5][0:1]` -> `[2, 0]`). Empty for a scalar.
+    pub fn array_lows(self, db: &CompilationDB) -> Box<[i32]> {
+        db.param_data(self.id).array_lows.clone()
     }
 
     pub fn get_attr(&self, db: &CompilationDB, ast: &AstCache, name: &str) -> Option<ast::Attr> {

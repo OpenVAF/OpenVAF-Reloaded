@@ -1,0 +1,25 @@
+`include "disciplines.vams"
+
+// VAMS-2023 5.10.3.2: `above` is `cross` plus an event during initialization and
+// dc. If V(smpl) is already past the threshold when the initial state is solved,
+// `above` samples there, where `cross` would wait for a crossing that never comes.
+// It takes no `dir` argument and triggers only from below.
+//
+// A voltage contribution puts its equation on the branch flow unknown, where it
+// reads `state - V(out)`, so holding `V(out)` at zero makes that residual the
+// sampled value itself.
+module above_detect(in, out, smpl);
+    input in, smpl;
+    output out;
+    electrical in, out, smpl;
+
+    parameter real thresh = 2.5;
+
+    real state;
+
+    analog begin
+        @(above(V(smpl) - thresh))
+            state = V(in);
+        V(out) <+ state;
+    end
+endmodule

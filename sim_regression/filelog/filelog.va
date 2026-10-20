@@ -1,0 +1,70 @@
+`include "disciplines.vams"
+
+// VAMS-2023 9.5: the measurement comes out of the model, not out of the
+// waveform.
+//
+// A clock with jitter on every half-period, logging each period as it completes.
+// The point is that the numbers the harness checks are the ones the *model*
+// wrote: no `wrdata`, no edge extraction, no interpolation. That is what file
+// output is for, and a jitter sequence is the thing a system-level testbench most
+// often wants out.
+//
+// Three channels, to pin the three things 9.5 says:
+//
+//   periods.txt   one line per timepoint          `$fstrobe` to a file descriptor
+//   evals.txt     one line per evaluation         `$fdisplay` to the same
+//   both_a.txt
+//   both_b.txt    one line, written to two files  `$fstrobe` to an mcd pair
+module filelog(clk);
+    output clk;
+    electrical clk;
+
+    parameter real period = 1u from (0:inf);
+    parameter real jitter = 20n from [0:inf);
+    parameter real tr = 1n from (0:inf);
+    parameter real vh = 1.0;
+
+    integer seed, state, n;
+    integer fd, ev, mcd_a, mcd_b;
+    real next_edge, last_edge, p;
+
+    analog begin
+        @(initial_step) begin
+            state = 0;
+            next_edge = 0.0;
+            last_edge = 0.0;
+            n = 0;
+            p = 0.0;
+            // 9.5.1's two forms: a file descriptor, and a channel of a
+            // multichannel descriptor.
+            fd = $fopen("periods.txt", "w");
+            ev = $fopen("evals.txt", "w");
+            mcd_a = $fopen("both_a.txt");
+            mcd_b = $fopen("both_b.txt");
+        end
+
+        @(timer(next_edge)) begin
+            state = !state;
+            // A whole period has gone by on every second edge.
+            if (state) begin
+                p = $abstime - last_edge;
+                last_edge = $abstime;
+                n = n + 1;
+            end
+            next_edge = $abstime + period / 2.0 + $rdist_normal(seed, 0.0, jitter);
+        end
+
+        // Once for the timepoint: which period, when the solver was, when the edge
+        // that closed the period was, and how long it was. The edge time is there so
+        // that the periods can be checked against each other rather than against
+        // anything outside the file.
+        $fstrobe(fd, "%d %.12e %.12e %.12e", n, $abstime, last_edge, p);
+        // The same line to two files, which is what an mcd is for.
+        $fstrobe(mcd_a | mcd_b, "%d %.12e", n, p);
+        // Once for every time the statement is reached, which is once per Newton
+        // iteration -- the difference between the two is the point of having both.
+        $fdisplay(ev, "%d %e", n, $abstime);
+
+        V(clk) <+ transition(state ? vh : 0.0, 0.0, tr);
+    end
+endmodule
