@@ -232,6 +232,9 @@ impl EventStmt {
     pub fn r_paren_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, T![')'])
     }
+    pub fn event(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
     pub fn stmt(&self) -> Option<Stmt> {
         support::child(&self.syntax)
     }
@@ -242,9 +245,15 @@ pub struct EventTriggerStmt {
 }
 impl ast::AttrsOwner for EventTriggerStmt {}
 impl EventTriggerStmt {
-    pub fn trigger_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![->]) }
-    pub fn expr(&self) -> Option<Expr> { support::child(&self.syntax) }
-    pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
+    pub fn trigger_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![->])
+    }
+    pub fn expr(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+    pub fn semicolon_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![;])
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BlockStmt {
@@ -271,8 +280,12 @@ pub struct BreakStmt {
 }
 impl ast::AttrsOwner for BreakStmt {}
 impl BreakStmt {
-    pub fn break_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![break]) }
-    pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
+    pub fn break_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![break])
+    }
+    pub fn semicolon_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![;])
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ContinueStmt {
@@ -283,7 +296,9 @@ impl ContinueStmt {
     pub fn continue_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, T![continue])
     }
-    pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
+    pub fn semicolon_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![;])
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ReturnStmt {
@@ -291,9 +306,15 @@ pub struct ReturnStmt {
 }
 impl ast::AttrsOwner for ReturnStmt {}
 impl ReturnStmt {
-    pub fn return_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![return]) }
-    pub fn value(&self) -> Option<Expr> { support::child(&self.syntax) }
-    pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
+    pub fn return_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![return])
+    }
+    pub fn value(&self) -> Option<Expr> {
+        support::child(&self.syntax)
+    }
+    pub fn semicolon_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![;])
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Assign {
@@ -873,9 +894,15 @@ pub struct EventDecl {
 }
 impl ast::AttrsOwner for EventDecl {}
 impl EventDecl {
-    pub fn event_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![event]) }
-    pub fn names(&self) -> AstChildren<Name> { support::children(&self.syntax) }
-    pub fn semicolon_token(&self) -> Option<SyntaxToken> { support::token(&self.syntax, T![;]) }
+    pub fn event_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![event])
+    }
+    pub fn names(&self) -> AstChildren<Name> {
+        support::children(&self.syntax)
+    }
+    pub fn semicolon_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, T![;])
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModulePort {
@@ -1411,7 +1438,9 @@ impl AstNode for EventStmt {
     }
 }
 impl AstNode for EventTriggerStmt {
-    fn can_cast(kind: SyntaxKind) -> bool { kind == EVENT_TRIGGER_STMT }
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == EVENT_TRIGGER_STMT
+    }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
         if Self::can_cast(syntax.kind()) {
             Some(Self { syntax })
@@ -1419,7 +1448,9 @@ impl AstNode for EventTriggerStmt {
             None
         }
     }
-    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
 }
 impl AstNode for BlockStmt {
     fn can_cast(kind: SyntaxKind) -> bool {
@@ -1437,7 +1468,9 @@ impl AstNode for BlockStmt {
     }
 }
 impl AstNode for BreakStmt {
-    fn can_cast(kind: SyntaxKind) -> bool { kind == BREAK_STMT }
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == BREAK_STMT
+    }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
         if Self::can_cast(syntax.kind()) {
             Some(Self { syntax })
@@ -1445,10 +1478,14 @@ impl AstNode for BreakStmt {
             None
         }
     }
-    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
 }
 impl AstNode for ContinueStmt {
-    fn can_cast(kind: SyntaxKind) -> bool { kind == CONTINUE_STMT }
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == CONTINUE_STMT
+    }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
         if Self::can_cast(syntax.kind()) {
             Some(Self { syntax })
@@ -1456,10 +1493,14 @@ impl AstNode for ContinueStmt {
             None
         }
     }
-    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
 }
 impl AstNode for ReturnStmt {
-    fn can_cast(kind: SyntaxKind) -> bool { kind == RETURN_STMT }
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == RETURN_STMT
+    }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
         if Self::can_cast(syntax.kind()) {
             Some(Self { syntax })
@@ -1467,7 +1508,9 @@ impl AstNode for ReturnStmt {
             None
         }
     }
-    fn syntax(&self) -> &SyntaxNode { &self.syntax }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
 }
 impl AstNode for Assign {
     fn can_cast(kind: SyntaxKind) -> bool {
@@ -2009,6 +2052,21 @@ impl AstNode for GenvarDecl {
         &self.syntax
     }
 }
+impl AstNode for EventDecl {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == EVENT_DECL
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
 impl AstNode for ModulePort {
     fn can_cast(kind: SyntaxKind) -> bool {
         kind == MODULE_PORT
@@ -2362,7 +2420,9 @@ impl From<EventStmt> for Stmt {
     }
 }
 impl From<EventTriggerStmt> for Stmt {
-    fn from(node: EventTriggerStmt) -> Stmt { Stmt::EventTriggerStmt(node) }
+    fn from(node: EventTriggerStmt) -> Stmt {
+        Stmt::EventTriggerStmt(node)
+    }
 }
 impl From<BlockStmt> for Stmt {
     fn from(node: BlockStmt) -> Stmt {
@@ -2370,13 +2430,19 @@ impl From<BlockStmt> for Stmt {
     }
 }
 impl From<BreakStmt> for Stmt {
-    fn from(node: BreakStmt) -> Stmt { Stmt::BreakStmt(node) }
+    fn from(node: BreakStmt) -> Stmt {
+        Stmt::BreakStmt(node)
+    }
 }
 impl From<ContinueStmt> for Stmt {
-    fn from(node: ContinueStmt) -> Stmt { Stmt::ContinueStmt(node) }
+    fn from(node: ContinueStmt) -> Stmt {
+        Stmt::ContinueStmt(node)
+    }
 }
 impl From<ReturnStmt> for Stmt {
-    fn from(node: ReturnStmt) -> Stmt { Stmt::ReturnStmt(node) }
+    fn from(node: ReturnStmt) -> Stmt {
+        Stmt::ReturnStmt(node)
+    }
 }
 impl AstNode for Stmt {
     fn can_cast(kind: SyntaxKind) -> bool {
@@ -2589,15 +2655,16 @@ impl From<GenvarDecl> for ModuleItem {
     }
 }
 impl From<EventDecl> for ModuleItem {
-    fn from(node: EventDecl) -> ModuleItem { ModuleItem::EventDecl(node) }
+    fn from(node: EventDecl) -> ModuleItem {
+        ModuleItem::EventDecl(node)
+    }
 }
 impl AstNode for ModuleItem {
     fn can_cast(kind: SyntaxKind) -> bool {
         match kind {
             BODY_PORT_DECL | NET_DECL | ANALOG_BEHAVIOUR | PROCEDURAL_BLOCK | FUNCTION
-            | BRANCH_DECL | VAR_DECL | PARAM_DECL | ALIAS_PARAM | INSTANTIATION | GENVAR_DECL => {
-                true
-            }
+            | BRANCH_DECL | VAR_DECL | PARAM_DECL | ALIAS_PARAM | INSTANTIATION | GENVAR_DECL
+            | EVENT_DECL => true,
             _ => false,
         }
     }

@@ -222,54 +222,68 @@ impl<'a> Builder<'a> {
         derivative_info: &KnownDerivatives,
         derivatives: HashMap<(Value, Unknown), Value, BuildHasherDefault<FxHasher>>,
     ) {
-        for residual in &mut self.system.residual {
-            for (state, (unchanged, lim_vals)) in self.intern.lim_state.iter_enumerated() {
-                // Retained `@(cross)` slots reuse the state array but carry no limit
-                // function; they take no part in limit-rhs construction.
-                if self.intern.retained_lim_states.contains(&state) {
+        // The delta only depends on the limit value, not the residual, so build it
+        // once instead of once per residual.
+        let mut lim_deltas = Vec::new();
+        for (state, (unchanged, lim_vals)) in self.intern.lim_state.iter_enumerated() {
+            // Retained `@(cross)` slots reuse the state array but carry no limit
+            // function; they take no part in limit-rhs construction.
+            if self.intern.retained_lim_states.contains(&state) {
+                continue;
+            }
+            for &(val, neg) in lim_vals {
+                let unknown = if let Some(unknown) = derivative_info.unknowns.index(&val) {
+                    unknown
+                } else {
                     continue;
-                }
-                for &(val, neg) in lim_vals {
-                    let unknown = if let Some(unknown) = derivative_info.unknowns.index(&val) {
-                        unknown
-                    } else {
-                        continue;
-                    };
-                    let changed = HirInterner::ensure_param_(
-                        &mut self.intern.params,
-                        &mut self.cursor,
-                        ParamKind::NewState(state),
-                    );
+                };
+                let changed = HirInterner::ensure_param_(
+                    &mut self.intern.params,
+                    &mut self.cursor,
+                    ParamKind::NewState(state),
+                );
 
-                    let delta = if neg {
-                        self.cursor.ins().fadd(changed, *unchanged)
-                    } else {
-                        self.cursor.ins().fsub(changed, *unchanged)
-                    };
-                    let mut add_lim_rhs = |dst, residual, residual_small_signal| {
-                        let mut ddx =
-                            derivatives.get(&(residual, unknown)).copied().unwrap_or(F_ZERO);
-                        let ddx_small_signal = derivatives
-                            .get(&(residual_small_signal, unknown))
-                            .copied()
-                            .unwrap_or(F_ZERO);
-                        add(&mut self.cursor, &mut ddx, ddx_small_signal, false);
-                        if ddx != F_ZERO && delta != F_ZERO {
-                            let rhs = self.cursor.ins().fmul(ddx, delta);
-                            add(&mut self.cursor, dst, rhs, false);
-                        }
-                    };
-                    add_lim_rhs(
-                        &mut residual.resist_lim_rhs,
-                        residual.resist,
-                        residual.resist_small_signal,
-                    );
-                    add_lim_rhs(
-                        &mut residual.react_lim_rhs,
-                        residual.react,
-                        residual.react_small_signal,
-                    );
-                }
+                let delta = if neg {
+                    self.cursor.ins().fadd(changed, *unchanged)
+                } else {
+                    self.cursor.ins().fsub(changed, *unchanged)
+                };
+                lim_deltas.push((unknown, delta));
+            }
+        }
+
+        if std::env::var_os("OPENVAF_BENCH_STATS").is_some() {
+            eprintln!(
+                "lim_rhs: deltas={} residuals={}",
+                lim_deltas.len(),
+                self.system.residual.len()
+            );
+        }
+
+        for residual in &mut self.system.residual {
+            for &(unknown, delta) in &lim_deltas {
+                let mut add_lim_rhs = |dst, residual, residual_small_signal| {
+                    let mut ddx = derivatives.get(&(residual, unknown)).copied().unwrap_or(F_ZERO);
+                    let ddx_small_signal = derivatives
+                        .get(&(residual_small_signal, unknown))
+                        .copied()
+                        .unwrap_or(F_ZERO);
+                    add(&mut self.cursor, &mut ddx, ddx_small_signal, false);
+                    if ddx != F_ZERO && delta != F_ZERO {
+                        let rhs = self.cursor.ins().fmul(ddx, delta);
+                        add(&mut self.cursor, dst, rhs, false);
+                    }
+                };
+                add_lim_rhs(
+                    &mut residual.resist_lim_rhs,
+                    residual.resist,
+                    residual.resist_small_signal,
+                );
+                add_lim_rhs(
+                    &mut residual.react_lim_rhs,
+                    residual.react,
+                    residual.react_small_signal,
+                );
             }
         }
     }
