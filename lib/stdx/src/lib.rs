@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{env, fs};
 
 mod ieee64;
@@ -11,6 +12,31 @@ pub use crate::ieee64::Ieee64;
 
 pub const IS_CI: bool = option_env!("CI").is_some();
 pub const SKIP_HOST_TESTS: bool = option_env!("CI").is_some() && cfg!(windows);
+
+static UNIQUE_SUFFIX_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Process-unique file name fragment (pid plus a monotonic counter).
+/// Batch mode derives output names from a content hash, so concurrent
+/// compiles share an output directory and intermediates must not collide.
+pub fn unique_suffix() -> String {
+    let n = UNIQUE_SUFFIX_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{n}", std::process::id())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unique_suffix_is_unique_and_contains_pid() {
+        let pid = format!("{}-", std::process::id());
+        let a = unique_suffix();
+        let b = unique_suffix();
+        assert!(a.starts_with(&pid));
+        assert!(b.starts_with(&pid));
+        assert_ne!(a, b);
+    }
+}
 
 pub fn project_root() -> PathBuf {
     let dir = env!("CARGO_MANIFEST_DIR");

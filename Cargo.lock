@@ -742,6 +742,7 @@ dependencies = [
  "anyhow",
  "camino",
  "cc",
+ "stdx",
  "target",
 ]
 
