@@ -52,6 +52,8 @@ pub fn main() {
             write!(&mut stderr, ":").unwrap();
             stderr.set_color(&ColorSpec::new()).unwrap();
             writeln!(&mut stderr, " failed to compile {input}").unwrap();
+
+            exit(1);
         }
     }
 }
