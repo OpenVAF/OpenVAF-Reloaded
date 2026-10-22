@@ -1,5 +1,7 @@
 use basedb::diagnostics::{Diagnostic, Label, LabelStyle, Report};
-use basedb::lints::builtin::{const_simparam, trivial_probe, variant_const_simparam};
+use basedb::lints::builtin::{
+    const_simparam, trivial_probe, unscheduled_event, variant_const_simparam,
+};
 use basedb::lints::{self, Lint, LintSrc};
 use basedb::{AstIdMap, BaseDB, FileId};
 pub use body::BodyValidationDiagnostic;
@@ -130,6 +132,10 @@ impl Diagnostic for BodyValidationDiagnosticWrapped<'_> {
                 let src = self.body_sm.lint_src(stmt, trivial_probe);
                 Some((trivial_probe, src))
             }
+            BodyValidationDiagnostic::UnscheduledEvent { stmt, .. } => {
+                let src = self.body_sm.lint_src(stmt, unscheduled_event);
+                Some((unscheduled_event, src))
+            }
             _ => None,
         }
     }
@@ -244,6 +250,26 @@ impl Diagnostic for BodyValidationDiagnosticWrapped<'_> {
                         "help: in an analog block an event may only be triggered from an event \
                          statement such as '@(timer(1n)) -> ev;'"
                             .to_owned(),
+                    ])
+            }
+            BodyValidationDiagnostic::UnscheduledEvent { stmt, func } => {
+                let FileSpan { range, file } = self.parse.to_file_span(
+                    self.body_sm.stmt_map_back[stmt].as_ref().unwrap().range(),
+                    self.sm,
+                );
+
+                Report::warning()
+                    .with_message(format!("'{func:?}' does not schedule an event yet"))
+                    .with_labels(vec![Label {
+                        style: LabelStyle::Primary,
+                        file_id: file,
+                        range: range.into(),
+                        message: "body is evaluated unconditionally".to_owned(),
+                    }])
+                    .with_notes(vec![
+                        "the event expression is checked but takes no part in scheduling"
+                            .to_owned(),
+                        "the guarded statement runs on every evaluation, not per event".to_owned(),
                     ])
             }
             BodyValidationDiagnostic::WriteToInputArg { expr, arg } => {
