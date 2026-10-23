@@ -1,0 +1,31 @@
+// VAMS-2023 5.10.1: `or` -- and a comma, which means the same thing -- ORs event
+// expressions together, so the body runs when any of them occurs. Named events
+// are the only kind that carries a runtime condition today, so `@(a or b)` lowers
+// to a single guard that is true when either was triggered.
+module event_or;
+    parameter real thresh = 0.5;
+
+    event sampled;
+    event armed;
+    event reset;
+
+    integer hits;
+    integer resets;
+
+    analog begin
+        hits = 0;
+        resets = 0;
+
+        @(timer(1n)) begin
+            if (thresh > 0.25)
+                -> sampled;
+        end
+        @(timer(2n)) -> armed;
+
+        // either event runs the body
+        @(sampled or armed) hits = hits + 1;
+
+        // a comma is the same operator, and three events chain
+        @(sampled, armed, reset) resets = resets + 1;
+    end
+endmodule

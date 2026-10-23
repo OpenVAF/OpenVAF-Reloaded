@@ -505,6 +505,44 @@ fn test_adc() -> Result<()> {
     Ok(())
 }
 
+/// VAMS-2023 4.5.11: a null zeros argument (`laplace_nd(V(in), , den)`) means the
+/// empty product of zeros, so the numerator is unity and the filter is `1/D(s)`.
+/// The null has no expression behind it, so this also guards that it never reaches
+/// the expression lowering, which panics on a missing expression. See
+/// `laplace_null_zeros.va`.
+fn test_laplace_null_zeros() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+
+    const TAU: f64 = 1e-6;
+
+    let desc = test_descriptor(&openvaf_test_data("osdi").join("laplace_null_zeros.va"))?;
+    let model = desc.new_model();
+    model.process_params()?;
+    let mut instance = model.new_instance();
+    let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+
+    // One pole, so one state. `1 + s*tau` over a unity numerator lowers to
+    // `dx/dt = (input - x)/tau` with the output taken straight from the state:
+    // resist = -(input - x)/tau, react = x.
+    sim.set_voltage("in", 1.0);
+    sim.set_voltage("out", 0.0);
+    sim.set_voltage("implicit_equation_0", 0.25);
+    instance.eval(&model, &mut sim, EvalFlags::empty());
+    instance.load_dae(&model, &mut sim);
+
+    let (resist, react) = sim.read_residual("implicit_equation_0");
+    float_cmp::assert_approx_eq!(f64, resist, -(1.0 - 0.25) / TAU, epsilon = 1e-3);
+    float_cmp::assert_approx_eq!(f64, react, 0.25, epsilon = 1e-9);
+
+    // A unity numerator, not a zero one: the output follows the state, so the
+    // contribution is not identically zero.
+    float_cmp::assert_approx_eq!(f64, sim.read_residual("flow(out)").0, 0.25, epsilon = 1e-9);
+
+    Ok(())
+}
+
 harness! {
     // TODO: run this in CI, somehow this test is flakey tough regarding the linker invocation (and really slow)
     Test::from_dir("integration", &integration_test, &ignore_dev_tests, &project_root().join("integration_tests")),
@@ -514,5 +552,5 @@ harness! {
     Test::from_dir_filtered("vacask_spice", &vacask_spice_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice")),
     // VACASK simplified SPICE models
     Test::from_dir_filtered("vacask_spice_sn", &vacask_spice_sn_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice/sn")),
-    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp)]
+    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("laplace_null_zeros", &test_laplace_null_zeros)]
 }

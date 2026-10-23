@@ -1,0 +1,76 @@
+function %(v16, v17, v18) {
+    // v1 = bconst false
+    // v2 = bconst true
+    v4 = iconst 0
+    v5 = iconst 1
+    v19 = fconst 0x1.0000000000000p-2
+                                block0:
+@0009                               v20 = fgt v18, v19
+                                    br v20, block2, block3
+
+                                block2:
+                                    jmp block4
+
+                                block3:
+                                    jmp block4
+
+                                block4:
+                                    v21 = phi [v2, block2], [v1, block3]
+                                    br v21, block5, block6
+
+                                block5:
+                                    jmp block7
+
+                                block6:
+                                    jmp block7
+
+                                block7:
+                                    v23 = phi [v2, block5], [v2, block6]
+@0013                               br v23, block8, block9
+
+                                block8:
+                                    v31 = iadd v4, v5
+                                    jmp block10
+
+                                block9:
+                                    jmp block10
+
+                                block10:
+                                    v81 = phi [v31, block8], [v4, block9]
+                                    br v21, block11, block12
+
+                                block11:
+                                    jmp block13
+
+                                block12:
+                                    jmp block13
+
+                                block13:
+                                    v44 = phi [v2, block11], [v2, block12]
+                                    br v44, block14, block15
+
+                                block14:
+                                    jmp block16
+
+                                block15:
+                                    jmp block16
+
+                                block16:
+                                    v57 = phi [v2, block14], [v1, block15]
+@001a                               br v57, block17, block18
+
+                                block17:
+                                    v74 = iadd v4, v5
+                                    jmp block19
+
+                                block18:
+                                    jmp block19
+
+                                block19:
+                                    v87 = phi [v74, block17], [v4, block18]
+                                    v86 = optbarrier v81
+                                    v89 = optbarrier v87
+                                    jmp block1
+
+                                block1:
+}

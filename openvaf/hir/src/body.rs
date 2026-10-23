@@ -150,6 +150,13 @@ impl<'a> BodyRef<'a> {
         Branch { id }
     }
 
+    /// Whether `expr` is a missing expression: a null argument (VAMS-2023 A.6.4 /
+    /// A.6.5) or a piece the parser could not recover. `get_expr` panics on one, so
+    /// anything that may be handed a nullable argument checks this first.
+    pub fn is_missing(&self, expr: ExprId) -> bool {
+        matches!(self.body.exprs[expr], hir_def::Expr::Missing)
+    }
+
     pub fn get_expr(&self, expr: ExprId) -> Expr<'a> {
         match self.body.exprs[expr] {
             hir_def::Expr::Path { .. } => Expr::Read(self.resolve_path(expr)),
@@ -195,8 +202,8 @@ impl<'a> BodyRef<'a> {
         match self.body.stmts[stmnt] {
             hir_def::Stmt::Empty | hir_def::Stmt::Missing => None,
             hir_def::Stmt::Expr(e) => Some(Stmt::Expr(e)),
-            hir_def::Stmt::EventControl { ref event, body } => {
-                Some(Stmt::EventControl { event, body })
+            hir_def::Stmt::EventControl { ref events, body } => {
+                Some(Stmt::EventControl { events, body })
             }
             // an unresolved event was already diagnosed; drop the statement
             hir_def::Stmt::EventTrigger { event } => {
@@ -287,7 +294,8 @@ pub enum ContributeKind {
 pub enum Stmt<'a> {
     Expr(ExprId),
     EventControl {
-        event: &'a Event,
+        /// The event expressions ORed together (VAMS-2023 5.10.1).
+        events: &'a [Event],
         body: StmtId,
     },
     /// VAMS-2023 5.10.4: `-> ev;`

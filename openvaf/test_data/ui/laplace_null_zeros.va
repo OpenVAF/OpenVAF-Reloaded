@@ -1,0 +1,27 @@
+`include "disciplines.vams"
+
+// VAMS-2023 4.5.11: "The zeros argument may be represented as a null argument. The
+// null argument is characterized by two adjacent commas (,,)." A.6.4 spells the two
+// vector arguments of the Laplace and Z-transform filters as optional
+// `analog_filter_function_arg`s, so the null is legal in either of them.
+module laplace_null_zeros(in, out);
+    input in;
+    output out;
+    electrical in, out;
+
+    parameter real tau = 1e-6;
+
+    real den[0:1];
+    real num[0:0];
+
+    analog begin
+        den[0] = 1.0;
+        den[1] = tau;
+        num[0] = 1.0;
+
+        // no zeros: H(s) = 1/D(s)
+        V(out) <+ laplace_nd(V(in), , den);
+        // a null denominator is legal too
+        V(out) <+ laplace_nd(V(in), num, );
+    end
+endmodule
