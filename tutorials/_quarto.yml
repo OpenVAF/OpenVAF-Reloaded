@@ -1,0 +1,45 @@
+project:
+  type: book
+  output-dir: _site
+
+book:
+  title: "Understanding OpenVAF"
+  subtitle: "A Progressive Tutorial Series"
+  author: "Philippe Velha"
+  date: today
+  repo-url: https://github.com/philippevelha/OpenVAF-Reloaded
+  repo-actions: [issue]
+  chapters:
+    - index.qmd
+    - part: "Beginner"
+      chapters:
+        - t01-build-and-compile.qmd
+        - t02-item-tree.qmd
+        - t03-name-resolution.qmd
+        - t04-lowered-body.qmd
+        - t05-mir-contribution.qmd
+    - part: "Intermediate"
+      chapters:
+        - t06-type-inference.qmd
+        - t07-autodiff.qmd
+        - t08-diode-nonlinearity.qmd
+        - t09-osdi-descriptor.qmd
+        - t10-ngspice-simulation.qmd
+    - part: "Advanced"
+      chapters:
+        - t11-multiport-node-collapse.qmd
+        - t12-multi-domain.qmd
+        - t13-noise-analysis.qmd
+        - t14-analog-function.qmd
+        - t15-cross-platform.qmd
+
+format:
+  html:
+    theme: flatly
+    highlight-style: github
+    code-copy: true
+    toc: true
+
+execute:
+  eval: false
+  echo: true
