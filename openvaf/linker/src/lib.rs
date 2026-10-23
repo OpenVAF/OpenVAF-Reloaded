@@ -170,6 +170,10 @@ fn is_msys2_environment() -> bool {
     env::var("MSYSTEM").is_ok()
 }
 
+fn parse_ldflags(flags: &str) -> impl Iterator<Item = &str> {
+    flags.split_whitespace()
+}
+
 fn exec_linker(mut cmd: std::process::Command, _out_filename: &Utf8Path) -> io::Result<Output> {
     match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
         #[allow(clippy::let_and_return)]
@@ -230,9 +234,7 @@ impl dyn Linker + '_ {
             self.args(args);
         }
         if let Ok(flags) = std::env::var("OPENVAF_LDFLAGS") {
-            let flags = flags
-                .split(' ')
-                .filter(|flag| flag.is_empty() && !flag.chars().all(|c| c.is_whitespace()));
+            let flags = parse_ldflags(&flags);
             self.args(flags)
         }
     }
@@ -348,4 +350,23 @@ impl Command {
     //     }
     //     Ok(())
     // }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_ldflags;
+
+    #[test]
+    fn splits_on_whitespace() {
+        assert_eq!(
+            parse_ldflags("-Wl,-rpath,/tmp -lm").collect::<Vec<_>>(),
+            ["-Wl,-rpath,/tmp", "-lm"]
+        );
+    }
+
+    #[test]
+    fn empty_and_whitespace_only_yield_nothing() {
+        assert!(parse_ldflags("").next().is_none());
+        assert!(parse_ldflags(" \t ").next().is_none());
+    }
 }
