@@ -118,7 +118,7 @@ const BUILTINS: [&str; 28] = [
 
 const PARAM_SYSFUNS: [&str; 6] = ["mfactor", "xposition", "yposition", "angle", "hflip", "vflip"];
 
-const SYSFUNS: [&str; 88] = [
+const SYSFUNS: [&str; 89] = [
     "$display",
     "$strobe",
     "$write",
@@ -206,7 +206,7 @@ const SYSFUNS: [&str; 88] = [
     "$port_connected",
     "$analog_node_alias",
     "$analog_port_alias",
-    // "$table_model",
+    "$table_model",
     "$test$plusargs",
     "$value$plusargs",
     "$bound_step",

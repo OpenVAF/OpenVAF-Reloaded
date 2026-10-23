@@ -10,6 +10,7 @@ use hir::signatures::{
     NATURE_ACCESS_NODES, NATURE_ACCESS_NODE_GND, NATURE_ACCESS_PORT_FLOW, REAL_EQ, REAL_OP,
     SIMPARAM_DEFAULT, SIMPARAM_NO_DEFAULT, STR_EQ,
 };
+use hir::table_model;
 use hir::{
     Body, BodyRef, BuiltIn, Expr, ExprId, Literal, /*ParamSysFun,*/ Ref, ResolvedFun, Stmt,
     Type,
@@ -408,6 +409,247 @@ impl BodyLoweringCtx<'_, '_, '_> {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// `a || b`, for folding the out-of-range flags of a piece's samples.
+    fn table_or(&mut self, a: Value, b: Value) -> Value {
+        self.lower_select_with(a, |_| TRUE, |_| b)
+    }
+
+    /// The constant contents of an array argument to `$table_model`.
+    ///
+    /// 9.21.1: "The state of the data source is captured on the first call to the
+    /// table model function. Any change after this point is ignored." The table is
+    /// compiled into the model, so the contents have to be known here. An array
+    /// literal is; an array variable the module fills in at run time is not, and
+    /// `hir_ty` turns that into a diagnostic rather than letting it arrive here.
+    fn const_real_array(&self, arg: ExprId) -> Option<Vec<f64>> {
+        let elems = match self.body.get_expr(arg) {
+            Expr::Array(vals) => vals,
+            _ => return None,
+        };
+        elems.iter().map(|&e| self.eval_const_real(e)).collect()
+    }
+
+    /// A table data file, resolved beside the root source file the way
+    /// `noise_table`'s data file is.
+    fn read_table_file(&self, fname: &str) -> Option<String> {
+        let dir = self.ctx.db.root_file_dir()?;
+        let path = dir.join(fname)?;
+        let abs = path.as_path()?;
+        std::fs::read_to_string(abs).ok()
+    }
+
+    /// VAMS-2023 9.21:
+    ///
+    ///   $table_model ( table_inputs , table_data_source [, table_control_string] )
+    ///
+    /// The table is built here, at compile time, and emitted as the piecewise
+    /// polynomial `crate::table_model` reduces it to. That is what lets the
+    /// Jacobian fall out: the lookup is ordinary arithmetic over the lookup
+    /// expressions, so the existing autodiff differentiates it. A callback could
+    /// not be differentiated at all, since `mir_autodiff` treats `Opcode::Call` as
+    /// having no derivative.
+    ///
+    /// Anything this cannot build returns zero, which `hir_ty` makes unreachable by
+    /// rejecting the call first; the arms are here so that a malformed table cannot
+    /// panic the compiler.
+    fn lower_table_model(&mut self, args: &[ExprId]) -> Value {
+        // The lookup inputs come first and the data source follows them, so the
+        // inputs are the leading arguments that are neither a string nor an array.
+        // Reading the shape back off the types keeps this in step with the
+        // signature table without a sixteen-way match on it.
+        let ndims = args
+            .iter()
+            .position(|&a| {
+                matches!(
+                    self.body.expr_type(a),
+                    Type::String | Type::Array { .. } | Type::EmptyArray
+                )
+            })
+            .unwrap_or(args.len());
+        if ndims == 0 || ndims >= args.len() {
+            return F_ZERO;
+        }
+
+        let (rows, after) = if matches!(self.body.expr_type(args[ndims]), Type::String) {
+            let fname = self.body.as_literal(args[ndims]).unwrap().unwrap_str().to_owned();
+            let text = match self.read_table_file(&fname) {
+                Some(text) => text,
+                None => return F_ZERO,
+            };
+            match table_model::Rows::parse(&text) {
+                Ok(rows) => (rows, ndims + 1),
+                Err(_) => return F_ZERO,
+            }
+        } else {
+            // `table_model_array` is N independent columns followed by the output.
+            let end = 2 * ndims + 1;
+            if args.len() < end {
+                return F_ZERO;
+            }
+            let mut cols = Vec::with_capacity(ndims + 1);
+            for &arg in &args[ndims..end] {
+                match self.const_real_array(arg) {
+                    Some(col) => cols.push(col),
+                    None => return F_ZERO,
+                }
+            }
+            match table_model::Rows::from_columns(&cols) {
+                Ok(rows) => (rows, end),
+                Err(_) => return F_ZERO,
+            }
+        };
+
+        let spec = match args.get(after) {
+            Some(&arg) => self.body.as_literal(arg).unwrap().unwrap_str().to_owned(),
+            None => String::new(),
+        };
+        let control = match table_model::Control::parse(&spec, ndims) {
+            Ok(control) => control,
+            Err(_) => return F_ZERO,
+        };
+        let table = match table_model::Table::build(&rows, &control) {
+            Ok((table, _warnings)) => table,
+            Err(_) => return F_ZERO,
+        };
+
+        let mut inputs = Vec::with_capacity(ndims);
+        for &arg in &args[..ndims] {
+            inputs.push(self.lower_expr(arg));
+        }
+
+        let (value, outside) = self.emit_table(&table.root, &table.dims, &inputs);
+
+        // 9.21.2's `E` method: "an extrapolation error is reported if the
+        // $table_model function is requested to evaluate a point beyond the
+        // interpolation region", and 9.21 adds that it "results in a fatal error
+        // being raised".
+        if outside != FALSE {
+            self.ctx.make_select(outside, |ctx, taken| {
+                if taken {
+                    ctx.call(CallBackKind::SetRetFlag(RetFlag::Abort), &[]);
+                }
+                F_ZERO
+            });
+        }
+
+        value
+    }
+
+    /// Emit a lookup over the isoline tree as `(value, outside)`.
+    ///
+    /// Each child is emitted once and the pieces select between the results, so
+    /// the code grows with the number of samples rather than with the product of
+    /// the dimensions. The `outside` flag travels beside the value so that an `E`
+    /// end deeper in the table fires only on the path the lookup actually took,
+    /// and it collapses to a constant `false` for the overwhelming majority of
+    /// tables, which have no `E` end at all.
+    fn emit_table(
+        &mut self,
+        node: &table_model::Node,
+        dims: &[table_model::DimControl],
+        inputs: &[Value],
+    ) -> (Value, Value) {
+        let kids = match node {
+            table_model::Node::Leaf(val) => return (self.ctx.fconst(*val), FALSE),
+            table_model::Node::Branch(kids) => kids,
+        };
+
+        let mut vals = Vec::with_capacity(kids.len());
+        let mut outs = Vec::with_capacity(kids.len());
+        for (_, kid) in kids {
+            let (val, out) = self.emit_table(kid, &dims[1..], &inputs[1..]);
+            vals.push(val);
+            outs.push(out);
+        }
+
+        let xs: Vec<f64> = kids.iter().map(|(ordinate, _)| *ordinate).collect();
+        let segs = table_model::segments(&xs, dims[0]);
+        let x = inputs[0];
+        let track = segs.iter().any(|seg| seg.error) || outs.iter().any(|out| *out != FALSE);
+
+        // Built from the last piece backwards, so each comparison only has to
+        // decide between this piece and everything above it.
+        let mut chain: Option<(Value, Value)> = None;
+        for seg in segs.iter().rev() {
+            let val = self.emit_segment(seg, &vals, x);
+            let out = if !track {
+                FALSE
+            } else if seg.error {
+                TRUE
+            } else {
+                let mut acc = FALSE;
+                for (j, _) in &seg.terms {
+                    acc = if acc == FALSE { outs[*j] } else { self.table_or(acc, outs[*j]) };
+                }
+                acc
+            };
+            chain = Some(match chain {
+                None => (val, out),
+                Some((above_val, above_out)) => {
+                    let (bound, inclusive) =
+                        seg.upper.expect("only the last piece runs to infinity");
+                    let bound = self.ctx.fconst(bound);
+                    let cond = if inclusive {
+                        self.ctx.ins().fle(x, bound)
+                    } else {
+                        self.ctx.ins().flt(x, bound)
+                    };
+                    let val = self.ctx.make_select(cond, |_s, t| if t { val } else { above_val });
+                    let out = if track {
+                        self.ctx.make_select(cond, |_s, t| if t { out } else { above_out })
+                    } else {
+                        FALSE
+                    };
+                    (val, out)
+                }
+            });
+        }
+        chain.expect("a dimension always has at least one piece")
+    }
+
+    /// One piece of a dimension: `sum over j of sample_j * P_j(x - origin)`.
+    fn emit_segment(&mut self, seg: &table_model::Segment, vals: &[Value], x: Value) -> Value {
+        if seg.terms.is_empty() {
+            return F_ZERO;
+        }
+        let origin = self.ctx.fconst(seg.origin);
+        let u = self.ctx.ins().fsub(x, origin);
+        let mut acc: Option<Value> = None;
+        for (j, coeffs) in &seg.terms {
+            // A weight of exactly one is what constant extrapolation and a closest
+            // point lookup produce, and they are common enough to be worth not
+            // multiplying by.
+            let term = if *coeffs == [1.0, 0.0, 0.0, 0.0] {
+                vals[*j]
+            } else {
+                let weight = self.emit_poly(u, *coeffs);
+                self.ctx.ins().fmul(vals[*j], weight)
+            };
+            acc = Some(match acc {
+                None => term,
+                Some(sum) => self.ctx.ins().fadd(sum, term),
+            });
+        }
+        acc.unwrap_or(F_ZERO)
+    }
+
+    /// `c0 + u*(c1 + u*(c2 + u*c3))` by Horner, with the zero terms left out.
+    fn emit_poly(&mut self, u: Value, coeffs: [f64; 4]) -> Value {
+        let top = match coeffs.iter().rposition(|c| *c != 0.0) {
+            Some(top) => top,
+            None => return F_ZERO,
+        };
+        let mut acc = self.ctx.fconst(coeffs[top]);
+        for k in (0..top).rev() {
+            acc = self.ctx.ins().fmul(acc, u);
+            if coeffs[k] != 0.0 {
+                let c = self.ctx.fconst(coeffs[k]);
+                acc = self.ctx.ins().fadd(acc, c);
+            }
+        }
+        acc
     }
 
     fn lower_builtin(&mut self, expr: ExprId, builtin: BuiltIn, args: &[ExprId]) -> Value {
@@ -959,6 +1201,8 @@ impl BodyLoweringCtx<'_, '_, '_> {
             // use (`V(a,b) <+ ac_stim(...)`) fell through to `unreachable!()` and
             // crashed the compiler. Actual AC-analysis injection is not implemented yet.
             BuiltIn::ac_stim => F_ZERO,
+
+            BuiltIn::table_model => self.lower_table_model(args),
 
             _ => unreachable!(),
         }

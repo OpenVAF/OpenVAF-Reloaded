@@ -7,7 +7,7 @@ use hir_def::{
     Literal, Lookup, ModuleBodyKind, NatureId, NodeId, ParamId, Path, Stmt, StmtId, VarId,
 };
 use stdx::impl_display;
-use syntax::ast::AssignOp;
+use syntax::ast::{AssignOp, UnaryOp};
 use syntax::name::{AsIdent, Name};
 
 use crate::builtin::{
@@ -17,6 +17,9 @@ use crate::builtin::{
 use crate::db::HirTyDB;
 use crate::inference::{BranchWrite, InferenceResult, ResolvedFun};
 use crate::lower::BranchKind;
+use hir_def::Type;
+
+use crate::table_model;
 use crate::types::{Signature, Ty};
 
 // `EventFun` is an analog event function used outside `@(...)` (VAMS-2023 5.10.3).
@@ -90,6 +93,11 @@ pub enum BodyValidationDiagnostic {
         stmt: StmtId,
     },
 
+    /// VAMS-2023 9.21: the call cannot be turned into a table at compile time.
+    TableModel {
+        expr: ExprId,
+        err: String,
+    },
     UnsupportedFunction {
         expr: ExprId,
         func: BuiltIn,
@@ -702,6 +710,155 @@ impl ExprValidator<'_, '_> {
         self.parent.body.exprs[expr].walk_child_exprs(|child| self.validate_expr(child))
     }
 
+    fn table_err(&mut self, expr: ExprId, err: String) {
+        self.parent.diagnostics.push(BodyValidationDiagnostic::TableModel { expr, err });
+    }
+
+    fn const_real(&self, expr: ExprId) -> Option<f64> {
+        match self.parent.body.exprs[expr] {
+            Expr::Literal(Literal::Float(f)) => Some(f.into()),
+            Expr::Literal(Literal::Int(i)) => Some(f64::from(i)),
+            Expr::UnaryOp { expr, op: UnaryOp::Neg } => Some(-self.const_real(expr)?),
+            Expr::UnaryOp { expr, op: UnaryOp::Identity } => self.const_real(expr),
+            _ => None,
+        }
+    }
+
+    /// One data column of the array form, which has to be an array of constants.
+    fn const_real_column(&self, arg: ExprId) -> Option<Vec<f64>> {
+        let elems = match self.parent.body.exprs[arg] {
+            Expr::Array(ref elems) => elems.clone(),
+            _ => return None,
+        };
+        elems.iter().map(|&e| self.const_real(e)).collect()
+    }
+
+    /// A table data file, resolved beside the compilation's root source file, the
+    /// way a `noise_table` data file is.
+    fn read_data_file(&self, name: &str) -> Option<String> {
+        let root = self.parent.owner.file(self.parent.db.upcast());
+        let dir = self.parent.db.file_path(root).parent()?;
+        let path = dir.join(name)?;
+        let abs = path.as_path()?;
+        std::fs::read_to_string(abs).ok()
+    }
+
+    /// VAMS-2023 9.21: `$table_model`.
+    ///
+    /// The table is built into the model at compile time, which is what lets the
+    /// lookup be ordinary arithmetic over the lookup expressions and so carry a
+    /// derivative into the Jacobian. Everything the table needs therefore has to
+    /// be knowable here, and whatever is not becomes a diagnostic. The lowering
+    /// repeats this build and can then assume it succeeds.
+    fn validate_table_model(&mut self, expr: ExprId, args: &[ExprId]) {
+        // The lookup inputs come first and the data source follows, so the inputs
+        // are the leading arguments that are neither a string nor an array.
+        let mut ndims = 0;
+        while ndims < args.len() {
+            match self.parent.infer.expr_types[args[ndims]].to_value() {
+                Some(Type::String | Type::Array { .. } | Type::EmptyArray) => break,
+                _ => ndims += 1,
+            }
+        }
+        if ndims == 0 || ndims >= args.len() {
+            // The signature table has already reported the shape of the call.
+            return;
+        }
+        let from_file =
+            matches!(self.parent.infer.expr_types[args[ndims]].to_value(), Some(Type::String));
+
+        let (rows, after) = if from_file {
+            let name = match self.parent.body.exprs[args[ndims]] {
+                Expr::Literal(Literal::String(ref name)) => name.to_string(),
+                _ => {
+                    self.table_err(
+                        expr,
+                        "the data file name has to be a string literal. 9.21 also allows a string \
+                         parameter, but the table is compiled into the model and a parameter's \
+                         value belongs to the simulator, so its default cannot be read here"
+                            .to_owned(),
+                    );
+                    return;
+                }
+            };
+            let text = match self.read_data_file(&name) {
+                Some(text) => text,
+                None => {
+                    self.table_err(
+                        expr,
+                        format!("cannot read the table data file '{name}' beside the source file"),
+                    );
+                    return;
+                }
+            };
+            match table_model::Rows::parse(&text) {
+                Ok(rows) => (rows, ndims + 1),
+                Err(err) => {
+                    self.table_err(expr, format!("{name}: {err}"));
+                    return;
+                }
+            }
+        } else {
+            // `table_model_array`: N independent columns and then the output.
+            let end = 2 * ndims + 1;
+            if args.len() < end {
+                return;
+            }
+            let mut cols = Vec::with_capacity(ndims + 1);
+            for (i, &arg) in args[ndims..end].iter().enumerate() {
+                match self.const_real_column(arg) {
+                    Some(col) => cols.push(col),
+                    None => {
+                        self.table_err(
+                            expr,
+                            format!(
+                                "data column {} has to be an array of constants. 9.21.1 captures \
+                                 the data source on the first call and ignores later changes, and \
+                                 the table is compiled into the model, so an array the module \
+                                 fills in at run time cannot be read here: write the samples as an \
+                                 array literal, or put them in a data file",
+                                i + 1
+                            ),
+                        );
+                        return;
+                    }
+                }
+            }
+            match table_model::Rows::from_columns(&cols) {
+                Ok(rows) => (rows, end),
+                Err(err) => {
+                    self.table_err(expr, err.0);
+                    return;
+                }
+            }
+        };
+
+        let spec = match args.get(after) {
+            Some(&arg) => match self.parent.body.exprs[arg] {
+                Expr::Literal(Literal::String(ref spec)) => spec.to_string(),
+                _ => {
+                    self.table_err(
+                        expr,
+                        "the control string has to be a string literal".to_owned(),
+                    );
+                    return;
+                }
+            },
+            None => String::new(),
+        };
+
+        let control = match table_model::Control::parse(&spec, ndims) {
+            Ok(control) => control,
+            Err(err) => {
+                self.table_err(expr, err.0);
+                return;
+            }
+        };
+        if let Err(err) = table_model::Table::build(&rows, &control) {
+            self.table_err(expr, err.0);
+        }
+    }
+
     fn validate_builtin(
         &mut self,
         name: &Option<Path>,
@@ -715,6 +872,7 @@ impl ExprValidator<'_, '_> {
                 .parent
                 .diagnostics
                 .push(BodyValidationDiagnostic::UnsupportedFunction { expr, func: call }),
+            BuiltIn::table_model => self.validate_table_model(expr, args),
             BuiltIn::potential | BuiltIn::flow => self.check_access(
                 |_| IllegalCtxAccessKind::NatureAccess,
                 expr,
