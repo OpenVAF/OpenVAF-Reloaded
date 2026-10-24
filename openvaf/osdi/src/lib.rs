@@ -30,7 +30,7 @@ use mir_llvm::{CodegenCx, LLVMBackend};
 use ndatable::nda_arrays;
 use salsa::ParallelDatabase;
 use sim_back::{CompiledModule, ModuleInfo};
-use stdx::{impl_debug_display, impl_idx_from};
+use stdx::{impl_debug_display, impl_idx_from, unique_suffix};
 use target::spec::Target;
 use typed_indexmap::TiSet;
 
@@ -102,10 +102,14 @@ pub fn compile<'a>(
 
     let name = dst.file_stem().expect("destination is a file").to_owned();
 
+    // concurrent compiles of the same model produce the same dst (batch mode
+    // hashes the content), so intermediates need a per-process name component
+    let unique = unique_suffix();
+
     let mut paths: Vec<Utf8PathBuf> = (0..modules.len() * 4)
         .map(|i| {
             let num = base_n::encode((i + 1) as u128, CASE_INSENSITIVE);
-            let extension = format!("o{num}");
+            let extension = format!("{unique}.o{num}");
             dst.with_extension(extension)
         })
         .collect();
@@ -128,7 +132,7 @@ pub fn compile<'a>(
 
     let db = db.snapshot();
 
-    let main_file = dst.with_extension("o");
+    let main_file = dst.with_extension(format!("{unique}.o"));
 
     let unoptirs =
         Arc::new(Mutex::new(HashMap::with_hasher(BuildHasherDefault::<FxHasher>::default())));

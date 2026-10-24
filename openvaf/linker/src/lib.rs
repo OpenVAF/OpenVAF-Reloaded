@@ -9,6 +9,7 @@ use std::{ascii, env, io};
 use anyhow::{bail, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use cc::windows_registry;
+use stdx::unique_suffix;
 use target::spec::{LinkerFlavor, Target};
 
 /// Get the LLVM prefix from environment variables.
@@ -27,28 +28,43 @@ pub fn link(
     out_filename: &Utf8Path,
     add_objects: impl FnOnce(&mut dyn Linker),
 ) -> Result<()> {
-    let mut linker = linker_with_args(path, target, out_filename, add_objects);
+    // link to a temp file first: batch cache hits trust out_filename's
+    // existence, so a failed or interrupted link must never leave a
+    // truncated file there. Concurrent compiles share the output directory,
+    // so both the temp file and the import library need unique names.
+    let temp_out = out_filename.with_file_name(format!(
+        "{}.{}.tmp",
+        out_filename.file_name().unwrap_or("osdi"),
+        unique_suffix()
+    ));
+    let mut linker = linker_with_args(path, target, &temp_out, add_objects);
 
-    let import_lib_path = out_filename.with_file_name("__openvaf__import.lib");
+    let import_lib_path =
+        out_filename.with_file_name(format!("__openvaf__import_{}.lib", unique_suffix()));
     if !target.options.import_lib.is_empty() {
         let mut file = File::create(&import_lib_path).context("failed to create importlib")?;
         file.write_all(target.options.import_lib).context("failed to write importlib")?;
         linker.add_object(&import_lib_path);
     }
-    let res = exec_linker(linker.take_cmd(), out_filename);
+    let res = exec_linker(linker.take_cmd(), &temp_out);
     if !target.options.import_lib.is_empty() {
-        remove_file(import_lib_path).context("failed to delete importlib")?;
+        remove_file(&import_lib_path).context("failed to delete importlib")?;
     }
     match res {
         Ok(prog) if !prog.status.success() => {
+            let _ = remove_file(&temp_out);
             let mut output = prog.stderr.clone();
             output.extend_from_slice(&prog.stdout);
             let escaped_output = escape_stdout_stderr_string(&output);
             eprintln!("{}", escaped_output);
             bail!("linking failed (see linker output for details)")
         }
-        Ok(_) => Ok(()),
-        Err(err) => bail!("linker not found: {}", err),
+        Ok(_) => std::fs::rename(&temp_out, out_filename)
+            .with_context(|| format!("failed to move {} to {}", temp_out, out_filename)),
+        Err(err) => {
+            let _ = remove_file(&temp_out);
+            bail!("linker not found: {}", err)
+        }
     }
 }
 

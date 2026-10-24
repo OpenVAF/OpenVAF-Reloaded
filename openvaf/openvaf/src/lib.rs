@@ -271,11 +271,19 @@ pub fn compile(opts: &Opts) -> Result<CompilationTermination> {
     }
 
     // TODO configure linker
-    link(None, &opts.target, lib_file.as_ref(), |linker| {
+    let link_result = link(None, &opts.target, lib_file.as_ref(), |linker| {
         for path in &paths {
             linker.add_object(path);
         }
-    })?;
+    });
+
+    // batch runs share the output directory, so clean up on failure too
+    if let Err(err) = link_result {
+        for obj_file in &paths {
+            let _ = remove_file(obj_file);
+        }
+        return Err(err);
+    }
 
     for obj_file in paths {
         remove_file(obj_file).context("failed to delete intermediate compile artifact")?;
