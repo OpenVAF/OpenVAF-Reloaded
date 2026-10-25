@@ -1,0 +1,38 @@
+error: argument 1 of 'min' may not be omitted
+   --> /event_null_args_err.va:16:17
+   |
+16 |         x = min(, 1.0);
+   |                -^-----
+   |                ||
+   |                |omitted argument
+   |                in this argument list
+   |
+   = only cross, above, timer and absdelta accept omitted arguments
+
+error: argument 1 of 'cross' may not be omitted
+   --> /event_null_args_err.va:18:17
+   |
+18 |         @(cross(, 1)) x = 1.0;
+   |                -^---
+   |                ||
+   |                |omitted argument
+   |                in this argument list
+
+error: argument 4 of 'timer' may not be omitted
+   --> /event_null_args_err.va:20:31
+   |
+20 |         @(timer(0.0, 1.0, 1n, )) x = 2.0;
+   |                ---------------^
+   |                |              |
+   |                |              omitted argument
+   |                in this argument list
+
+error: argument 2 of 'absdelta' may not be omitted
+   --> /event_null_args_err.va:22:26
+   |
+22 |         @(absdelta(V(a), , 1n)) x = 3.0;
+   |                   -------^----
+   |                   |      |
+   |                   |      omitted argument
+   |                   in this argument list
+

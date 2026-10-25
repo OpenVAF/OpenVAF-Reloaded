@@ -18,32 +18,56 @@ impl BodyLoweringCtx<'_, '_, '_> {
             Stmt::Expr(expr) => {
                 self.lower_expr(expr);
             }
-            Stmt::EventControl { event, body } => {
+            Stmt::EventControl { events, body } => {
+                // VAMS-2023 5.10.1: the body runs when *any* of the ORed events
+                // occurs.
+                //
                 // Track `@(initial_step)` so resets of retained (`@cross`) variables
                 // inside it are treated as initial values (read from the retained
-                // state) rather than per-evaluation resets. Other events lower their
-                // body directly; their effect is gated by guards in the body.
-                if matches!(event, hir::Event::Global { kind: hir::GlobalEvent::InitialStep, .. }) {
+                // state) rather than per-evaluation resets. That only holds when the
+                // initial step is the whole event expression: ORed with anything
+                // else the body runs at other times too, so an assignment in it is
+                // not just an initial value.
+                let initial_step = !events.is_empty()
+                    && events.iter().all(|event| {
+                        matches!(
+                            event,
+                            hir::Event::Global { kind: hir::GlobalEvent::InitialStep, .. }
+                        )
+                    });
+
+                // A named event is the only kind that carries a runtime condition:
+                // an event function takes no part in scheduling yet, so its body is
+                // always evaluated. If every element is a named event the body runs
+                // when any of their flags is set; otherwise it runs unconditionally.
+                let named: Option<Vec<_>> = events
+                    .iter()
+                    .map(|event| match *event {
+                        // `None` for an unresolved event, which was already diagnosed
+                        hir::Event::Named { event } => self.body.resolve_event(event),
+                        _ => None,
+                    })
+                    .collect();
+
+                if initial_step {
                     let prev = self.ctx.in_initial_step;
                     self.ctx.in_initial_step = true;
                     self.lower_stmt(body);
                     self.ctx.in_initial_step = prev;
-                } else if let hir::Event::Named { event } = *event {
+                } else if let Some(named) = named.filter(|named| !named.is_empty()) {
                     // `@(ev)` runs its body only if `ev` was triggered earlier in
                     // this evaluation of the analog block (VAMS-2023 5.10.4).
-                    match self.body.resolve_event(event) {
-                        Some(event) => {
-                            let cond = self.ctx.use_place(PlaceKind::NamedEvent(event));
-                            self.ctx.make_cond(cond, |ctx, branch| {
-                                if branch {
-                                    BodyLoweringCtx { body: self.body, path: self.path, ctx }
-                                        .lower_stmt(body)
-                                }
-                            });
-                        }
-                        // unresolved event; already diagnosed
-                        None => self.lower_stmt(body),
+                    let mut cond = self.ctx.use_place(PlaceKind::NamedEvent(named[0]));
+                    for event in &named[1..] {
+                        let next = self.ctx.use_place(PlaceKind::NamedEvent(*event));
+                        cond = self.lower_select_with(cond, |_| mir::TRUE, |_| next);
                     }
+                    self.ctx.make_cond(cond, |ctx, branch| {
+                        if branch {
+                            BodyLoweringCtx { body: self.body, path: self.path, ctx }
+                                .lower_stmt(body)
+                        }
+                    });
                 } else {
                     self.lower_stmt(body);
                 }
