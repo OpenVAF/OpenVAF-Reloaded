@@ -1,0 +1,48 @@
+error: invalid table model: data column 1 has to be an array of constants. 9.21.1 captures the data source on the first call and ignores later changes, and the table is compiled into the model, so an array the module fills in at run time cannot be read here: write the samples as an array literal, or put them in a data file
+   --> /table_model_err.va:24:15
+   |
+24 |         acc = $table_model(V(a, b), col_x, col_f);
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $table_model
+
+error: invalid table model: the data file name has to be a string literal. 9.21 also allows a string parameter, but the table is compiled into the model and a parameter's value belongs to the simulator, so its default cannot be read here
+   --> /table_model_err.va:28:21
+   |
+28 |         acc = acc + $table_model(V(a, b), fname);
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $table_model
+
+error: invalid table model: cannot read the table data file 'definitely_absent.dat' beside the source file
+   --> /table_model_err.va:31:21
+   |
+31 |         acc = acc + $table_model(V(a, b), "definitely_absent.dat");
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $table_model
+
+error: invalid table model: 'Q' is not an interpolation or extrapolation character
+   --> /table_model_err.va:34:21
+   |
+34 |         acc = acc + $table_model(V(a, b), {0.0, 1.0}, {0.0, 1.0}, "1Q");
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $table_model
+
+error: invalid table model: the control string describes 2 independent dimension(s) but the call passes 1 lookup expression(s)
+   --> /table_model_err.va:37:21
+   |
+37 |         acc = acc + $table_model(V(a, b), {0.0, 1.0}, {0.0, 1.0}, "1L,1L");
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $table_model
+
+error: invalid table model: dimension 1 has an isoline of 1 point(s) but its interpolation needs 2
+   --> /table_model_err.va:40:21
+   |
+40 |         acc = acc + $table_model(V(a, b), {0.0}, {1.0});
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $table_model
+
+error: invalid table model: two samples at (0) disagree: 1 and 2
+   --> /table_model_err.va:43:21
+   |
+43 |         acc = acc + $table_model(V(a, b), {0.0, 0.0, 1.0}, {1.0, 2.0, 3.0});
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $table_model
+
+error: invalid table model: the control string reaches column 5 but the data source has 2
+   --> /table_model_err.va:46:21
+   |
+46 |         acc = acc + $table_model(V(a, b), {0.0, 1.0}, {0.0, 1.0}, "1;4");
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ invalid $table_model
+

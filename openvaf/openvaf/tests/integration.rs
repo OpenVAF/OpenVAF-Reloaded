@@ -5,6 +5,7 @@ use std::path::Path;
 use camino::Utf8Path;
 use expect_test::expect_file;
 use float_cmp::assert_approx_eq;
+use hir::table_model;
 use mini_harness::{harness, Result};
 use openvaf::{CompilationDestination, CompilationTermination, LLVMCodeGenOptLevel};
 use stdx::{ignore_dev_tests, openvaf_test_data, project_root};
@@ -505,6 +506,105 @@ fn test_adc() -> Result<()> {
     Ok(())
 }
 
+/// VAMS-2023 9.21: `$table_model`, against the table built in Rust.
+///
+/// The compiled model emits the interpolant as arithmetic over the lookup
+/// expressions; `hir::table_model` builds the same table and evaluates it
+/// directly. Comparing the two checks the emitted polynomial coefficients
+/// against the algorithm rather than against themselves, over all three schemes
+/// the model uses and through both extrapolation regions. See `tabmod.va`.
+fn test_table_model() -> Result<()> {
+    if stdx::IS_CI && cfg!(windows) {
+        return Ok(());
+    }
+
+    // The same data the model is written with, so the oracle and the model agree
+    // on the samples by construction and only the interpolation is under test.
+    let build = |cols: &[Vec<f64>], spec: &str, inputs: usize| {
+        let rows = table_model::Rows::from_columns(cols).expect("columns");
+        let control = table_model::Control::parse(spec, inputs).expect("control string");
+        table_model::Table::build(&rows, &control).expect("table").0
+    };
+    let lin = build(
+        &[
+            vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 1.0, 3.0, 5.0, 1.0, 2.0, 4.0],
+            vec![0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 1.0, 2.0, 3.0, 1.5, 2.0, 3.0],
+        ],
+        "",
+        2,
+    );
+    let cub = build(&[vec![0.0, 1.0, 2.0, 3.0], vec![0.0, 1.0, 4.0, 9.0]], "3CC", 1);
+    let disc = build(&[vec![1.0, 3.0, 5.0], vec![10.0, 30.0, 50.0]], "D", 1);
+
+    let desc = test_descriptor(&openvaf_test_data("osdi").join("tabmod.va"))?;
+    let model = desc.new_model();
+    model.process_params()?;
+    let mut instance = model.new_instance();
+    let mut sim = instance.mock_simulation(&model, desc.num_terminals, 300.0)?;
+
+    let mut eval = |instance: &OsdiInstance,
+                    model: &OsdiModel,
+                    sim: &mut MockSimulation,
+                    x: f64,
+                    y: f64,
+                    first: bool| {
+        if !first {
+            sim.next_iter();
+        }
+        sim.set_voltage("x", x);
+        sim.set_voltage("y", y);
+        sim.set_voltage("lin", 0.0);
+        sim.set_voltage("cub", 0.0);
+        sim.set_voltage("disc", 0.0);
+        instance.eval(model, sim, EvalFlags::empty());
+        instance.load_dae(model, sim);
+        (
+            sim.read_residual("flow(lin)").0,
+            sim.read_residual("flow(cub)").0,
+            sim.read_residual("flow(disc)").0,
+        )
+    };
+
+    // Knots, points between them, and well outside both ends of every dimension.
+    let probes = [
+        (1.0, 0.0),
+        (3.5, 0.25),
+        (3.5, 0.0),
+        (3.5, 0.5),
+        (2.0, 1.0),
+        (0.5, 0.0),
+        (6.5, 1.0),
+        (-1.0, -0.5),
+        (4.0, 0.75),
+        (2.5, 0.1),
+    ];
+    let mut first = true;
+    for (x, y) in probes {
+        let (got_lin, got_cub, got_disc) = eval(&instance, &model, &mut sim, x, y, first);
+        first = false;
+        float_cmp::assert_approx_eq!(f64, got_lin, lin.eval(&[y, x]).expect("lin"), epsilon = 1e-9);
+        float_cmp::assert_approx_eq!(f64, got_cub, cub.eval(&[x]).expect("cub"), epsilon = 1e-9);
+        float_cmp::assert_approx_eq!(f64, got_disc, disc.eval(&[x]).expect("disc"), epsilon = 1e-9);
+    }
+
+    // 9.21's own worked lookup, stated in the clause as f(3.5, 0.25) = 2.0.
+    let (got_lin, _, _) = eval(&instance, &model, &mut sim, 3.5, 0.25, false);
+    float_cmp::assert_approx_eq!(f64, got_lin, 2.0, epsilon = 1e-9);
+
+    // A closest point dimension never extrapolates, so it holds its end sample.
+    let (_, _, got_disc) = eval(&instance, &model, &mut sim, 100.0, 0.0, false);
+    float_cmp::assert_approx_eq!(f64, got_disc, 50.0, epsilon = 1e-9);
+
+    // Constant extrapolation holds the spline's endpoint rather than running on.
+    let (_, got_cub, _) = eval(&instance, &model, &mut sim, -5.0, 0.0, false);
+    float_cmp::assert_approx_eq!(f64, got_cub, 0.0, epsilon = 1e-9);
+    let (_, got_cub, _) = eval(&instance, &model, &mut sim, 8.0, 0.0, false);
+    float_cmp::assert_approx_eq!(f64, got_cub, 9.0, epsilon = 1e-9);
+
+    Ok(())
+}
+
 harness! {
     // TODO: run this in CI, somehow this test is flakey tough regarding the linker invocation (and really slow)
     Test::from_dir("integration", &integration_test, &ignore_dev_tests, &project_root().join("integration_tests")),
@@ -514,5 +614,5 @@ harness! {
     Test::from_dir_filtered("vacask_spice", &vacask_spice_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice")),
     // VACASK simplified SPICE models
     Test::from_dir_filtered("vacask_spice_sn", &vacask_spice_sn_test, &is_va_file, &ignore_dev_tests, &vacask_devices().join("spice/sn")),
-    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp)]
+    [Test::new("$limit", &test_limit),Test::new("noise", &test_noise),Test::new("arrays", &test_arrays),Test::new("cross_latch", &test_cross_latch),Test::new("laplace_nd_int", &test_laplace_nd_int),Test::new("vector_ports", &test_vector_ports),Test::new("qam16", &test_qam16),Test::new("cross_array", &test_cross_array),Test::new("adc", &test_adc),Test::new("indirect_opamp", &test_indirect_opamp),Test::new("table_model", &test_table_model)]
 }
