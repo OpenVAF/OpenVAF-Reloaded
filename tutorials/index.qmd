@@ -1,0 +1,66 @@
+---
+title: "Understanding OpenVAF"
+subtitle: "A Progressive Tutorial Series"
+---
+
+This series takes a reader who knows Verilog-A as a user and wants to
+understand how OpenVAF compiles it — from source text to OSDI `.osdi` shared
+library — step by step.
+
+Each tutorial is self-contained and builds on the previous one.  You need a
+working Rust toolchain and a checkout of the repository.  Nothing else is
+required until [T10](t10-ngspice-simulation.qmd), which loads the compiled model into ngspice.
+
+> **Status note:** Tutorials are marked ✅ once verified by running them
+> from a clean checkout.  An unmarked tutorial is a complete draft that has
+> not yet been run end-to-end.
+
+---
+
+## Beginner
+
+| # | Title | Status |
+|---|---|---|
+| T1 | [Build OpenVAF and Compile a Resistor](t01-build-and-compile.qmd) | draft |
+| T2 | [Inspect the Item Tree](t02-item-tree.qmd) | draft |
+| T3 | [Read the Name-Resolution Map](t03-name-resolution.qmd) | draft |
+| T4 | [Examine the Lowered Body](t04-lowered-body.qmd) | draft |
+| T5 | [Trace a Contribution Through the MIR](t05-mir-contribution.qmd) | draft |
+
+## Intermediate
+
+| # | Title | Status |
+|---|---|---|
+| T6 | [Follow Type Inference for a Simple Model](t06-type-inference.qmd) | draft |
+| T7 | [Understand the Automatic Differentiation Pass](t07-autodiff.qmd) | draft |
+| T8 | [Add a Simple Nonlinearity (Diode I–V)](t08-diode-nonlinearity.qmd) | draft |
+| T9 | [Inspect the OSDI Descriptor](t09-osdi-descriptor.qmd) | draft |
+| T10 | [Use ngspice to Run a DC Sweep](t10-ngspice-simulation.qmd) | draft |
+
+## Advanced
+
+| # | Title | Status |
+|---|---|---|
+| T11 | [Multi-Port Model and Node Collapse](t11-multiport-node-collapse.qmd) | draft |
+| T12 | [Multi-Domain Model (Electro-Thermal)](t12-multi-domain.qmd) | draft |
+| T13 | [Noise Analysis Support](t13-noise-analysis.qmd) | draft |
+| T14 | [Custom Analog Function and the Function DefMap](t14-analog-function.qmd) | draft |
+| T15 | [Cross-Platform Compilation and the Target Spec](t15-cross-platform.qmd) | draft |
+
+---
+
+## Background reading
+
+The tutorials refer frequently to the INTERNALS docs.  These are not required
+reading before starting, but are useful when you want to go deeper:
+
+- [Architecture overview](../docs/ARCHITECTURE.md)
+- [`hir_def` — item tree and name resolution](../docs/hir_def/INTERNALS.md)
+- [`hir_ty` — type inference](../docs/hir_ty/INTERNALS.md)
+- [`hir` — public HIR API](../docs/hir/INTERNALS.md)
+- [`mir` — SSA intermediate representation](../docs/mir/INTERNALS.md)
+- [`mir_autodiff` — automatic differentiation](../docs/mir_autodiff/INTERNALS.md)
+- [`hir_lower` — HIR → MIR lowering](../docs/hir_lower/INTERNALS.md)
+- [`sim_back` — simulation model builder](../docs/sim_back/INTERNALS.md)
+- [`osdi` — OSDI codegen](../docs/osdi/INTERNALS.md)
+- [`mir_llvm` — LLVM backend](../docs/mir_llvm/INTERNALS.md)

@@ -1,0 +1,268 @@
+---
+title: "T1 — Build OpenVAF and Compile a Resistor"
+---
+
+## Goal
+
+Build the `openvaf-r` compiler from source and use it to compile a
+temperature-dependent resistor model from Verilog-A to an OSDI `.osdi`
+shared library.  Verify the output exists and confirm the two OSDI symbols
+(`OSDI_DESCRIPTORS`, `OSDI_DESCRIPTOR_SIZE`) are exported.
+
+---
+
+## Prerequisites
+
+- A working internet connection for `cargo` to fetch dependencies.
+- No prior knowledge of Rust or compilers is assumed.
+
+---
+
+## Setup
+
+### 1. Install a Rust toolchain
+
+OpenVAF requires a recent stable Rust toolchain (1.70 or later).
+
+**Linux / macOS:**
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+```
+
+**Windows (winget):**
+```powershell
+winget install Rustlang.Rustup
+# restart the terminal so %USERPROFILE%\.cargo\bin is on PATH
+```
+
+Verify:
+```bash
+rustc --version
+cargo --version
+```
+
+### 2. Clone the repository
+
+```bash
+git clone https://github.com/philippevelha/OpenVAF-Reloaded.git
+cd OpenVAF-Reloaded
+```
+
+All commands in this tutorial run from the repository root unless otherwise
+stated.
+
+### 3. Check that LLVM is available
+
+`mir_llvm` links against LLVM 18.  The build will fail if LLVM is not found.
+
+**Ubuntu / Debian:**
+```bash
+sudo apt install llvm-18 libclang-18-dev
+```
+
+**macOS (Homebrew):**
+```bash
+brew install llvm@18
+export LLVM_SYS_180_PREFIX=$(brew --prefix llvm@18)
+```
+
+**Windows:** Install the LLVM 18 pre-built binaries from
+<https://releases.llvm.org/> and add the `bin` directory to `PATH`.
+
+---
+
+## Walkthrough
+
+### Step 1 — Build the compiler
+
+The CLI binary is in the `openvaf-driver` crate and is named `openvaf-r`.
+
+```bash
+cargo build --release --package openvaf-driver
+```
+
+A release build takes several minutes on first run.  On success the binary
+lives at:
+
+| Platform | Path |
+|---|---|
+| Linux / macOS | `target/release/openvaf-r` |
+| Windows | `target\release\openvaf-r.exe` |
+
+Quick sanity check:
+
+```bash
+./target/release/openvaf-r --version
+```
+
+Expected output (version may differ):
+
+```
+openvaf 23.5.0
+```
+
+### Step 2 — Look at the source model
+
+The tutorial uses the resistor model from the integration tests:
+
+```bash
+cat integration_tests/RESISTOR/resistor.va
+```
+
+```verilog
+`include "constants.vams"
+`include "disciplines.vams"
+
+module resistor_va(A,B);
+    inout A, B;
+    electrical A,B;
+
+    branch (A,B) br_a_b;
+
+    (*desc= "Ohmic resistance", units = "Ohm" *) parameter real R = 0.0 from [0:inf];
+    (*desc= "Temperature coeff" *) parameter real zeta = 0.0 from [-20:20];
+    (*desc= "Reference Temp.", units = "Kelvin" *) parameter real tnom = 300.0 from [0:inf];
+
+    real res, vres;
+
+    analog begin
+        vres = V(br_a_b);
+        res = R*pow($temperature/tnom, zeta);
+        I(br_a_b) <+ vres / res;
+    end
+endmodule
+```
+
+Three things to notice:
+
+- The module is named `resistor_va` (module names become the OSDI model name).
+- `V(br_a_b)` is a *potential* nature access — it reads the voltage across
+  branch `br_a_b`.
+- `I(br_a_b) <+` is a *contribution* statement — it adds a current into the
+  branch.  Together they implement Ohm's law.
+
+The `(*desc= ... units = ...*)` syntax is a Verilog-A attribute; OpenVAF
+stores these as metadata in the OSDI descriptor.
+
+### Step 3 — Compile the model
+
+```bash
+./target/release/openvaf-r \
+    integration_tests/RESISTOR/resistor.va \
+    -o resistor.osdi
+```
+
+When no `-o` flag is given, OpenVAF writes the output next to the input file.
+Here we redirect it to the current directory for convenience.
+
+If compilation succeeds you will see:
+
+```
+Finished building resistor.va in X.XXs
+```
+
+The output file `resistor.osdi` is a native shared library — a PE DLL on
+Windows, an ELF `.so` on Linux, a Mach-O `.dylib` on macOS — renamed with the
+`.osdi` extension.
+
+### Step 4 — Inspect the exported symbols
+
+A valid OSDI library must export exactly two symbols: `OSDI_DESCRIPTORS` and
+`OSDI_DESCRIPTOR_SIZE`.
+
+**Linux:**
+```bash
+nm -D resistor.osdi | grep OSDI
+```
+
+**macOS:**
+```bash
+nm -gU resistor.osdi | grep OSDI
+```
+
+**Windows (MSVC `dumpbin`):**
+```powershell
+dumpbin /exports resistor.osdi | Select-String OSDI
+```
+
+**Windows or any platform (LLVM `llvm-nm`):**
+```bash
+llvm-nm --defined-only resistor.osdi | grep OSDI
+```
+
+Expected output (addresses will differ):
+
+```
+0000000000004020 D OSDI_DESCRIPTORS
+0000000000004018 D OSDI_DESCRIPTOR_SIZE
+```
+
+`D` means the symbol is in the data section — both are global variables, not
+functions.  `OSDI_DESCRIPTORS` is an array of descriptor structs (one per
+Verilog-A `module` in the source); `OSDI_DESCRIPTOR_SIZE` is a `u32` giving
+the byte size of a single descriptor entry.
+
+### Step 5 — Try the optimisation levels
+
+OpenVAF passes the `-O` flag directly to LLVM.  Compare compile times and
+object sizes:
+
+```bash
+./target/release/openvaf-r integration_tests/RESISTOR/resistor.va -o r_O0.osdi -O 0
+./target/release/openvaf-r integration_tests/RESISTOR/resistor.va -o r_O3.osdi -O 3
+```
+
+On Linux:
+```bash
+ls -lh r_O0.osdi r_O3.osdi
+```
+
+The O3 file is usually smaller because DCE and inlining remove dead code.
+
+### Step 6 — Inspect the preprocessed source
+
+The `--print-expansion` flag runs OpenVAF through preprocessing only and
+prints the macro-expanded source:
+
+```bash
+./target/release/openvaf-r \
+    integration_tests/RESISTOR/resistor.va \
+    --print-expansion
+```
+
+You will see the contents of `disciplines.vams` and `constants.vams` inlined,
+followed by the resistor module body.  All `` `define `` macros are replaced
+with their values and `` `include `` directives are resolved.
+
+---
+
+## Exercises
+
+1. **Change the default resistance.**  Open
+   `integration_tests/RESISTOR/resistor.va`, change `R = 0.0` to `R = 1e3`,
+   recompile, and verify the output still builds.  Then restore the file.
+
+2. **Dry run.**  Add `--dry-run` to the compile command.  OpenVAF runs the
+   entire front end (name resolution, type inference) but stops before LLVM
+   codegen.  Note that no `.osdi` file is produced.
+
+3. **Dump the MIR.**  Add `--dump-mir` to see the optimised MIR for the
+   resistor eval body.  Identify the `fdiv` instruction that implements Ohm's
+   law (`V / R`) and the `pow` call for the temperature coefficient.
+
+4. **Dump the LLVM IR.**  Add `--dump-ir` to see the LLVM IR for the
+   evaluation kernel.  Compare the IR function name (it will include the
+   module name `resistor_va`) against what you saw in the MIR.
+
+5. **Try a syntax error.**  Remove the `endmodule` keyword, recompile, and
+   read the error message.  Then fix it and recompile.
+
+---
+
+## What's next
+
+[T2 — Inspect the Item Tree](t02-item-tree.qmd) opens up the compiler and
+shows the first internal representation built from the source: the
+`ItemTree`, which summarises all top-level declarations without evaluating
+any expression bodies.

@@ -1,0 +1,131 @@
+---
+title: "T15 — Cross-Platform Compilation and the Target Spec"
+---
+
+## Goal
+
+Build OpenVAF targeting a different architecture (e.g. `x86_64-unknown-linux-gnu`
+from a macOS or Windows host using a cross-linker).  Trace how the `Target`
+spec affects `LLVMBackend` feature strings, the `Types` primitive-pointer-width
+table, the `_hypot` vs `hypot` symbol selection, and the final object file ABI.
+
+---
+
+## Prerequisites
+
+- [T1](t01-build-and-compile.qmd) completed; `openvaf-r` is built.
+- A cross-linker installed for the target platform (e.g. `x86_64-linux-gnu-gcc`
+  on Ubuntu for cross-compiling to a different Linux target).
+
+**Background reading:** [`mir_llvm` INTERNALS §fast-math and intrinsics](../docs/mir_llvm/INTERNALS.md)
+
+---
+
+## Walkthrough
+
+### List available targets
+
+```bash
+./target/release/openvaf-r --supported-targets
+```
+
+This calls `target::spec::get_target_names()` and lists every target OpenVAF
+knows about.
+
+### Compile for a specific target
+
+```bash
+./target/release/openvaf-r \
+    integration_tests/RESISTOR/resistor.va \
+    --target x86_64-unknown-linux-gnu \
+    --target_cpu generic \
+    -o resistor_linux.osdi
+```
+
+`--target_cpu generic` disables host-specific LLVM features (AVX, SSE4.2,
+etc.) so the resulting binary runs on any x86-64 processor.
+
+### The `_hypot` vs `hypot` distinction
+
+On Windows, the C runtime does not export `hypot` — it exports `_hypot`
+instead.  `mir_llvm` checks `target.is_like_windows` and emits `_hypot`
+accordingly:
+
+```rust
+// mir_llvm/src/intrinsics.rs
+let name = if cx.target_spec().is_like_windows { "_hypot" } else { "hypot" };
+```
+
+When cross-compiling to a Windows target on Linux, confirm that the emitted
+LLVM IR calls `_hypot`:
+
+```bash
+./target/release/openvaf-r \
+    integration_tests/RESISTOR/resistor.va \
+    --target x86_64-pc-windows-msvc \
+    --dump-unopt-ir \
+    --dry-run 2>&1 | grep hypot
+```
+
+### Pointer width and the Types table
+
+`mir_llvm`'s `Types` struct adapts to the target pointer width.  For a 64-bit
+target, `ptr_sized_int()` returns `i64`; for a 32-bit target it returns `i32`.
+This affects the size of OSDI descriptor fields that hold pointers (e.g.
+function-pointer fields).
+
+Verify by checking the output of `--dump-unopt-ir` for a 32-bit target:
+
+```bash
+./target/release/openvaf-r \
+    integration_tests/RESISTOR/resistor.va \
+    --target i686-unknown-linux-gnu \
+    --dump-unopt-ir \
+    --dry-run
+```
+
+Look for `i32` vs `i64` in struct type definitions.
+
+---
+
+## Exercises
+
+1. **List all Windows targets.**  Filter `--supported-targets` for entries
+   containing `windows`.  How many are there?
+
+2. **Compare object file headers.**  Use `file` (Linux/macOS) or `dumpbin /headers`
+   (Windows) to inspect the object file type of cross-compiled `.osdi` outputs.
+
+3. **Read `Target` spec.**  Open `openvaf/target/src/spec.rs` (or equivalent)
+   and find the fields that `mir_llvm` consults when building `LLVMBackend`.
+
+4. **Host CPU features.**  Compile with `--target_cpu native` and
+   `--dump-unopt-ir`.  Look for LLVM function attributes like
+   `target-features="+avx2,+sse4.2"`.  How do these affect the emitted
+   floating-point instructions?
+
+5. **Embed the stdlib bitcode.**  The OSDI descriptor's struct layout is
+   determined by per-target stdlib bitcode embedded in the `osdi` crate at
+   build time (see `openvaf/osdi/build.rs`).  Find the bitcode files and
+   confirm there is one per target family.
+
+---
+
+## What's next
+
+You have reached the end of the tutorial series!  By now you can:
+
+- Build and use `openvaf-r` to compile arbitrary Verilog-A models.
+- Read the `ItemTree`, `DefMap`, and `Body` to understand what the frontend
+  sees.
+- Interpret MIR text, including derivative instructions from `mir_autodiff`.
+- Read and write the OSDI descriptor format.
+- Load compiled models into ngspice.
+
+Suggested further reading:
+
+- [Architecture overview](../docs/ARCHITECTURE.md) — the full compilation
+  pipeline in one document.
+- The OSDI 0.4 specification — the normative reference for the descriptor ABI.
+- The OpenVAF test suite (`openvaf/{hir,hir_def,hir_ty,sim_back}/tests/`) —
+  the most honest documentation of edge cases.

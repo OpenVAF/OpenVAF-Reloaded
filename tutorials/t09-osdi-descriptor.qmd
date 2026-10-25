@@ -1,0 +1,124 @@
+---
+title: "T9 — Inspect the OSDI Descriptor"
+---
+
+## Goal
+
+Load the compiled `resistor.osdi` from T1 into a small Rust harness that
+`dlopen`s the library and reads `OSDI_DESCRIPTORS`.  Print the node names,
+parameter names, Jacobian entry flags, and `OSDI_VERSION`.  Match each field
+against the 46-field `OsdiDescriptor` struct documented in
+[`osdi` INTERNALS](../docs/osdi/INTERNALS.md).
+
+---
+
+## Prerequisites
+
+- [T1](t01-build-and-compile.qmd) completed: `resistor.osdi` is built.
+- [T7](t07-autodiff.qmd) recommended: understanding Jacobian entries.
+
+**Background reading:** [`osdi` INTERNALS](../docs/osdi/INTERNALS.md)
+
+---
+
+## Setup
+
+Add `libloading` to your scratch crate:
+
+```toml
+[dependencies]
+libloading = "0.8"
+```
+
+---
+
+## Walkthrough
+
+### The OSDI 0.4 ABI
+
+When a simulator `dlopen`s an `.osdi` file it looks for two symbols:
+
+- **`OSDI_DESCRIPTORS`** — a `[OsdiDescriptor; N]` array, one entry per
+  Verilog-A `module` in the source.
+- **`OSDI_DESCRIPTOR_SIZE`** — `u32` byte size of a single `OsdiDescriptor`.
+
+Because OpenVAF compiles `resistor.va` (one module `resistor_va`), there
+is one entry.
+
+The layout of `OsdiDescriptor` is defined by the OSDI 0.4 specification and
+mirrored in the LLVM struct `OsdiTys.osdi_descriptor` that OpenVAF builds from
+the per-target stdlib bitcode.
+
+> **TODO(verify):** The exact field offsets below should be confirmed against
+> `openvaf/osdi/src/lib.rs` once the descriptor emission code is read
+> carefully.
+
+### A minimal Rust reader
+
+```rust
+use libloading::{Library, Symbol};
+
+fn main() {
+    let lib = unsafe { Library::new("resistor.osdi") }.unwrap();
+
+    // Read OSDI_DESCRIPTOR_SIZE
+    let size: Symbol<*const u32> = unsafe { lib.get(b"OSDI_DESCRIPTOR_SIZE\0") }.unwrap();
+    let descriptor_size = unsafe { **size };
+    println!("Descriptor size: {descriptor_size} bytes");
+
+    // Read the first byte of OSDI_DESCRIPTORS as raw bytes
+    let descriptors: Symbol<*const u8> = unsafe { lib.get(b"OSDI_DESCRIPTORS\0") }.unwrap();
+    let raw = unsafe { std::slice::from_raw_parts(*descriptors, descriptor_size as usize) };
+    println!("First {} bytes of descriptor: {:02x?}", raw.len().min(32), &raw[..raw.len().min(32)]);
+}
+```
+
+For a fully typed reader you would define a Rust struct that mirrors
+`OsdiDescriptor` exactly.  The OSDI 0.4 spec is the reference.
+
+### Comparing against the snapshot
+
+The snapshot at `openvaf/test_data/osdi/resistor.snap` shows what OpenVAF's
+own test suite expects from the resistor descriptor:
+
+```
+param "R"   units = "Ohm", desc = "Ohmic resistance", flags = ParameterFlags(0x0)
+param "zeta" ...
+param "tnom" ...
+2 terminals
+node "A" ...
+node "B" ...
+jacobian (A, A) JacobianFlags(JACOBIAN_ENTRY_RESIST | JACOBIAN_ENTRY_REACT_CONST)
+...
+```
+
+Match each line against the OSDI descriptor struct fields printed by your
+harness.
+
+---
+
+## Exercises
+
+1. **Count parameters.**  The resistor has 3 model parameters plus an implicit
+   `$mfactor` instance parameter.  Confirm your reader finds 4 parameter
+   entries in the descriptor.
+
+2. **Interpret `JacobianFlags`.**  `JACOBIAN_ENTRY_RESIST` means the entry is
+   in the resistive (DC/AC) Jacobian.  `JACOBIAN_ENTRY_REACT_CONST` means the
+   reactive part is constant (zero for this model).  Look up the flag values
+   in the OSDI 0.4 specification.
+
+3. **Read the diode descriptor.**  Compile `tutorials/models/diode_simple.va`
+   from T8 and read its descriptor.  Confirm the Jacobian entry is **not**
+   `REACT_CONST` (because it depends on the operating point).
+
+4. **Print the function pointer.**  The descriptor contains a pointer to the
+   evaluation function.  Print its numeric address.  Confirm it is non-null.
+
+---
+
+## What's next
+
+[T10 — Use ngspice to Run a DC Sweep](t10-ngspice-simulation.qmd) loads
+the compiled resistor into ngspice using the OSDI interface and runs a DC
+sweep to verify the resistance value.

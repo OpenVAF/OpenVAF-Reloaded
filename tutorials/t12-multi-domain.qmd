@@ -1,0 +1,103 @@
+---
+title: "T12 — Multi-Domain Model (Electro-Thermal)"
+---
+
+## Goal
+
+Write a compact model that couples an electrical port with a thermal port using
+a custom `temperature` discipline.  Trace how `hir_ty` resolves the two
+different `NatureTy` hierarchies and how `sim_back` produces two separate
+`SimUnknownKind` variants in the `DaeSystem`.
+
+---
+
+## Prerequisites
+
+- [T6](t06-type-inference.qmd) completed.
+- [T11](t11-multiport-node-collapse.qmd) recommended.
+
+**Background reading:** [`hir_ty` INTERNALS §3–§5](../docs/hir_ty/INTERNALS.md) |
+[`sim_back` INTERNALS](../docs/sim_back/INTERNALS.md)
+
+---
+
+## Walkthrough
+
+### A thermal discipline
+
+The `diode_lim.va` integration test model at
+`openvaf/test_data/osdi/diode_lim.va` already demonstrates a multi-domain
+model with `electrical` and `thermal` ports.  Read it first:
+
+```bash
+cat openvaf/test_data/osdi/diode_lim.va
+```
+
+The `thermal` discipline uses `Pwr` (power, watts) as the flow access
+function and `Temp` (temperature, Kelvin) as the potential access function.
+
+### Two discipline hierarchies
+
+In `hir_ty`, each discipline is resolved to a `DisciplineTy`:
+
+```
+DisciplineTy { flow: NatureId(Pwr), potential: NatureId(Temp) }   -- thermal
+DisciplineTy { flow: NatureId(Current), potential: NatureId(Voltage) } -- electrical
+```
+
+The two `NatureId`s come from different nature hierarchies.  `hir_ty` traces
+the `parent` chain for each nature until it reaches the base nature (the one
+with no parent), which determines the `units` and `access` function name.
+
+### Two SimUnknownKind entries
+
+In `sim_back`, the `DaeSystem::unknowns` map contains one entry per simulator
+unknown.  For a two-port electro-thermal model:
+
+```rust
+SimUnknownKind::KirchoffLaw(NodeId(A))   -- electrical node A
+SimUnknownKind::KirchoffLaw(NodeId(C))   -- electrical node C
+SimUnknownKind::KirchoffLaw(NodeId(dT))  -- thermal node dT
+```
+
+The thermal node contributes a temperature `Temp(br_sht)` access and a power
+`Pwr(br_sht) <+` contribution — structurally identical to the electrical case,
+just with different nature types.
+
+### Compile and inspect
+
+```bash
+./target/release/openvaf-r openvaf/test_data/osdi/diode_lim.va \
+    --dump-mir --dry-run
+```
+
+In the output, identify the `SimUnknown` entries in the dump and match each
+to the `electrical` and `thermal` nodes in the source.
+
+---
+
+## Exercises
+
+1. **Write a minimal electro-thermal model.**  Write a two-port resistor with
+   self-heating: electrical ports `A`, `B` and a thermal port `dT`.  The
+   dissipated power is `P = V(A,B)^2 / R`; add `Pwr(dT) <+ P`.
+
+2. **Trace `DisciplineTy::access`.**  In `hir_ty`, the function
+   `DisciplineTy::access(NatureAccess)` decides whether an access is
+   potential or flow.  Trace the call chain for `Pwr(br_sht)`.
+
+3. **Compare Jacobian sizes.**  A two-port electrical model has a 2×2
+   Jacobian.  A two-port model with one extra thermal port has a 3×3
+   Jacobian.  Confirm this in the `DaeSystem` dump.
+
+4. **Read the thermal discipline.**  Open `openvaf/basedb/src/stdlibs/`
+   (where the standard library `.vams` files are embedded).  Find the
+   `thermal` discipline definition and confirm the access function names.
+
+---
+
+## What's next
+
+[T13 — Noise Analysis Support](t13-noise-analysis.qmd) adds `white_noise`
+and `flicker_noise` contributions to the diode model and traces the noise
+terms through `sim_back/noise.rs` into the OSDI descriptor's noise source list.

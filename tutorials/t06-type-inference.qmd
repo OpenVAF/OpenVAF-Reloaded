@@ -1,0 +1,112 @@
+---
+title: "T6 — Follow Type Inference for a Simple Model"
+---
+
+## Goal
+
+Print the `InferenceResult` for the resistor analog block and confirm that
+`resolved_calls` maps the `V(br_a_b)` call expression to
+`ResolvedFun::BuiltIn(BuiltIn::potential)` and the `I(br_a_b) <+` statement's
+`assignment_destination` to `AssignDst::Flow(BranchWrite::Named(br_a_b))`.
+
+---
+
+## Prerequisites
+
+- [T4](t04-lowered-body.qmd) completed.
+
+**Background reading:** [`hir_ty` INTERNALS §7–§10](../docs/hir_ty/INTERNALS.md)
+
+---
+
+## Setup
+
+`InferenceResult` does not have a `dump()` method.  Use `{:#?}` Debug
+formatting in the scratch crate:
+
+```rust
+use hir_ty::db::HirTyDB;
+use hir_def::DefWithBodyId;
+
+let result = db.inference_result(body_id);
+println!("{:#?}", result);
+```
+
+---
+
+## Walkthrough
+
+### The five maps
+
+`InferenceResult` holds five maps.  For the resistor, focus on three:
+
+**`expr_types`** — maps each `ExprId` to a `Ty`.  The path expression `R`
+maps to `Ty::Param(Type::Real, ParamId(0))`.  The path expression `br_a_b`
+maps to `Ty::Branch(BranchId(0))`.
+
+**`resolved_calls`** — maps call expressions to `ResolvedFun`.  The
+expression `V(br_a_b)` maps to `ResolvedFun::BuiltIn(BuiltIn::potential)`.
+The expression `I(br_a_b)` maps to `ResolvedFun::BuiltIn(BuiltIn::flow)`.
+This is the resolution of the nature access: the compiler determines whether
+`V` means potential or flow by inspecting the discipline of the argument
+branch.
+
+**`assignment_destination`** — maps `StmtId` to `AssignDst`.  The statement
+`I(br_a_b) <+ vres/res` maps to
+`AssignDst::Flow(BranchWrite::Named(BranchId(0)))`.  The statement
+`vres = V(br_a_b)` maps to `AssignDst::Var(VarId(0))`.
+
+### Nature access resolution in detail
+
+When the inference engine encounters `V(br_a_b)`:
+
+1. `V` was resolved by the `DefMap` to `NatureAccess(potential_id)`.
+2. The argument `br_a_b` has type `Ty::Branch(BranchId(0))`.
+3. `hir_ty::lower::branch_info(BranchId(0))` returns a `BranchTy` whose
+   `discipline` is `DisciplineId` for `electrical`.
+4. `DisciplineTy::access(NatureAccess::Potential)` returns `BuiltIn::potential`.
+5. `resolved_calls[V_expr] = ResolvedFun::BuiltIn(BuiltIn::potential)`.
+
+The same process for `I(br_a_b)` with `NatureAccess::Flow` yields
+`BuiltIn::flow`.
+
+### How `<+` becomes `AssignDst::Flow`
+
+The contribution statement `I(br_a_b) <+` is a `Stmt::Assignment` in the
+`Body`.  During inference, `infere_stmt` checks the left-hand side:
+
+- The call `I(br_a_b)` resolves (via `resolved_calls`) to `BuiltIn::flow`.
+- A `<+` assignment to a `flow` access → `AssignDst::Flow(branch_write)`.
+- The `branch_write` is `BranchWrite::Named(BranchId(0))`.
+
+This is stored in `assignment_destination[stmt_id]` and later read by
+`hir::BodyRef::get_stmt()` to produce `Stmt::Contribute { kind: Flow, … }`.
+
+---
+
+## Exercises
+
+1. **Confirm `resolved_signatures`.**  Find the `resolved_signatures` entry
+   for the `V(br_a_b)` call.  It should be `NATURE_ACCESS_BRANCH` (defined
+   in `hir_ty::builtin`).  Look up `NATURE_ACCESS_BRANCH` in the source to
+   see what overload it represents.
+
+2. **Check `casts`.**  The `casts` map is empty for the resistor.  Add a
+   parameter `integer N = 1;` and use it in an expression that requires an
+   `integer → real` cast.  Does the `casts` map now have an entry?
+
+3. **Inspect `$temperature`.**  Find the `ExprId` for `$temperature` in the
+   body.  What `Ty` does it have in `expr_types`?  What does `resolved_calls`
+   say about it?
+
+4. **What happens with `V(A,B)`?**  Change `V(br_a_b)` to `V(A,B)` (using
+   nodes directly instead of a named branch).  Dump the `InferenceResult` again.
+   How does the `BranchWrite` change in `assignment_destination`?
+
+---
+
+## What's next
+
+[T7 — Understand the Automatic Differentiation Pass](t07-autodiff.qmd)
+shows what `mir_autodiff` adds to the optimised evaluation MIR: derivative
+instructions for the Jacobian columns needed by the simulator.

@@ -1,0 +1,289 @@
+// OpenVAF / VerilogAE workspace — crate interaction diagram
+// Render with: dot -Tsvg docs/crate_graph.dot -o docs/crate_graph.svg
+//              dot -Tpdf docs/crate_graph.dot -o docs/crate_graph.pdf
+
+digraph openvaf {
+    graph [
+        rankdir = LR
+        fontname = "Helvetica"
+        fontsize = 12
+        compound = true
+        splines = true
+        nodesep = 0.4
+        ranksep = 1.2
+        bgcolor = "#fafafa"
+    ]
+    node [
+        shape = box
+        style = "filled,rounded"
+        fontname = "Helvetica"
+        fontsize = 11
+        margin = "0.15,0.10"
+    ]
+    edge [
+        fontname = "Helvetica"
+        fontsize = 9
+        labeldistance = 2.0
+        labelangle = 30
+    ]
+
+    // ───────────────────────────────────────────────────────────────────
+    // CLUSTER 0 — Binary entry points
+    // ───────────────────────────────────────────────────────────────────
+    subgraph cluster_bins {
+        label = "Entry points"
+        style = "filled,rounded"
+        color = "#444444"
+        fillcolor = "#eeeeee"
+        fontsize = 13
+
+        openvaf_driver [label="openvaf-driver\n(CLI binary)" fillcolor="#c8e6c9"]
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // CLUSTER 1 — Compilation library (openvaf lib crate)
+    // ───────────────────────────────────────────────────────────────────
+    subgraph cluster_lib {
+        label = "Compilation library"
+        style = "filled,rounded"
+        color = "#444444"
+        fillcolor = "#e3f2fd"
+        fontsize = 13
+
+        openvaf [label="openvaf\n(lib)" fillcolor="#bbdefb"]
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // CLUSTER 2 — Frontend
+    // ───────────────────────────────────────────────────────────────────
+    subgraph cluster_frontend {
+        label = "Frontend (parsing → HIR)"
+        style = "filled,rounded"
+        color = "#444444"
+        fillcolor = "#fff8e1"
+        fontsize = 13
+
+        tokens    [label="tokens" fillcolor="#fff9c4"]
+        lexer     [label="lexer" fillcolor="#fff9c4"]
+        syntax    [label="syntax\n(CST / AST)" fillcolor="#fff9c4"]
+        parser    [label="parser" fillcolor="#fff9c4"]
+        vfs       [label="vfs" fillcolor="#ffe082"]
+        paths     [label="paths\n(AbsPathBuf)" fillcolor="#ffe082"]
+        preprocessor [label="preprocessor" fillcolor="#ffcc80"]
+        basedb    [label="basedb\n(Salsa root DB)" fillcolor="#ffb74d"]
+        hir_def   [label="hir_def\n(item tree, bodies)" fillcolor="#ffa726"]
+        hir_ty    [label="hir_ty\n(type inference)" fillcolor="#fb8c00"]
+        hir       [label="hir\n(query facade)" fillcolor="#f57c00"]
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // CLUSTER 3 — MIR / middle-end
+    // ───────────────────────────────────────────────────────────────────
+    subgraph cluster_mir {
+        label = "MIR middle-end"
+        style = "filled,rounded"
+        color = "#444444"
+        fillcolor = "#f3e5f5"
+        fontsize = 13
+
+        mir        [label="mir\n(IR types)" fillcolor="#e1bee7"]
+        mir_build  [label="mir_build\n(SSA builder)" fillcolor="#ce93d8"]
+        hir_lower  [label="hir_lower\n(HIR → MIR)" fillcolor="#ba68c8"]
+        mir_opt    [label="mir_opt\n(optimisations)" fillcolor="#ab47bc"]
+        mir_autodiff [label="mir_autodiff\n(AD pass)" fillcolor="#9c27b0"]
+        mir_reader [label="mir_reader\n(text parser)" fillcolor="#e1bee7"]
+        mir_interpret [label="mir_interpret\n(test interpreter)" fillcolor="#e1bee7"]
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // CLUSTER 4 — Backend
+    // ───────────────────────────────────────────────────────────────────
+    subgraph cluster_backend {
+        label = "Backend (codegen → OSDI)"
+        style = "filled,rounded"
+        color = "#444444"
+        fillcolor = "#fce4ec"
+        fontsize = 13
+
+        sim_back   [label="sim_back\n(model extraction)" fillcolor="#f48fb1"]
+        osdi       [label="osdi\n(OSDI ABI codegen)" fillcolor="#f06292"]
+        mir_llvm   [label="mir_llvm\n(LLVM codegen)" fillcolor="#ec407a"]
+        linker     [label="linker" fillcolor="#e91e63"]
+        target     [label="target\n(target triple)" fillcolor="#e91e63"]
+        linker_target [label="linker_target" fillcolor="#e91e63"]
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // CLUSTER 5 — Data-structure library crates
+    // ───────────────────────────────────────────────────────────────────
+    subgraph cluster_util {
+        label = "Utility / data-structure crates"
+        style = "filled,rounded"
+        color = "#444444"
+        fillcolor = "#e8f5e9"
+        fontsize = 13
+
+        stdx          [label="stdx\n(macros, iters)" fillcolor="#c8e6c9"]
+        arena         [label="arena\n(typed arena)" fillcolor="#c8e6c9"]
+        bitset        [label="bitset\n(BitSet / Sparse)" fillcolor="#a5d6a7"]
+        workqueue     [label="workqueue\n(WorkQueue/Stack)" fillcolor="#a5d6a7"]
+        list_pool     [label="list_pool\n(ValueListPool)" fillcolor="#c8e6c9"]
+        bforest       [label="bforest\n(B+-tree)" fillcolor="#c8e6c9"]
+        typed_indexmap [label="typed_indexmap\n(TiMap/TiSet)" fillcolor="#c8e6c9"]
+        base_n        [label="base_n\n(base-36 encode)" fillcolor="#c8e6c9"]
+        mini_harness  [label="mini_harness\n(test runner)" fillcolor="#c8e6c9"]
+        sourcegen     [label="sourcegen\n(codegen tests)" fillcolor="#fff9c4"]
+    }
+
+    // ───────────────────────────────────────────────────────────────────
+    // CLUSTER 6 — Consumer / downstream crates
+    // ───────────────────────────────────────────────────────────────────
+    subgraph cluster_consumers {
+        label = "Consumer crates"
+        style = "filled,rounded"
+        color = "#444444"
+        fillcolor = "#e0f7fa"
+        fontsize = 13
+
+        melange_core  [label="melange-core\n(circuit simulator)" fillcolor="#b2ebf2"]
+        verilogae     [label="verilogae\n(model eval lib)" fillcolor="#80deea"]
+        verilogae_ffi [label="verilogae_ffi\n(C FFI wrapper)" fillcolor="#4dd0e1"]
+        verilogae_py  [label="verilogae_py\n(Python extension)" fillcolor="#26c6da"]
+        xtask         [label="xtask\n(build scripts)" fillcolor="#b2ebf2"]
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EDGES — Entry points
+    // ═══════════════════════════════════════════════════════════════════
+    openvaf_driver -> openvaf [label="compile()\nexpand()" color="#2e7d32" fontcolor="#2e7d32"]
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EDGES — openvaf lib → subsystems
+    // ═══════════════════════════════════════════════════════════════════
+    openvaf -> basedb   [label="CompilationDB::new_fs()" color="#1565c0" fontcolor="#1565c0"]
+    openvaf -> sim_back [label="collect_modules()" color="#1565c0" fontcolor="#1565c0"]
+    openvaf -> mir_llvm [label="LLVMBackend::new()" color="#1565c0" fontcolor="#1565c0"]
+    openvaf -> osdi     [label="osdi::compile()" color="#1565c0" fontcolor="#1565c0"]
+    openvaf -> linker   [label="link()" color="#1565c0" fontcolor="#1565c0"]
+    openvaf -> base_n   [label="encode() [cache hash]" color="#1565c0" fontcolor="#1565c0"]
+    openvaf -> target   [label="host_triple()\nget_target_names()" color="#1565c0" fontcolor="#1565c0"]
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EDGES — Frontend chain
+    // ═══════════════════════════════════════════════════════════════════
+    tokens -> lexer     [label="Token types"]
+    lexer -> parser     [label="token stream"]
+    parser -> syntax    [label="Parse<SourceFile>"]
+    vfs -> paths        [label="AbsPathBuf\nreexport" style=dashed]
+    preprocessor -> basedb  [label="VfsStorage\nSourceMap" style=dashed]
+    syntax -> basedb    [label="parse()\nast_id_map()"]
+    basedb -> vfs       [label="file_text()\nset_file_text()"]
+    basedb -> preprocessor [label="preprocess()"]
+    basedb -> syntax    [label="parse()"]
+    hir_def -> basedb   [label="db.parse()\ndb.file_text()\nSalsa queries"]
+    hir_def -> syntax   [label="AstIdMap\nAstPtr"]
+    hir_def -> arena    [label="Idx<T> storage"]
+    hir_def -> stdx     [label="impl_idx_from!\nimpl_intern_key!"]
+    hir_ty -> hir_def   [label="item_tree()\ndef_map()\nbodies()"]
+    hir_ty -> basedb    [label="Salsa queries"]
+    hir -> hir_ty       [label="infer()\nalias_resolve()"]
+    hir -> hir_def      [label="item_tree()\ndef_map()"]
+    hir -> basedb       [label="CompilationDB\nreexport" style=dashed]
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EDGES — MIR construction
+    // ═══════════════════════════════════════════════════════════════════
+    hir_lower -> hir    [label="MirBuilder::new(db, module)\nCallBackKind / PlaceKind"]
+    hir_lower -> mir    [label="Function\ndfg.make_inst()\nlayout.append_inst()"]
+    hir_lower -> mir_build [label="SSABuilder::def_var()\nSSABuilder::use_var()"]
+    mir_build -> mir    [label="Function\nDataFlowGraph\nLayout"]
+    mir_build -> bitset [label="BitSet<Block>\n[block reachability]"]
+    mir -> bforest      [label="PhiNode.blocks\nMap<Block,u32>"]
+    mir -> list_pool    [label="ValueList\nValueListPool"]
+    mir -> arena        [label="PrimaryMap<Inst,…>\nPrimaryMap<Block,…>"]
+    mir_opt -> mir      [label="dead_code_elimination()\nsimplify_cfg()\nSCCP / inst_combine()"]
+    mir_opt -> bitset   [label="BitSet / HybridBitSet\nSparseBitMatrix\n[liveness sets]"]
+    mir_opt -> workqueue [label="WorkQueue<Inst>\n[DCE worklist]"]
+    mir_autodiff -> mir [label="auto_diff()\nDominatorTree::compute()"]
+    mir_autodiff -> mir_opt [label="dead_code_elimination()\nsimplify_cfg()"]
+    mir_autodiff -> workqueue [label="WorkQueue<Inst>\n[live-derivatives fixpoint]"]
+    workqueue -> bitset  [label="BitSet<T>\n[membership oracle]"]
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EDGES — sim_back (model extraction)
+    // ═══════════════════════════════════════════════════════════════════
+    sim_back -> hir_lower  [label="MirBuilder::build()\nHirInterner"]
+    sim_back -> hir        [label="Module\nParameter\nVariable queries"]
+    sim_back -> mir_opt    [label="dead_code_elimination()\naggressive_dce()\nSCCP / simplify_cfg()"]
+    sim_back -> mir_autodiff [label="auto_diff()\nunknowns()"]
+    sim_back -> typed_indexmap [label="TiMap<…>\n[signal/param tables]"]
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EDGES — Backend
+    // ═══════════════════════════════════════════════════════════════════
+    osdi -> sim_back    [label="collect_modules()\nModule list"]
+    osdi -> mir_llvm    [label="LLVMBackend::new()\nCodegenCx::compile_module()"]
+    osdi -> linker      [label="link()"]
+    osdi -> base_n      [label="encode() [UUID / symbol names]"]
+    osdi -> target      [label="is_like_windows\nsymbol naming"]
+    mir_llvm -> mir     [label="Function traversal\nOpcode dispatch"]
+    mir_llvm -> target  [label="target_machine\ndata_layout\nfeatures"]
+    linker -> target    [label="linker flavor\npre/post link args"]
+    linker -> linker_target [label="LinkerFlavor\nLldFlavor"]
+    target -> linker_target [label="LinkerFlavor\nabi"]
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EDGES — test / dev tools
+    // ═══════════════════════════════════════════════════════════════════
+    mir_reader -> mir   [label="parse_function()\nparse_functions()" style=dashed color="#666666" fontcolor="#666666"]
+    mir_interpret -> mir [label="Interpreter::run()\neval() dispatch" style=dashed color="#666666" fontcolor="#666666"]
+    mir_autodiff -> mir_reader [label="[dev-dep]\nparse test fixtures" style=dashed color="#666666" fontcolor="#666666"]
+    mir_autodiff -> mir_interpret [label="[dev-dep]\nnumerical verify" style=dashed color="#666666" fontcolor="#666666"]
+    sourcegen -> syntax  [label="ensure_file_contents()\nSyntaxKind gen" style=dashed color="#888888" fontcolor="#888888"]
+    sourcegen -> mir     [label="ensure_file_contents()\nopcode / InstBuilder gen" style=dashed color="#888888" fontcolor="#888888"]
+    sourcegen -> hir     [label="ensure_file_contents()\nbuiltin functions gen" style=dashed color="#888888" fontcolor="#888888"]
+    sourcegen -> osdi    [label="ensure_file_contents()\nC header bindings gen" style=dashed color="#888888" fontcolor="#888888"]
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EDGES — Consumer crates
+    // ═══════════════════════════════════════════════════════════════════
+    melange_core -> openvaf   [label="compile()\n[batch mode]" color="#006064" fontcolor="#006064"]
+    melange_core -> typed_indexmap [label="TiMap / TiSet\n[Circuit internals]" color="#006064" fontcolor="#006064"]
+
+    verilogae -> hir      [label="CompilationDB::new()\nModule / Parameter queries" color="#00695c" fontcolor="#00695c"]
+    verilogae -> hir_lower [label="MirBuilder::build()\nHirInterner" color="#00695c" fontcolor="#00695c"]
+    verilogae -> mir_opt  [label="dead_code_elimination()\naggressive_dce()\nsimplify_cfg()" color="#00695c" fontcolor="#00695c"]
+    verilogae -> mir_autodiff [label="auto_diff()" color="#00695c" fontcolor="#00695c"]
+    verilogae -> mir_llvm [label="LLVMBackend::new()\ngen_func_obj()" color="#00695c" fontcolor="#00695c"]
+    verilogae -> linker   [label="link()" color="#00695c" fontcolor="#00695c"]
+    verilogae -> base_n   [label="encode() [function prefix]" color="#00695c" fontcolor="#00695c"]
+    verilogae -> target   [label="Target::host_target()\nTarget::search()" color="#00695c" fontcolor="#00695c"]
+    verilogae -> paths    [label="AbsPathBuf\n[include dirs]" color="#00695c" fontcolor="#00695c"]
+    verilogae -> bitset   [label="BitSet [output values]" color="#00695c" fontcolor="#00695c"]
+    verilogae -> typed_indexmap [label="TiMap [model info]" color="#00695c" fontcolor="#00695c"]
+
+    verilogae_ffi -> verilogae [label="verilogae_load()\nverilogae_export_vfs()\nverilogae_call_fun_parallel()\n[static feature: direct Rust]\n[dynamic: extern C ABI]" color="#00838f" fontcolor="#00838f"]
+    verilogae_py  -> verilogae_ffi [label="verilogae_load()\nverilogae_fun_ptr()\nverilogae_init_modelcard()\nverilogae_real_params() …" color="#00acc1" fontcolor="#00acc1"]
+
+    xtask -> base_n [label="encode() [cache hash]" style=dashed color="#666666" fontcolor="#666666"]
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Widely-used utility edges (shown as dashed to reduce clutter)
+    // ═══════════════════════════════════════════════════════════════════
+    stdx -> hir_def  [label="impl_idx_from!\nimpl_intern_key!" style=dashed color="#999999" fontcolor="#999999"]
+    stdx -> mir      [label="impl_idx_from!" style=dashed color="#999999" fontcolor="#999999"]
+    stdx -> sim_back [label="impl_idx_from!\nzip()" style=dashed color="#999999" fontcolor="#999999"]
+
+    // Legend
+    subgraph cluster_legend {
+        label = "Legend"
+        style = "filled,rounded"
+        color = "#444444"
+        fillcolor = "#f5f5f5"
+        fontsize = 11
+        rank = sink
+
+        leg_solid  [label=" solid arrow = runtime dependency " shape=plaintext]
+        leg_dashed [label=" dashed arrow = dev-dep / generated / macro use " shape=plaintext]
+    }
+}

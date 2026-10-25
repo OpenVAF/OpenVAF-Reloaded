@@ -1,0 +1,96 @@
+---
+title: "T13 — Noise Analysis Support"
+---
+
+## Goal
+
+Extend the diode model from T8 with `white_noise` and `flicker_noise`
+contributions.  Trace the noise terms through `sim_back/noise.rs` into the
+`NoiseSources` table in the `DaeSystem`, and verify they appear in the OSDI
+descriptor's noise source list.
+
+---
+
+## Prerequisites
+
+- [T8](t08-diode-nonlinearity.qmd) completed.
+- [T9](t09-osdi-descriptor.qmd) recommended: reading OSDI descriptor fields.
+
+**Background reading:** [`sim_back` INTERNALS §noise](../docs/sim_back/INTERNALS.md)
+
+---
+
+## Walkthrough
+
+### Noise in Verilog-A
+
+Noise contributions are added with `white_noise(psd, name)` and
+`flicker_noise(psd, exp, name)` in the `analog` block.  These are translated
+by OpenVAF into `ImplicitEquationKind::NoiseSrc` entries in the `HirInterner`
+and collected into `DaeSystem::noise_sources`.
+
+### Adding noise to the diode
+
+Extend `tutorials/models/diode_simple.va`:
+
+```verilog
+analog begin
+    vd = V(A, C);
+    id = IS * (exp(vd / (N * $vt)) - 1.0);
+    I(A, C) <+ id;
+
+    // Shot noise: PSD = 2 * q * |id|
+    I(A, C) <+ white_noise(2 * `P_Q * abs(id), "shot");
+
+    // Flicker noise
+    I(A, C) <+ flicker_noise(1e-10 * abs(id), 1.0, "flicker");
+end
+```
+
+### Compiling and inspecting
+
+```bash
+./target/release/openvaf-r tutorials/models/diode_simple.va \
+    --dump-mir --dry-run
+```
+
+In the dump, find the `NoiseSources` section.  Each entry records the noise
+type, the branch it is associated with, and the MIR `Value` that computes
+the PSD.
+
+### Reading the OSDI descriptor
+
+The OSDI descriptor includes a `noise_sources` array.  Use the reader harness
+from T9 to confirm the two noise entries appear with the names `"shot"` and
+`"flicker"`.
+
+Also reference the existing noise model test:
+```
+openvaf/test_data/osdi/noise.va
+```
+
+---
+
+## Exercises
+
+1. **Read `noise.va`.**  Open `openvaf/test_data/osdi/noise.va` and compare
+   its noise contributions against `diode_simple.va`.  What additional noise
+   sources does it include?
+
+2. **Find `noise.rs`.**  Open `openvaf/sim_back/src/noise.rs`.  What data
+   structure does it build from the `HirInterner`'s implicit equations?
+
+3. **Disable flicker noise.**  Remove the `flicker_noise` line and recompile.
+   Verify the `NoiseSources` table shrinks by one entry.
+
+4. **Correlated noise.**  Some models add noise to two branches simultaneously.
+   Look for `white_noise` on two different branches in a model.  How does
+   `sim_back` represent this in the `DaeSystem`?
+
+---
+
+## What's next
+
+[T14 — Custom Analog Function and the Function DefMap](t14-analog-function.qmd)
+shows how a Verilog-A `function` gets its own `DefMap`, how the function call
+is lowered through `hir_lower`, and whether it is inlined into the MIR.

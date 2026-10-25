@@ -1,0 +1,122 @@
+---
+title: "T10 — Use ngspice to Run a DC Sweep"
+---
+
+## Goal
+
+Load `resistor.osdi` in ngspice using the OSDI device interface.  Write a
+simple netlist, run a DC sweep from 0 V to 1 V, and verify that the simulated
+current matches `I = V / R` with the default parameter value.
+
+---
+
+## Prerequisites
+
+- [T1](t01-build-and-compile.qmd) completed: `resistor.osdi` built.
+- ngspice ≥ 40 with OSDI support compiled in (`--enable-osdi`).
+
+---
+
+## Setup
+
+### Install ngspice with OSDI support
+
+**Ubuntu / Debian (build from source):**
+```bash
+sudo apt install build-essential automake libtool libreadline-dev
+git clone https://git.code.sf.net/p/ngspice/ngspice
+cd ngspice
+./autogen.sh
+./configure --with-x --enable-osdi --enable-xspice
+make -j$(nproc)
+sudo make install
+```
+
+**Verify OSDI is available:**
+```bash
+ngspice --version | grep -i osdi
+# Should print something like: OSDI interface enabled
+```
+
+---
+
+## Walkthrough
+
+### Step 1 — Write the netlist
+
+Create `tutorials/netlists/resistor_dc.sp`:
+
+```spice
+* DC sweep of OSDI resistor model
+.osdi resistor.osdi
+
+* Instance: R1, node A=in, node B=0(GND), model=resistor_va, R=1k
+Xr1 in 0 resistor_va R=1k
+
+* DC voltage source
+Vtest in 0 DC 1
+
+.dc Vtest 0 1 0.01
+
+.control
+run
+plot i(Vtest)
+.endc
+
+.end
+```
+
+The `.osdi` directive tells ngspice to load the shared library.  The instance
+`Xr1` is a subcircuit call — by convention, OSDI models are instantiated as
+`X` elements.
+
+### Step 2 — Run the simulation
+
+```bash
+ngspice -b tutorials/netlists/resistor_dc.sp -o resistor_dc.log
+```
+
+`-b` runs in batch mode (no interactive console).
+
+### Step 3 — Verify the result
+
+The log file will contain the DC operating point and sweep data.  For
+`R = 1 kΩ` and `V = 1 V`, the expected current is `I = 1 V / 1 kΩ = 1 mA`.
+
+Extract the current at `V = 1`:
+```bash
+grep "1.000000e+00" resistor_dc.log | head -5
+```
+
+### Step 4 — Vary the `R` parameter
+
+Change `R=1k` to `R=10k` in the netlist and re-run.  The current at 1 V
+should be 0.1 mA.
+
+---
+
+## Exercises
+
+1. **Plot V–I curve.**  Sweep from −1 V to +1 V and plot current.  It should
+   be a straight line through the origin with slope `1/R`.
+
+2. **Temperature dependence.**  The model has a `zeta` temperature coefficient.
+   Set `zeta=1` and `tnom=300`.  Run simulations at different temperatures
+   using ngspice's `.temp` directive.  Verify that the resistance follows
+   `R_t = R * (T/tnom)^zeta`.
+
+3. **Try the diode.**  Compile `tutorials/models/diode_simple.va` from T8,
+   load it via `.osdi`, and run a DC sweep.  The exponential I–V should be
+   visible in the log.
+
+4. **Check the OSDI handshake.**  Enable ngspice's verbose OSDI logging
+   (`set ngdebug` in `.control`) to see the descriptor fields it reads
+   from the library at load time.
+
+---
+
+## What's next
+
+[T11 — Multi-Port Model and Node Collapse](t11-multiport-node-collapse.qmd)
+introduces a three-terminal model with an internal node and shows how
+`sim_back`'s node-collapse analysis reduces the simulator's matrix size.
