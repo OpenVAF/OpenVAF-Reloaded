@@ -968,42 +968,32 @@ impl BodyLoweringCtx<'_, '_, '_> {
         let (equation, val) = self.ctx.implicit_equation(ImplicitEquationKind::Idt(kind));
 
         let mut enable_integral = self.ctx.use_param(ParamKind::EnableIntegration);
-        let residual = if kind.has_ic() {
-            if kind.has_assert() {
-                enable_integral = self.lower_select_with(
-                    enable_integral,
-                    |mut s| {
-                        let assert = s.lower_expr(args[2]);
-                        s.ctx.ins().feq(assert, F_ZERO)
-                    },
-                    |_| FALSE,
-                )
-            }
+        if kind.has_assert() {
+            enable_integral = self.lower_select_with(
+                enable_integral,
+                |mut s| {
+                    let assert = s.lower_expr(args[2]);
+                    s.ctx.ins().feq(assert, F_ZERO)
+                },
+                |_| FALSE,
+            )
+        }
 
-            self.lower_multi_select(enable_integral, |mut ctx, branch| {
-                if branch {
-                    // Always integrate the DAE state unbounded; for `idtmod` the modulo
-                    // wrap is applied to the *returned value* (below), not the state.
-                    // Wrapping the state inside the residual makes the reactive residual
-                    // jump by `modulus` at each wrap, so the transient integrator's d/dt
-                    // term (based on the previous charge, ~modulus) diverges at the wrap.
-                    let arg = ctx.lower_expr(args[0]);
-                    [ctx.ctx.ins().fneg(arg), val]
-                } else {
-                    // During the IC/DC phase the stored charge (reactive residual) must
-                    // be `ic`, not zero: `val - ic` pins `val = ic` at DC, but a zero
-                    // charge makes the integrator restart from 0 once transient
-                    // integration turns on, silently dropping the initial condition.
-                    // Storing charge = `ic` lets the transient continue from `ic` (and
-                    // an `assert` reset likewise restores the integrator to `ic`).
-                    let ic = ctx.lower_expr(args[1]);
-                    [ctx.ctx.ins().fsub(val, ic), ic]
-                }
-            })
-        } else {
-            let arg = self.lower_expr(args[0]);
-            [self.ctx.ins().fneg(arg), val]
-        };
+        let residual = self.lower_multi_select(enable_integral, |mut ctx, branch| {
+            if branch {
+                // Always integrate the DAE state unbounded; for `idtmod` the modulo
+                // wrap is applied to the returned value, not the state. Wrapping
+                // the charge makes it discontinuous at each modulus boundary.
+                let arg = ctx.lower_expr(args[0]);
+                [ctx.ctx.ins().fneg(arg), val]
+            } else {
+                // Preserve the DC/IC equation for both forms of the operator. The
+                // charge must start at the initial value too, so transient
+                // integration does not discard a nonzero initial condition.
+                let ic = if kind.has_ic() { ctx.lower_expr(args[1]) } else { F_ZERO };
+                [ctx.ctx.ins().fsub(val, ic), ic]
+            }
+        });
 
         self.ctx.def_resist_residual(residual[0], equation);
         self.ctx.def_react_residual(residual[1], equation);

@@ -5,7 +5,7 @@ use stdx::SKIP_HOST_TESTS;
 
 use crate::{add_preamble, ensure_file_contents, project_root, reformat, to_upper_snake_case};
 
-const ANALOG_OPERATORS: [&str; 17] = [
+const ANALOG_OPERATORS: [&str; 16] = [
     "absdelay",
     "ddt",
     "idt",
@@ -19,7 +19,6 @@ const ANALOG_OPERATORS: [&str; 17] = [
     "laplace_np",
     "laplace_zd",
     "laplace_zp",
-    "limexp",
     "last_crossing",
     "slew",
     "transition",
@@ -85,7 +84,7 @@ const EVENT_FUNS: [&str; 4] = ["cross", "above", "timer", "absdelta"];
 const ANALYSIS_FUNS: [&str; 6] =
     ["analysis", "ac_stim", "noise_table", "noise_table_log", "white_noise", "flicker_noise"];
 
-const BUILTINS: [&str; 28] = [
+const BUILTINS: [&str; 29] = [
     "abs",
     "acos",
     "acosh",
@@ -103,6 +102,7 @@ const BUILTINS: [&str; 28] = [
     "flow",
     "potential",
     "hypot",
+    "limexp",
     "ln",
     "ln1p",
     "log",
