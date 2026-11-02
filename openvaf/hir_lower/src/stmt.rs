@@ -1,6 +1,6 @@
 use hir::{
-    BranchWrite, Case, CaseCond, ContributeKind, Event, ExprId, GlobalEvent, Node, Stmt, StmtId,
-    Type,
+    BranchWrite, Case, CaseCond, ContributeKind, Event, Expr, ExprId, GlobalEvent, Node, Stmt,
+    StmtId, Type,
 };
 use mir::builder::InstBuilder;
 use mir::{Opcode, Value, F_ZERO, TRUE};
@@ -91,7 +91,9 @@ impl BodyLoweringCtx<'_, '_, '_> {
                     _ => self.ctx.def_place(lhs.into(), val_),
                 }
             }
-            Stmt::Contribute { kind, branch, rhs } => self.contribute(kind == ContributeKind::Potential, branch, rhs),
+            Stmt::Contribute { kind, branch, rhs } => {
+                self.contribute(kind == ContributeKind::Potential, branch, rhs)
+            }
             Stmt::IndirectContribute { kind, branch, constraint_lhs, constraint_rhs } => self
                 .indirect_contribute(
                     kind == ContributeKind::Potential,

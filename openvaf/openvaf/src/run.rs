@@ -78,7 +78,7 @@ pub fn run(opts: &Opts) -> Result<i32> {
         MirBuilder::new(&db, module.module, &is_output, &mut std::iter::empty())
             .with_procedural()
             .build(&mut literals);
-    if !analog_intern.absdelay.is_empty() || !proc_intern.absdelay.is_empty() {
+    if !analog_intern.absdelay_equations.is_empty() || !proc_intern.absdelay_equations.is_empty() {
         bail!("absdelay requires simulator transient history; openvaf run does not support it")
     }
 

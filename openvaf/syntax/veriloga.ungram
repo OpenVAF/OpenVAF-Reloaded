@@ -226,10 +226,7 @@ ModuleItem =
 
 ModulePorts = '('ports: (ModulePort (',' ModulePort)*)? ')'
 ModulePort = kind: ModulePortKind
-ModulePortKind = PortDecl| Name | PortRef
-
-PortRef =
-  Name '[' Expr ']'
+ModulePortKind = PortDecl| Name
 
 GenvarDecl =
   AttrList* 'genvar' (Name (',' Name)*) ';'

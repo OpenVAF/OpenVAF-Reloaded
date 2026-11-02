@@ -3,7 +3,7 @@ use std::mem;
 use basedb::lints::LintRegistry;
 use basedb::{AstIdMap, ErasedAstId, LintAttrs};
 use syntax::ast::{self, ArgListOwner, AttrIter, AttrsOwner, FunctionRef};
-use syntax::name::AsName;
+use syntax::name::{AsIdent, AsName};
 use syntax::{AstNode, AstPtr};
 
 // use tracing::debug;
@@ -122,7 +122,25 @@ impl LowerCtx<'_> {
             ast::Expr::BitSelectExpr(bit_select) => {
                 if let Some(base) = bit_select.base().and_then(Path::resolve) {
                     let index = self.collect_opt_expr(bit_select.index());
-                    Expr::BitSelect { base, index }
+                    let array_var = base.as_ident().is_some_and(|name| {
+                        expr.syntax().ancestors().find_map(ast::ModuleDecl::cast).is_some_and(
+                            |module| {
+                                module.syntax().descendants().filter_map(ast::Var::cast).any(
+                                    |var| {
+                                        var.dimension().is_some()
+                                            && var.name().is_some_and(|n| n.as_name() == name)
+                                    },
+                                )
+                            },
+                        )
+                    });
+                    if array_var {
+                        let base = self
+                            .alloc_expr(Expr::Path { path: base, port: false }, AstPtr::new(&expr));
+                        Expr::Index { base, index }
+                    } else {
+                        Expr::BitSelect { base, index }
+                    }
                 } else {
                     return self.missing_expr();
                 }
@@ -292,7 +310,7 @@ impl LowerCtx<'_> {
         use syntax::ast::{BinaryOp, LiteralKind, UnaryOp};
         match expr {
             ast::Expr::Literal(lit) => match lit.kind() {
-                LiteralKind::IntNumber(i) => Some(i.value() as i64),
+                LiteralKind::IntNumber(i) => i.value().map(i64::from),
                 _ => None,
             },
             ast::Expr::PrefixExpr(p) => {

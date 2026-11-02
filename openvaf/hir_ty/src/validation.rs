@@ -250,7 +250,8 @@ impl Diagnostic for BodyValidationDiagnosticWrapped<'_> {
                         "help: event control statements are only allowed in module-level analog blocks"
                             .to_owned(),
                     ])
-            }            BodyValidationDiagnostic::IllegalEventTrigger { stmt, ctx } => {
+            }
+            BodyValidationDiagnostic::IllegalEventTrigger { stmt, ctx } => {
                 let FileSpan { range, file } = self.parse.to_file_span(
                     self.body_sm.stmt_map_back[stmt].as_ref().unwrap().range(),
                     self.sm,

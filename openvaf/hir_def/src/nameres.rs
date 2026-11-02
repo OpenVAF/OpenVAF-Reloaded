@@ -16,8 +16,8 @@ use crate::builtin::{insert_builtin_scope, BuiltIn, ParamSysFun};
 use crate::db::HirDefDB;
 use crate::nameres::diagnostics::PathResolveError;
 use crate::{
-    AliasParamId, EventId, BlockId, BranchId, DisciplineId, FunctionArgId, FunctionId, InstantiationId,
-    Lookup, ModuleId, NatureAttrId, NatureId, NodeId, ParamId, VarId,
+    AliasParamId, BlockId, BranchId, DisciplineId, EventId, FunctionArgId, FunctionId,
+    InstantiationId, Lookup, ModuleId, NatureAttrId, NatureId, NodeId, ParamId, VarId,
 };
 
 mod collect;

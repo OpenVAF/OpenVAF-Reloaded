@@ -149,7 +149,6 @@ pub(crate) const KINDS_SRC: KindsSrc = KindsSrc {
         "MODULE_DECL",
         "MODULE_PORT",
         "MODULE_PORTS",
-        "PORT_REF",
         "GENVAR_DECL",
         "EVENT_DECL",
         "NAME",

@@ -669,35 +669,35 @@ impl<'a> MirBuilder<'a> {
         let mut hidden_state_init = Vec::with_capacity(self.hidden_state.len());
         if self.procedural {
             let procedural_body = self.module.procedural_block(self.db);
-            let mut body_ctx = BodyLoweringCtx { ctx: &mut ctx, body: procedural_body.borrow(), path: &path };
+            let mut body_ctx =
+                BodyLoweringCtx { ctx: &mut ctx, body: procedural_body.borrow(), path: &path };
             body_ctx.lower_entry_stmts();
         } else {
             let analog_initial_body = self.module.analog_initial_block(self.db);
             let analog_body = self.module.analog_block(self.db);
-        let mut body_ctx =
-            BodyLoweringCtx { ctx: &mut ctx, body: analog_initial_body.borrow(), path: &path };
+            let mut body_ctx =
+                BodyLoweringCtx { ctx: &mut ctx, body: analog_initial_body.borrow(), path: &path };
 
-        // lower analog initial blocks first
-        if self.blocks == LoweredBlocks::All {
-            for &var in self.hidden_state {
-                let val = body_ctx.ctx.lower_expr_body(var.init(self.db).borrow(), 0);
-                body_ctx.ctx.def_place(PlaceKind::Var(var), val);
+            // lower analog initial blocks first
+            if self.blocks == LoweredBlocks::All {
+                for &var in self.hidden_state {
+                    let val = body_ctx.ctx.lower_expr_body(var.init(self.db).borrow(), 0);
+                    body_ctx.ctx.def_place(PlaceKind::Var(var), val);
+                }
+                body_ctx.lower_entry_stmts();
+                for &var in self.hidden_state {
+                    let mut val = body_ctx.ctx.use_place(PlaceKind::Var(var));
+                    // also for constants: the value must be an instruction that init computes
+                    val = body_ctx.ctx.func.ins().optbarrier(val);
+                    hidden_state_init.push((PlaceKind::HiddenStateInit(var), val.into()));
+                    let state =
+                        body_ctx.ctx.use_param(ParamKind::HiddenState(HiddenStateKey::Var(var)));
+                    body_ctx.ctx.def_place(PlaceKind::Var(var), state);
+                }
             }
+            // ... and normal analog blocks afterwards
+            body_ctx.body = analog_body.borrow();
             body_ctx.lower_entry_stmts();
-            for &var in self.hidden_state {
-                let mut val = body_ctx.ctx.use_place(PlaceKind::Var(var));
-                // also for constants: the value must be an instruction that init computes
-                val = body_ctx.ctx.func.ins().optbarrier(val);
-                hidden_state_init.push((PlaceKind::HiddenStateInit(var), val.into()));
-                let state =
-                    body_ctx.ctx.use_param(ParamKind::HiddenState(HiddenStateKey::Var(var)));
-                body_ctx.ctx.def_place(PlaceKind::Var(var), state);
-            }
-        }
-        // ... and normal analog blocks afterwards
-        body_ctx.body = analog_body.borrow();
-        body_ctx.lower_entry_stmts();
-
         }
 
         for var in self.required_vars {

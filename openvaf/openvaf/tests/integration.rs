@@ -11,8 +11,8 @@ use stdx::{ignore_dev_tests, openvaf_test_data, project_root};
 use target::spec::Target;
 
 use crate::load::{
-    load_osdi_lib, EvalFlags, OsdiDescriptor, OsdiInstance, OsdiModel, MODULEFLAG_COMPACT, MODULEFLAG_FINAL_STEP,
-    MODULEFLAG_INITIAL_STEP,
+    load_osdi_lib, EvalFlags, OsdiDescriptor, OsdiInstance, OsdiModel, MODULEFLAG_COMPACT,
+    MODULEFLAG_FINAL_STEP, MODULEFLAG_INITIAL_STEP,
 };
 use crate::mock_sim::{MockSimulation, ALPHA};
 
@@ -975,13 +975,13 @@ fn test_indirect_opamp() -> Result<()> {
     );
     float_cmp::assert_approx_eq!(
         f64,
-        sim.read_jacobian("pin", "implicit_equation_0").0,
+        sim.read_jacobian("implicit_equation_0", "pin").0,
         1.0,
         epsilon = 1e-9
     );
     float_cmp::assert_approx_eq!(
         f64,
-        sim.read_jacobian("nin", "implicit_equation_0").0,
+        sim.read_jacobian("implicit_equation_0", "nin").0,
         -1.0,
         epsilon = 1e-9
     );

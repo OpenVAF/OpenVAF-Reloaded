@@ -13,10 +13,10 @@ use crate::item_tree::ItemTree;
 use crate::nameres::{DefMap, ScopeOrigin};
 use crate::{
     AliasParamId, AliasParamLoc, BlockId, BlockLoc, BranchId, BranchLoc, DefWithBodyId,
-    DisciplineAttrId, DisciplineAttrLoc, DisciplineId, DisciplineLoc, FunctionArgId,
-    EventId, EventLoc, FunctionArgLoc, FunctionId, FunctionLoc, InstantiationId, InstantiationLoc, ModuleId,
-    ModuleLoc, NatureAttrId, NatureAttrLoc, NatureId, NatureLoc, NodeId, NodeLoc, ParamId,
-    ParamLoc, VarId, VarLoc,
+    DisciplineAttrId, DisciplineAttrLoc, DisciplineId, DisciplineLoc, EventId, EventLoc,
+    FunctionArgId, FunctionArgLoc, FunctionId, FunctionLoc, InstantiationId, InstantiationLoc,
+    ModuleId, ModuleLoc, NatureAttrId, NatureAttrLoc, NatureId, NatureLoc, NodeId, NodeLoc,
+    ParamId, ParamLoc, VarId, VarLoc,
 };
 
 #[salsa::query_group(InternDatabase)]

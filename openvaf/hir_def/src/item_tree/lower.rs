@@ -10,10 +10,10 @@ use syntax::{match_ast, AstNode, ConstExprValue, WalkEvent};
 use typed_index_collections::TiVec;
 
 use super::{
-    Block, Branch, BranchKind, BusDecl, Discipline, DisciplineAttr, DisciplineAttrKind, Domain, Event,
-    Function, FunctionArg, FunctionItem, Instantiation, ItemTree, ItemTreeDiagnostic, ItemTreeId,
-    Module, ModuleItem, Nature, NatureAttr, NatureRef, NatureRefKind, Net, Node, Param, Port,
-    RootItem, Var,
+    Block, Branch, BranchKind, BusDecl, Discipline, DisciplineAttr, DisciplineAttrKind, Domain,
+    Event, Function, FunctionArg, FunctionItem, Instantiation, ItemTree, ItemTreeDiagnostic,
+    ItemTreeId, Module, ModuleItem, Nature, NatureAttr, NatureRef, NatureRefKind, Net, Node, Param,
+    Port, RootItem, Var,
 };
 // use tracing::trace;
 use crate::db::HirDefDB;
@@ -22,15 +22,18 @@ use crate::types::AsType;
 use crate::{LocalFunctionArgId, LocalNodeId, Path, Type};
 
 /// Tries to constant-fold a `[msb:lsb]` width clause into two integers.
-/// Only literal integers (optionally unary-negated) are supported, matching
-/// `ast::Expr::as_constexprval`. Returns `None` if either bound is missing or
-/// not a constant integer.
+/// Resolves integer expressions and parameter defaults in the enclosing module.
+/// Returns `None` if either bound is missing or not a constant integer.
 fn fold_width_range(range: &ast::Range) -> Option<(i32, i32)> {
-    let msb = range.start()?.as_constexprval()?;
-    let lsb = range.end()?.as_constexprval()?;
-    match (msb, lsb) {
-        (ConstExprValue::Int(msb), ConstExprValue::Int(lsb)) => Some((msb, lsb)),
-        _ => None,
+    if let Some(module) = range.syntax().ancestors().find_map(ast::ModuleDecl::cast) {
+        let msb = i32::try_from(eval_const_int(&range.start()?, &module)?).ok()?;
+        let lsb = i32::try_from(eval_const_int(&range.end()?, &module)?).ok()?;
+        Some((msb, lsb))
+    } else {
+        match (range.start()?.as_constexprval()?, range.end()?.as_constexprval()?) {
+            (ConstExprValue::Int(msb), ConstExprValue::Int(lsb)) => Some((msb, lsb)),
+            _ => None,
+        }
     }
 }
 
@@ -360,7 +363,9 @@ impl Ctx {
                 ast::ModuleItem::BranchDecl(branch) => self.lower_branch(branch, dst),
                 ast::ModuleItem::AliasParam(alias) => self.lower_alias_param(alias, dst),
                 ast::ModuleItem::ProceduralBlock(block) => {
-                    if let Some(stmt) = block.stmt() { self.lower_stmt(stmt, dst); }
+                    if let Some(stmt) = block.stmt() {
+                        self.lower_stmt(stmt, dst);
+                    }
                 }
                 ast::ModuleItem::GenvarDecl(_) => {}
                 ast::ModuleItem::Instantiation(inst) => self.lower_instantiation(inst, dst),
@@ -488,13 +493,6 @@ impl Ctx {
         }
     }
 
-    /// Resolves a branch endpoint to a `Path`: a plain endpoint resolves its `ast::Path`
-    /// normally (a bare reference to a bus base name is detected and diagnosed by the
-    /// `finalize_branch_buses` post-pass once all of the module's buses are known); a
-    /// bit-select endpoint (`bus[2]`) constant-folds the index and synthesizes the same
-    /// `"bus[2]"` path the bus's expanded scalar `Node` was declared under (see
-    /// `expand_bus_names`). A non-constant index is diagnosed and fails to resolve (the
-    /// branch becomes `BranchKind::Missing`).
     fn lower_event_decl(&mut self, decl: ast::EventDecl, dst: &mut Vec<ModuleItem>) {
         let ast_id = self.source_ast_id_map.ast_id(&decl);
         for (name_idx, name) in decl.names().enumerate() {
@@ -504,6 +502,13 @@ impl Ctx {
         }
     }
 
+    /// Resolves a branch endpoint to a `Path`: a plain endpoint resolves its `ast::Path`
+    /// normally (a bare reference to a bus base name is detected and diagnosed by the
+    /// `finalize_branch_buses` post-pass once all of the module's buses are known); a
+    /// bit-select endpoint (`bus[2]`) constant-folds the index and synthesizes the same
+    /// `"bus[2]"` path the bus's expanded scalar `Node` was declared under (see
+    /// `expand_bus_names`). A non-constant index is diagnosed and fails to resolve (the
+    /// branch becomes `BranchKind::Missing`).
     fn resolve_branch_endpoint(
         &mut self,
         endpoint: ast::BranchEndpoint,
@@ -864,12 +869,22 @@ impl Ctx {
 
             let Some(width) = width.clone() else {
                 // ordinary (non-array) variable declaration
-                let (ty, array_lo) = match (var.dimension(), decl.syntax().ancestors().find_map(ast::ModuleDecl::cast)) {
+                let (ty, array_lo) = match (
+                    var.dimension(),
+                    decl.syntax().ancestors().find_map(ast::ModuleDecl::cast),
+                ) {
                     (Some(dim), Some(module)) => {
-                        let bounds = dim.msb().and_then(|e| eval_const_int(&e, &module))
+                        let bounds = dim
+                            .msb()
+                            .and_then(|e| eval_const_int(&e, &module))
                             .zip(dim.lsb().and_then(|e| eval_const_int(&e, &module)));
-                        let len = bounds.map(|(msb, lsb)| (msb - lsb).unsigned_abs() as u32 + 1).unwrap_or(0);
-                        (Type::Array { ty: Box::new(ty.clone()), len }, bounds.map(|(a,b)| a.min(b) as i32).unwrap_or(0))
+                        let len = bounds
+                            .map(|(msb, lsb)| (msb - lsb).unsigned_abs() as u32 + 1)
+                            .unwrap_or(0);
+                        (
+                            Type::Array { ty: Box::new(ty.clone()), len },
+                            bounds.map(|(a, b)| a.min(b) as i32).unwrap_or(0),
+                        )
                     }
                     _ => (ty.clone(), 0),
                 };
@@ -976,7 +991,7 @@ fn eval_const_int(expr: &ast::Expr, module: &ast::ModuleDecl) -> Option<i64> {
     use syntax::ast::{BinaryOp, LiteralKind, UnaryOp};
     match expr {
         ast::Expr::Literal(lit) => match lit.kind() {
-            LiteralKind::IntNumber(i) => Some(i.value() as i64),
+            LiteralKind::IntNumber(i) => i.value().map(i64::from),
             _ => None,
         },
         ast::Expr::PrefixExpr(p) => {

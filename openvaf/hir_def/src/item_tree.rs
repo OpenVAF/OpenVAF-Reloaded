@@ -362,7 +362,7 @@ impl_from_typed! (
     Branch(ItemTreeId<Branch>),
     Node(LocalNodeId),
     Function(ItemTreeId<Function>),
-    Instantiation(ItemTreeId<Instantiation>) for ModuleItem
+    Instantiation(ItemTreeId<Instantiation>),
     Event(ItemTreeId<Event>) for ModuleItem
 );
 

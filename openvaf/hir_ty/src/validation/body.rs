@@ -937,9 +937,7 @@ impl ExprValidator<'_, '_> {
             (
                 // laplace_nd accepts runtime-computed coefficient arrays (realized as
                 // a state-space filter), so its coefficient args are not const-checked.
-                BuiltIn::laplace_np
-                | BuiltIn::laplace_zp
-                | BuiltIn::laplace_zd,
+                BuiltIn::laplace_np | BuiltIn::laplace_zp | BuiltIn::laplace_zd,
                 Some(_),
             ) => {
                 // args[0] (input signal) and args[1]/args[2] (num/den, or zero/pole) are

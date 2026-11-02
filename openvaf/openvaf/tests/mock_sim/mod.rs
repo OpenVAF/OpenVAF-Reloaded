@@ -182,6 +182,16 @@ impl OsdiInstance {
         sim.state_1.resize(self.descriptor.num_states as usize, 0.0);
         sim.state_2.resize(self.descriptor.num_states as usize, 0.0);
         sim.noise_dense.resize(self.descriptor.num_noise_src as usize, 0.0);
+
+        // A simulator assigns each logical state a physical slot. Use an identity
+        // mapping here so retained array elements do not alias state slot zero.
+        unsafe {
+            let data = self.data as *mut u8;
+            let state_idx = data.add(self.descriptor.state_idx_off as usize).cast::<u32>();
+            for i in 0..self.descriptor.num_states {
+                state_idx.add(i as usize).write(i);
+            }
+        }
         Ok(sim)
     }
 

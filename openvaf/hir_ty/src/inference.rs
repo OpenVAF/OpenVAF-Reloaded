@@ -101,7 +101,8 @@ impl InferenceResult {
             ..Default::default()
         };
 
-        let mut ctx = Ctx { result, body: &body, db, expr_stmt_ty: None, owner: id, fn_return_ty: None };
+        let mut ctx =
+            Ctx { result, body: &body, db, expr_stmt_ty: None, owner: id, fn_return_ty: None };
         ctx.expr_stmt_ty = match id {
             DefWithBodyId::ParamId(param) => match &db.param_data(param).ty {
                 Some(ty) => Some(ty.clone()),
@@ -158,15 +159,7 @@ impl Ctx<'_> {
             }
             Stmt::Assignment { dst, val, assignment_kind } => {
                 let dst_ty = self.infere_assignment_dst(stmt, dst, assignment_kind);
-                if assignment_kind == ast::AssignOp::IndirectBranch {
-                    // `V(out) : f(...) == 0` — the rhs is the constraint equation, not a
-                    // value to assign to the branch. Infer it on its own terms (an
-                    // equality test producing bool, with its operands coerced as usual);
-                    // MIR lowering turns it into an implicit-equation residual.
-                    self.infere_expr(stmt, val);
-                } else {
-                    self.infere_assignment(stmt, val, dst_ty);
-                }
+                self.infere_assignment(stmt, val, dst_ty);
             }
             Stmt::ForLoop { cond, .. } | Stmt::If { cond, .. } | Stmt::WhileLoop { cond, .. } => {
                 self.infere_cond(stmt, cond)
@@ -317,7 +310,10 @@ impl Ctx<'_> {
         if let Expr::Index { base, index } = self.body.exprs[expr] {
             if let Ty::Var(Type::Array { ty, .. }, var) = self.result.expr_types[base].clone() {
                 let elem = *ty;
-                if matches!(assignment_kind, ast::AssignOp::Contribute | ast::AssignOp::IndirectBranch) {
+                if matches!(
+                    assignment_kind,
+                    ast::AssignOp::Contribute | ast::AssignOp::IndirectBranch
+                ) {
                     self.result.diagnostics.push(InferenceDiagnostic::InvalidAssignDst {
                         e: expr,
                         maybe_different_operand: Some(ast::AssignOp::Assign),
@@ -401,15 +397,7 @@ impl Ctx<'_> {
                     assignment_kind,
                 });
             }
-            // Indirect branch assignment (`V(out) : …`) requires a branch destination,
-            // exactly like a contribution.
-            (AssignDst::Var(_) | AssignDst::FunVar { .. }, ast::AssignOp::IndirectBranch) => {
-                self.result.diagnostics.push(InferenceDiagnostic::InvalidAssignDst {
-                    e: expr,
-                    maybe_different_operand: Some(ast::AssignOp::Assign),
-                    assignment_kind,
-                });
-            }
+
             _ => {
                 self.result.assignment_destination.insert(stmt, dst);
             }

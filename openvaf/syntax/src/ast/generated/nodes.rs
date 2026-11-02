@@ -932,24 +932,6 @@ impl PortDecl {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PortRef {
-    pub(crate) syntax: SyntaxNode,
-}
-impl PortRef {
-    pub fn name(&self) -> Option<Name> {
-        support::child(&self.syntax)
-    }
-    pub fn l_brack_token(&self) -> Option<SyntaxToken> {
-        support::token(&self.syntax, T!['['])
-    }
-    pub fn expr(&self) -> Option<Expr> {
-        support::child(&self.syntax)
-    }
-    pub fn r_brack_token(&self) -> Option<SyntaxToken> {
-        support::token(&self.syntax, T![']'])
-    }
-}
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Var {
     pub(crate) syntax: SyntaxNode,
 }
@@ -1212,7 +1194,6 @@ pub enum ModuleItem {
 pub enum ModulePortKind {
     PortDecl(PortDecl),
     Name(Name),
-    PortRef(PortRef),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ParamRef {
@@ -2097,21 +2078,6 @@ impl AstNode for PortDecl {
         &self.syntax
     }
 }
-impl AstNode for PortRef {
-    fn can_cast(kind: SyntaxKind) -> bool {
-        kind == PORT_REF
-    }
-    fn cast(syntax: SyntaxNode) -> Option<Self> {
-        if Self::can_cast(syntax.kind()) {
-            Some(Self { syntax })
-        } else {
-            None
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.syntax
-    }
-}
 impl AstNode for Var {
     fn can_cast(kind: SyntaxKind) -> bool {
         kind == VAR
@@ -2713,15 +2679,10 @@ impl From<Name> for ModulePortKind {
         ModulePortKind::Name(node)
     }
 }
-impl From<PortRef> for ModulePortKind {
-    fn from(node: PortRef) -> ModulePortKind {
-        ModulePortKind::PortRef(node)
-    }
-}
 impl AstNode for ModulePortKind {
     fn can_cast(kind: SyntaxKind) -> bool {
         match kind {
-            PORT_DECL | NAME | PORT_REF => true,
+            PORT_DECL | NAME => true,
             _ => false,
         }
     }
@@ -2729,7 +2690,6 @@ impl AstNode for ModulePortKind {
         let res = match syntax.kind() {
             PORT_DECL => ModulePortKind::PortDecl(PortDecl { syntax }),
             NAME => ModulePortKind::Name(Name { syntax }),
-            PORT_REF => ModulePortKind::PortRef(PortRef { syntax }),
             _ => return None,
         };
         Some(res)
@@ -2738,7 +2698,6 @@ impl AstNode for ModulePortKind {
         match self {
             ModulePortKind::PortDecl(it) => &it.syntax,
             ModulePortKind::Name(it) => &it.syntax,
-            ModulePortKind::PortRef(it) => &it.syntax,
         }
     }
 }
@@ -3150,11 +3109,6 @@ impl std::fmt::Display for ModulePort {
     }
 }
 impl std::fmt::Display for PortDecl {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(self.syntax(), f)
-    }
-}
-impl std::fmt::Display for PortRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
     }

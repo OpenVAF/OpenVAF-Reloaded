@@ -150,7 +150,6 @@ pub enum SyntaxKind {
     MODULE_DECL,
     MODULE_PORT,
     MODULE_PORTS,
-    PORT_REF,
     GENVAR_DECL,
     EVENT_DECL,
     NAME,

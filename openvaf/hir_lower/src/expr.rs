@@ -1132,11 +1132,7 @@ impl BodyLoweringCtx<'_, '_, '_> {
             return vars.iter().map(|&var| self.ctx.read_variable(var)).collect();
         }
 
-        let elem_ids: Vec<ExprId> = match self.body.get_expr(expr) {
-            Expr::Array(elems) => elems.to_vec(),
-            _ => vec![expr],
-        };
-        elem_ids.iter().map(|&e| self.lower_expr(e)).collect()
+        self.array_coeffs(expr)
     }
 
     /// Expands a list of roots `[r0, r1, ...]` into ascending-power polynomial coefficients of
@@ -1327,78 +1323,6 @@ impl BodyLoweringCtx<'_, '_, '_> {
             Type::Integer | Type::Bool => self.ctx.insert_cast(v, ty, &Type::Real),
             _ => v,
         }
-    }
-
-    /// Lower `laplace_nd(input, num, den)` (coefficients in ascending powers of `s`)
-    /// as a controllable-canonical-form state space using `den.len()-1` integrator
-    /// states (implicit equations), reusing the existing DAE machinery. Coefficients
-    /// may be runtime values.
-    fn lower_laplace_nd(&mut self, args: &[ExprId]) -> Value {
-        let input = self.lower_expr(args[0]);
-        let num = self.array_coeffs(args[1]);
-        let den = self.array_coeffs(args[2]);
-        let n = den.len().saturating_sub(1); // filter order
-        if n == 0 {
-            if num.is_empty() || den.is_empty() {
-                return input;
-            }
-            let g = self.ctx.ins().fdiv(num[0], den[0]);
-            return self.ctx.ins().fmul(g, input);
-        }
-
-        // States x_0..x_{n-1} with x_i = s^i w where D(s) w = input.
-        let mut states = Vec::with_capacity(n);
-        for _ in 0..n {
-            states.push(self.ctx.implicit_equation(ImplicitEquationKind::Idt(IdtKind::Basic)));
-        }
-
-        // dx_i/dt = x_{i+1} for i in 0..n-1.
-        for i in 0..n - 1 {
-            let eq = states[i].0;
-            let next = states[i + 1].1;
-            let neg = self.ctx.ins().fneg(next);
-            self.ctx.def_resist_residual(neg, eq);
-            self.ctx.def_react_residual(states[i].1, eq);
-        }
-
-        // dx_{n-1}/dt = (input - Σ_{i<n} den[i] x_i) / den[n].
-        let mut acc = input;
-        for i in 0..n {
-            let term = self.ctx.ins().fmul(den[i], states[i].1);
-            acc = self.ctx.ins().fsub(acc, term);
-        }
-        let rhs = self.ctx.ins().fdiv(acc, den[n]);
-        let (eq_last, x_last) = states[n - 1];
-        let neg = self.ctx.ins().fneg(rhs);
-        self.ctx.def_resist_residual(neg, eq_last);
-        self.ctx.def_react_residual(x_last, eq_last);
-
-        // Direct feedthrough d = num[n]/den[n], present only when deg(num) == deg(den).
-        // Since s^n w = (input - Σ_{i<n} den[i] x_i)/den[n], the exact output is
-        //   y = Σ_{k<n} (num[k] - d·den[k]) x_k + d·input.
-        // Previously num[n] was silently dropped, so any exactly-proper transfer
-        // function (e.g. a high-pass or all-pass section) lost its feedthrough term.
-        let d = if num.len() == n + 1 { Some(self.ctx.ins().fdiv(num[n], den[n])) } else { None };
-
-        let mut out = F_ZERO;
-        for (k, &nk) in num.iter().enumerate() {
-            if k < n {
-                let ck = match d {
-                    Some(d) => {
-                        let d_ak = self.ctx.ins().fmul(d, den[k]);
-                        self.ctx.ins().fsub(nk, d_ak)
-                    }
-                    None => nk,
-                };
-                let term = self.ctx.ins().fmul(ck, states[k].1);
-                out = self.ctx.ins().fadd(out, term);
-            }
-        }
-        if let Some(d) = d {
-            let du = self.ctx.ins().fmul(d, input);
-            out = self.ctx.ins().fadd(out, du);
-        }
-        out
     }
 
     pub fn resolved_ty(&self, expr: ExprId) -> Type {

@@ -1,4 +1,4 @@
-warning[L018]: 'timer' does not schedule an event yet
+warning[L019]: 'timer' does not schedule an event yet
    --> /named_events.va:18:9
    |
 18 |         @(timer(period)) -> ana_event;
@@ -8,7 +8,7 @@ warning[L018]: 'timer' does not schedule an event yet
    = the guarded statement runs on every evaluation, not per event
    = unscheduled_event is set to warn by default
 
-warning[L018]: 'timer' does not schedule an event yet
+warning[L019]: 'timer' does not schedule an event yet
    --> /named_events.va:20:9
    |  
 20 | /         @(timer(2.0 * period)) begin

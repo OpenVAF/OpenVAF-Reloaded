@@ -1,4 +1,4 @@
-warning[L018]: 'timer' does not schedule an event yet
+warning[L019]: 'timer' does not schedule an event yet
    --> /vams2023_events.va:24:9
    |  
 24 | /         @(timer(period)) begin
